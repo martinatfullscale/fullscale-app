@@ -9,7 +9,8 @@ import { storage } from "../storage";
 import { db } from "../db";
 import { users } from "@shared/models/auth";
 import { eq } from "drizzle-orm";
-import { sendStudioVideoReadyEmail } from "./resend";
+import { sendStudioVideoReadyEmail, sendStudioWaitlistNotification } from "./resend";
+import { ADMIN_EMAILS } from "./adminEmails";
 // Lazy-loaded pipeline module (loaded on first use, not at startup)
 let _pipelineMod: typeof import("../../studio-pipeline/src/pipeline/index.js") | null = null;
 async function loadPipelineModule() {
@@ -270,6 +271,13 @@ export function registerStudioRoutes(app: Express) {
         status: "pending",
       });
 
+      // Tell someone. The row used to land in the table silently, so a
+      // request was only ever found by querying the database by hand.
+      // Fire-and-forget: a mail failure must not fail the signup, since the
+      // row — the thing that matters — is already committed.
+      void sendStudioWaitlistNotification({ name, email: normalizedEmail, useCase: useCase || null })
+        .catch((e) => console.error("[Studio] waitlist notification failed:", e?.message || e));
+
       return res.json({ success: true, alreadySubmitted: false, status: "pending" });
     } catch (err: any) {
       console.error("[Studio] /api/studio/waitlist POST error:", err);
@@ -280,6 +288,46 @@ export function registerStudioRoutes(app: Express) {
   // ──────────────────────────────────────────────────────────────────
   // WAITLIST: Check current user's Studio access status
   // ──────────────────────────────────────────────────────────────────
+  /** Admin gate, matching the /api/admin/* pattern in routes.ts. */
+  const isStudioAdmin = (req: any): boolean => {
+    const email = req.session?.googleUser?.email || req.user?.claims?.email || getSessionEmail(req);
+    return !!email && ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(String(email).toLowerCase());
+  };
+
+  // GET /api/admin/studio-waitlist — the queue, surfaced on /admin/signups.
+  app.get("/api/admin/studio-waitlist", async (req: any, res: Response) => {
+    try {
+      if (!isStudioAdmin(req)) return res.status(403).json({ error: "Admin access required" });
+      const entries = await storage.getStudioWaitlistEntries();
+      res.json({ entries, pending: entries.filter((e) => e.status === "pending").length });
+    } catch (err: any) {
+      console.error("[Studio] /api/admin/studio-waitlist error:", err);
+      res.status(500).json({ error: "Failed to load Studio waitlist" });
+    }
+  });
+
+  // POST /api/admin/studio-waitlist/:id/review — approve or decline.
+  // Approving grants Studio access immediately (hasApprovedStudioAccess
+  // reads this row), so there is no second step to forget.
+  app.post("/api/admin/studio-waitlist/:id/review", async (req: any, res: Response) => {
+    try {
+      if (!isStudioAdmin(req)) return res.status(403).json({ error: "Admin access required" });
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+      const status = req.body?.status;
+      if (status !== "approved" && status !== "rejected" && status !== "pending") {
+        return res.status(400).json({ error: "status must be approved, rejected or pending" });
+      }
+      const reviewer = req.session?.googleUser?.email || req.user?.claims?.email || getSessionEmail(req) || "admin";
+      const row = await storage.setStudioWaitlistStatus(id, status, String(reviewer));
+      if (!row) return res.status(404).json({ error: "Request not found" });
+      res.json({ success: true, entry: row });
+    } catch (err: any) {
+      console.error("[Studio] /api/admin/studio-waitlist/:id/review error:", err);
+      res.status(500).json({ error: "Failed to update request" });
+    }
+  });
+
   app.get("/api/studio/waitlist/status", async (req: any, res: Response) => {
     try {
       const email = getSessionEmail(req);
@@ -303,9 +351,21 @@ export function registerStudioRoutes(app: Express) {
 
   // ──────────────────────────────────────────────────────────────────
   // AUTH: Studio signup (creates user with isApproved=true, skip waitlist)
+  //
+  // DISABLED by default: this endpoint was an unauthenticated factory for
+  // pre-approved accounts + live sessions (no password, no rate limit, no
+  // client caller) — a full waitlist bypass and, combined with the
+  // email-allowlist admin check, a privilege-escalation path. It only
+  // functions when STUDIO_SIGNUP_SECRET is set AND the caller presents it.
   // ──────────────────────────────────────────────────────────────────
   app.post("/api/studio/signup", async (req: any, res: Response) => {
     try {
+      const requiredSecret = process.env.STUDIO_SIGNUP_SECRET;
+      const presented = req.headers["x-studio-signup-secret"];
+      if (!requiredSecret || presented !== requiredSecret) {
+        console.warn(`[Studio] Blocked /api/studio/signup attempt (${req.ip}) — endpoint disabled without STUDIO_SIGNUP_SECRET`);
+        return res.status(410).json({ error: "Studio signup is not available" });
+      }
       const { email, firstName, lastName, password } = req.body;
       if (!email) {
         return res.status(400).json({ error: "Email is required" });
@@ -525,7 +585,21 @@ export function registerStudioRoutes(app: Express) {
 
         case "invoice.paid": {
           const invoice = event.data.object as any;
-          const subId = (invoice.subscription as string) || (typeof invoice.subscription === "object" ? invoice.subscription?.id : null);
+          // Stripe MOVED this field. Through 2025-03 it was invoice.subscription;
+          // from 2025-04-30.acacia it lives at
+          // invoice.parent.subscription_details.subscription. Webhook payloads
+          // are serialized in whatever version the DESTINATION is pinned to, so
+          // reading only one location silently finds nothing on the other — no
+          // error, just subscriptions that quietly stop renewing. Read both.
+          const subId =
+            (typeof invoice.subscription === "string" ? invoice.subscription : invoice.subscription?.id) ||
+            (typeof invoice.parent?.subscription_details?.subscription === "string"
+              ? invoice.parent.subscription_details.subscription
+              : invoice.parent?.subscription_details?.subscription?.id) ||
+            null;
+          if (!subId) {
+            console.warn(`[Studio Webhook] invoice.paid ${invoice.id}: no subscription id in either the legacy or current field — check the destination's API version`);
+          }
           if (subId) {
             const sub = await storage.getStudioSubscriptionByStripeSubscription(subId);
             if (sub) {
@@ -546,11 +620,20 @@ export function registerStudioRoutes(app: Express) {
           if (sub) {
             const priceId = subscription.items?.data?.[0]?.price?.id;
             const tier = priceId && STRIPE_PRICE_MAP[priceId] ? STRIPE_PRICE_MAP[priceId] : sub.tier as TierName;
+            // Also moved in 2025-04-30.acacia: current_period_end came off the
+            // Subscription and onto each subscription ITEM. Reading only the
+            // old location yields undefined on a newer payload, and the stored
+            // period end silently stops advancing — the subscription looks
+            // expired to every downstream check.
+            const periodEnd =
+              subscription.current_period_end ??
+              subscription.items?.data?.[0]?.current_period_end ??
+              null;
             await storage.updateStudioSubscription(sub.userId, {
               tier,
               status: subscription.status === "active" ? "active" : subscription.status === "past_due" ? "past_due" : "canceled",
               cancelAtPeriodEnd: !!subscription.cancel_at_period_end,
-              currentPeriodEnd: subscription.current_period_end ? new Date(subscription.current_period_end * 1000) : undefined,
+              currentPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : undefined,
             });
             console.log(`[Studio Webhook] Subscription updated for ${sub.userId}: ${tier} (${subscription.status})`);
           }

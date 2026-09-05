@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -53,7 +54,7 @@ export default function StudioWaitlistPage() {
 
   const submitMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/studio/waitlist", {
+      const res = await fetchWithTimeout("/api/studio/waitlist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, email, useCase }),

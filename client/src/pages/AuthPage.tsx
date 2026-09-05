@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,13 +8,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Mail, Lock, User, X, Eye, EyeOff, LayoutDashboard, Video } from "lucide-react";
+import { Loader2, Mail, Lock, User, X, Eye, EyeOff, LayoutDashboard } from "lucide-react";
 import { SiGoogle } from "react-icons/si";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
+// The Studio destination was previously a second tile here, but
+// confused signups (people assumed they were picking a product to buy
+// rather than where to land after auth). Creator Portal is now the
+// only option from this page; brands go through /brand-signup which
+// has its own approval gate.
 const DESTINATIONS = {
   dashboard: { label: "Creator Portal", path: "/dashboard", icon: LayoutDashboard },
-  studio: { label: "Studio", path: "/studio/waitlist", icon: Video },
 } as const;
 
 type Destination = keyof typeof DESTINATIONS;
@@ -28,10 +33,10 @@ export default function AuthPage() {
   const initialMode = urlParams.get("mode") === "signup" ? "register" : "login";
   const [activeTab, setActiveTab] = useState(initialMode);
 
-  // Destination selector — where to go after login
-  const redirectParam = urlParams.get("redirect");
-  const initialDest: Destination = redirectParam?.startsWith("/studio") ? "studio" : "dashboard";
-  const [destination, setDestination] = useState<Destination>(initialDest);
+  // Destination selector — where to go after login. Only one option now
+  // (Creator Portal); kept as a state to preserve the rest of the flow,
+  // but the picker tile UI is removed.
+  const [destination] = useState<Destination>("dashboard");
 
   // Login form state
   const [loginEmail, setLoginEmail] = useState("");
@@ -58,11 +63,14 @@ export default function AuthPage() {
   };
 
   // Dev-only admin login bypass — skips OAuth entirely
-  const isDevEnvironment = window.location.hostname !== "gofullscale.co";
+  // Vite-inlined: true only in local dev builds. The old hostname test
+  // rendered an orange "Dev Login (martin@...)" button to the PUBLIC on
+  // every Replit deploy URL that wasn't the bare apex domain.
+  const isDevEnvironment = import.meta.env.DEV;
   const handleDevLogin = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch("/api/auth/dev-login", {
+      const response = await fetchWithTimeout("/api/auth/dev-login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -71,7 +79,7 @@ export default function AuthPage() {
       const data = await response.json();
       if (response.ok) {
         toast({ title: "Dev Login", description: `Logged in as ${data.email}` });
-        setTimeout(() => setLocation(getDestinationPath()), 300);
+        setTimeout(() => { window.location.href = getDestinationPath(); }, 300);
       } else {
         toast({ title: "Dev Login Failed", description: data.error, variant: "destructive" });
       }
@@ -87,7 +95,7 @@ export default function AuthPage() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("/api/auth/login", {
+      const response = await fetchWithTimeout("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: loginEmail, password: loginPassword }),
@@ -104,14 +112,18 @@ export default function AuthPage() {
         return;
       }
 
-      // Check if user is approved or pending
+      // Hard-navigate after login so the auth state hook (useAuth) refetches
+      // /api/auth/user against the new session. setLocation is SPA-only and
+      // would leave the cached "not logged in" state intact, causing
+      // /dashboard to fall through to the unauth Landing page until the user
+      // manually reloads.
       if (data.status === "pending") {
         toast({
           title: "Welcome!",
           description: "Your application is being reviewed...",
         });
         setTimeout(() => {
-          setLocation("/waitlist");
+          window.location.href = "/waitlist";
         }, 500);
       } else {
         toast({
@@ -119,7 +131,7 @@ export default function AuthPage() {
           description: `Redirecting to ${DESTINATIONS[destination].label}...`,
         });
         setTimeout(() => {
-          setLocation(getDestinationPath());
+          window.location.href = getDestinationPath();
         }, 500);
       }
     } catch (error) {
@@ -166,7 +178,7 @@ export default function AuthPage() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("/api/auth/register", {
+      const response = await fetchWithTimeout("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -189,14 +201,15 @@ export default function AuthPage() {
         return;
       }
 
-      // Check if user is approved or pending waitlist
+      // Hard-navigate after registration for the same reason as login:
+      // useAuth's cached state needs to refetch against the new session.
       if (data.status === "pending") {
         toast({
           title: "Application Submitted!",
           description: "You've been added to the waitlist.",
         });
         setTimeout(() => {
-          setLocation("/waitlist");
+          window.location.href = "/waitlist";
         }, 500);
       } else {
         toast({
@@ -204,7 +217,7 @@ export default function AuthPage() {
           description: `Welcome to FullScale. Redirecting to ${DESTINATIONS[destination].label}...`,
         });
         setTimeout(() => {
-          setLocation(getDestinationPath());
+          window.location.href = getDestinationPath();
         }, 500);
       }
     } catch (error) {
@@ -242,31 +255,9 @@ export default function AuthPage() {
             <CardDescription>Sign in or create an account to get started</CardDescription>
           </CardHeader>
           <CardContent>
-            {/* Destination selector */}
-            <div className="mb-6">
-              <Label className="text-xs text-muted-foreground uppercase tracking-wider mb-2 block">
-                Sign in to
-              </Label>
-              <div className="grid grid-cols-2 gap-2">
-                {(Object.entries(DESTINATIONS) as [Destination, typeof DESTINATIONS[Destination]][]).map(
-                  ([key, { label, icon: Icon }]) => (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => setDestination(key)}
-                      className={`flex items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-medium transition-all ${
-                        destination === key
-                          ? "border-primary bg-primary/10 text-white"
-                          : "border-white/10 text-muted-foreground hover:border-white/20 hover:text-white"
-                      }`}
-                    >
-                      <Icon className="h-4 w-4" />
-                      {label}
-                    </button>
-                  )
-                )}
-              </div>
-            </div>
+            {/* Destination selector intentionally removed — there is only
+                one destination (Creator Portal) so the tile picker was
+                noise. Brands sign up via /brand-signup. */}
 
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="grid w-full grid-cols-2 mb-6">

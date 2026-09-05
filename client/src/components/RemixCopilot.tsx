@@ -7,6 +7,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   MessageSquare, Send, Loader2, X, Sparkles, Scissors,
@@ -38,6 +39,10 @@ interface CopilotMessage {
 interface RemixCopilotProps {
   videoId: number;
   clipId?: number;
+  /** Which store the target lives in — remix generatedClips (default) or editorialClips */
+  clipType?: "remix" | "editorial";
+  /** Human-readable label for the targeted clip, shown in the header */
+  clipLabel?: string;
   open: boolean;
   onClose: () => void;
   onApplySuggestion?: (suggestion: CopilotSuggestion) => void;
@@ -85,6 +90,8 @@ const SUGGESTION_LABELS: Record<string, string> = {
 export default function RemixCopilot({
   videoId,
   clipId,
+  clipType,
+  clipLabel,
   open,
   onClose,
   onApplySuggestion,
@@ -144,7 +151,7 @@ export default function RemixCopilot({
     setMessages((prev) => [...prev, assistantMsg]);
 
     try {
-      const response = await fetch(`/api/remix/${videoId}/copilot/ask`, {
+      const response = await fetchWithTimeout(`/api/remix/${videoId}/copilot/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -152,6 +159,7 @@ export default function RemixCopilot({
           trigger,
           userMessage: userMessage.trim() || undefined,
           clipId: clipId || undefined,
+          clipType: clipType || undefined,
         }),
       });
 
@@ -268,7 +276,13 @@ export default function RemixCopilot({
           </div>
           <div>
             <h3 className="text-sm font-semibold text-white">AI Co-Pilot</h3>
-            <p className="text-xs text-gray-500">Remix optimization assistant</p>
+            {clipLabel ? (
+              <p className="text-xs text-violet-400" data-testid="copilot-target">
+                Editing {clipLabel}
+              </p>
+            ) : (
+              <p className="text-xs text-gray-500">Select a clip to give the copilot a target</p>
+            )}
           </div>
         </div>
         {!inline && (

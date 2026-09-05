@@ -17,14 +17,32 @@
  */
 
 import { spawn } from "child_process";
+import { parseDurationSec } from "@shared/duration";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import ffmpegStaticPath from "ffmpeg-static";
 import sharp from "sharp";
 import { storage } from "./storage";
-import type { InsertDetectedSurface } from "@shared/schema";
+import type { InsertDetectedSurface, RoomModel } from "@shared/schema";
 import { GoogleGenAI } from "@google/genai";
 import { uploadFileToStorage, downloadToTempFile, storageServeUrl } from "./lib/objectStorage";
+import { downloadVideo as downloadYouTubeVideo, getYoutubeVideoDuration } from "./lib/scanner";
+import { downloadFacebookVideo, downloadInstagramVideo } from "./lib/socialDownloader";
+import { seedSourceCache } from "./lib/sourceCache";
+import { safeDecrypt } from "./lib/socialAnalytics";
+import { getFreshYoutubeTokenForUser } from "./lib/youtubeAuth";
+import { resolveYoutubeStreamUrl, resolveGraphStreamUrl, type StreamSource } from "./lib/streamResolver";
+import { buildSceneIndex, sceneIdForTimestamp, sampleMultiTimestampsPerScene, computeDHash, hammingDistance, clusterHashes, type SceneIndex, type SceneShot } from "./lib/scenes/sceneIndex";
+import { buildSceneConsensus, type FrameDetection, type ConsensusSurface } from "./lib/scenes/surfaceConsensus";
+// Tier 2: tight person boxes (COCO-SSD, lazily loaded inside faceTracker —
+// importing this module does NOT pull the TF native binding onto boot).
+import { detectPeopleInFrame } from "./lib/remix/faceTracker";
+// Tier 2: grounded geometry proposals (fal Florence-2, fail-open).
+import { detectGroundedSurfaces, groundedDetectorAvailable } from "./lib/groundedDetector";
+// Twitch/TikTok/X: generic yt-dlp platform registry.
+import { isYtDlpPlatform, sourceUrlForStoredId, platformMaxDurationSec, safeFileStem } from "./lib/platformSources";
+import { resolveGenericStreamUrl } from "./lib/streamResolver";
 
 // ============================================================================
 // GEMINI AI CLIENT
@@ -44,6 +62,178 @@ const ai = new GoogleGenAI({
     baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
   },
 });
+
+// Direct Google API fallback. The Replit modelfarm sidecar (the localhost
+// AI_INTEGRATIONS_GEMINI_BASE_URL) has been observed unreachable in
+// DEPLOYMENTS while the env vars are present — every call times out and the
+// scan silently degrades to edge detection. When GEMINI_API_KEY (a real
+// Google AI Studio key) is set, failed proxy calls retry against Google
+// directly instead of degrading.
+/**
+ * Find a real Google Gemini key in the environment, whatever the operator
+ * named it. Two hard-won details:
+ *  - Env names are CASE-SENSITIVE on Linux, and secrets panels invite
+ *    "Gemini_API_Key". Matching only GEMINI_API_KEY left a perfectly good
+ *    key invisible while the UI showed it plainly, and every scan silently
+ *    degraded to edge detection.
+ *  - Key FORMATS change: classic AI Studio keys are "AIza…" (39 chars),
+ *    newer ones are "AQ.…" (~53). So we reject the known placeholder
+ *    rather than allow-listing prefixes — anything short or literally
+ *    _DUMMY_API_KEY_ (Replit's proxy credential) isn't a usable key.
+ * Returns the variable NAME too, so boot logs can name what they found
+ * without ever printing the value.
+ */
+function resolveDirectGeminiKey(): { key: string; source: string } | null {
+  const looksReal = (v: string | undefined): v is string =>
+    !!v && v.length >= 20 && !v.includes("DUMMY");
+  const preferred = ["GEMINI_API_KEY", "GOOGLE_GEMINI_API_KEY", "GOOGLE_API_KEY"];
+  for (const name of preferred) {
+    if (looksReal(process.env[name])) return { key: process.env[name]!, source: name };
+  }
+  // Case/separator-insensitive sweep: Gemini_API_Key, gemini-api-key, …
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+  const wanted = new Set(["geminiapikey", "googlegeminiapikey"]);
+  for (const name of Object.keys(process.env)) {
+    if (wanted.has(normalize(name)) && looksReal(process.env[name])) {
+      return { key: process.env[name]!, source: name };
+    }
+  }
+  // The integration slot holds Replit's proxy placeholder in normal setups,
+  // but an operator may have pasted a genuine key there.
+  if (looksReal(process.env.AI_INTEGRATIONS_GEMINI_API_KEY)) {
+    return { key: process.env.AI_INTEGRATIONS_GEMINI_API_KEY!, source: "AI_INTEGRATIONS_GEMINI_API_KEY" };
+  }
+  return null;
+}
+
+const resolvedDirectGemini = resolveDirectGeminiKey();
+const directGeminiKey = resolvedDirectGemini?.key;
+const aiDirect = directGeminiKey ? new GoogleGenAI({ apiKey: directGeminiKey }) : null;
+console.log(`[Scanner V2] Direct Gemini: ${aiDirect ? `CONFIGURED from ${resolvedDirectGemini!.source} (${directGeminiKey!.length} chars)` : "NOT SET — scans will degrade to edge detection if the proxy is unreachable"}`);
+
+/**
+ * Gemini call with a per-attempt timeout and automatic proxy→direct
+ * failover. The old pattern raced ONE attempt against a timeout, so a dead
+ * proxy meant an unconditional loss; here the timeout applies to each
+ * attempt and the direct client gets its own try.
+ */
+// Model ids ROT: Google retired gemini-2.5-flash for new accounts and the
+// hardcoded name 404'd every frame of a scan ("no longer available to new
+// users"). Instead of pinning one id, walk a candidate ladder — operator
+// override first, then Google's rolling alias, then explicit generations —
+// and MEMOIZE the first id the key accepts so discovery costs one frame,
+// not the whole scan. A NOT_FOUND on the working id (mid-flight retirement)
+// just advances the ladder.
+export const GEMINI_MODEL_CANDIDATES: string[] = [
+  process.env.GEMINI_MODEL,        // explicit operator pin wins
+  "gemini-flash-latest",           // Google's rolling latest-flash alias
+  "gemini-3-flash",
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash",              // legacy accounts + the Replit proxy
+].filter((m): m is string => !!m);
+let geminiModelIdx = 0;
+const isModelGoneError = (err: any): boolean =>
+  /NOT_FOUND|not found|no longer available|is not supported/i.test(String(err?.message ?? err));
+
+// Google-side capacity spikes surface as 503 UNAVAILABLE "high demand" —
+// transient by Google's own message, but the old handling treated them as
+// terminal for the direct client and fell to the proxy (a black hole in
+// deployment) → 30s timeout → edge detection. A whole scan run during one
+// spike came back degraded. 503s get a short same-model retry, then a
+// PER-CALL fallback down the model ladder (the preferred model isn't gone,
+// just busy — no sticky advance), and only then the proxy.
+const isOverloadedError = (err: any): boolean =>
+  /UNAVAILABLE|high demand|overloaded|\b503\b/i.test(String(err?.message ?? err));
+// Our own Promise.race timeout below — a timed-out model is indistinguishable
+// from an overloaded one during a capacity spike, so it walks the same ladder.
+const isTimeoutError = (err: any): boolean =>
+  /gemini timeout/i.test(String(err?.message ?? err));
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+// In deployments the modelfarm proxy is a black hole: nothing listens on its
+// port, and each attempt burns the full per-attempt timeout. One failure is
+// proof enough for the whole process lifetime.
+let proxyDeadThisSession = false;
+
+export async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIMEOUT_MS): Promise<any> {
+  // Hard wall-clock ceiling for the WHOLE call, across every ladder step and
+  // the proxy. Without it, a Google capacity spike serializes retries into
+  // multi-minute stalls per frame (observed: ~4min worst case per call).
+  const deadline = Date.now() + CONFIG.GEMINI_CALL_DEADLINE_MS;
+  const tryModel = (client: GoogleGenAI, model: string) => {
+    const attemptMs = Math.max(1_000, Math.min(timeoutMs, deadline - Date.now()));
+    return Promise.race([
+      client.models.generateContent({ ...params, model }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Gemini timeout")), attemptMs)),
+    ]);
+  };
+  // A real Google key goes FIRST. The Replit modelfarm proxy only exists
+  // inside the workspace sidecar — in a deployment it is a black hole that
+  // burns the full per-attempt timeout on every frame before failing over.
+  // When we hold a direct key, the proxy is the fallback, not the primary.
+  const primary = aiDirect ?? ai;
+  const secondary = aiDirect ? ai : null;
+
+  let callModelIdx = geminiModelIdx;
+  let busyRetried = false;
+  const maxIterations = GEMINI_MODEL_CANDIDATES.length + 3;
+  for (let iter = 0; iter < maxIterations; iter++) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Gemini: per-call deadline (${CONFIG.GEMINI_CALL_DEADLINE_MS}ms) exceeded`);
+    }
+    const model = GEMINI_MODEL_CANDIDATES[callModelIdx];
+    try {
+      return await tryModel(primary, model);
+    } catch (err: any) {
+      if (isModelGoneError(err) && callModelIdx < GEMINI_MODEL_CANDIDATES.length - 1) {
+        callModelIdx++;
+        // Retirement is permanent — advance the sticky index for everyone.
+        if (callModelIdx > geminiModelIdx) geminiModelIdx = callModelIdx;
+        console.warn(`[Gemini] Model "${model}" unavailable to this key — advancing to "${GEMINI_MODEL_CANDIDATES[callModelIdx]}"`);
+        continue;
+      }
+      if (isOverloadedError(err) || isTimeoutError(err)) {
+        if (!busyRetried) {
+          busyRetried = true;
+          console.warn(`[Gemini] "${model}" ${isTimeoutError(err) ? "timed out" : "overloaded (503)"} — retrying`);
+          // A timed-out attempt already burned its full window; only 503s
+          // need the courtesy pause before hitting the same model again.
+          if (isOverloadedError(err)) await sleep(2000);
+          continue;
+        }
+        if (callModelIdx < GEMINI_MODEL_CANDIDATES.length - 1) {
+          callModelIdx++;
+          busyRetried = false;
+          console.warn(`[Gemini] "${model}" still unresponsive — trying "${GEMINI_MODEL_CANDIDATES[callModelIdx]}" for this call`);
+          continue;
+        }
+      }
+      if (!secondary || proxyDeadThisSession) throw err;
+      console.warn(`[Gemini] Direct attempt failed (${err?.message || err}) — retrying via proxy`);
+      // The proxy speaks the legacy model id regardless of what the direct
+      // key supports — it predates the newer generations.
+      // Trip the dead-proxy breaker ONLY on the black-hole signature: the
+      // proxy got its FULL attempt window (not one starved down to seconds
+      // by the shared per-call deadline) and still failed with something
+      // other than an overload — a 503 during the same Google spike that
+      // routed us here proves nothing about the proxy being dead.
+      const proxyWindowMs = Math.min(timeoutMs, deadline - Date.now());
+      try {
+        return await tryModel(secondary, "gemini-2.5-flash");
+      } catch (proxyErr: any) {
+        if (proxyWindowMs >= timeoutMs && !isOverloadedError(proxyErr)) {
+          proxyDeadThisSession = true;
+          console.warn(`[Gemini] Proxy failed (${proxyErr?.message || proxyErr}) — skipping proxy for the rest of this session`);
+        } else {
+          console.warn(`[Gemini] Proxy failed (${proxyErr?.message || proxyErr}) — not marking dead (starved window or shared overload)`);
+        }
+        // Surface the ORIGINAL direct-path error, not the proxy timeout —
+        // this keeps real 429s visible to the rate-limit backoff upstream.
+        throw err;
+      }
+    }
+  }
+  throw new Error("Gemini: exhausted model candidates");
+}
 
 // ============================================================================
 // CONFIGURATION
@@ -78,6 +268,9 @@ const CONFIG = {
   FFMPEG_TIMEOUT_MS: 60000,
   FRAME_PROCESS_TIMEOUT_MS: 5000,
   GEMINI_TIMEOUT_MS: 30000,
+  // Whole-call ceiling across ladder retries + proxy (3 attempt windows).
+  // Beyond this the frame falls to edge detection rather than stalling the scan.
+  GEMINI_CALL_DEADLINE_MS: 90000,
   
   // Vertical video handling
   VERTICAL_ASPECT_THRESHOLD: 1.0,
@@ -131,6 +324,7 @@ interface ScanResult {
 
 interface DetectedSurface {
   surfaceType: string;
+  orientation?: "horizontal" | "vertical";  // horizontal = product placement, vertical = signage/poster
   confidence: number;
   boundingBox: {
     x: number;
@@ -144,6 +338,11 @@ interface DetectedSurface {
   lightingDirection?: string;  // left, right, top, top-left, top-right, ambient
   lightingIntensity?: number;  // 0.0-1.0
   cameraAngle?: string;        // eye-level, slightly-above, top-down, low-angle
+  // Set when this detection is a CONFIRMATION of a room-model surface (the
+  // model's stable per-surface index, not a fresh discovery). Confirmations
+  // carry the model's canonical surfaceType/orientation and bypass the
+  // fresh-detection consensus — identity is exact, no IoU chaining needed.
+  knownIdx?: number;
 }
 
 interface FrameAnalysisResult {
@@ -153,6 +352,22 @@ interface FrameAnalysisResult {
   isVertical: boolean;
   /** True if AI successfully analyzed the frame (even if it found no surfaces) */
   aiAnalyzed?: boolean;
+  /** True when every retry was consumed by 429s — the frame was never actually
+   *  seen by the model. An ABSTENTION, not a "no surfaces here" verdict: the
+   *  consensus vote must drop this frame from its denominator instead of
+   *  letting it veto surfaces the scene's other frames agreed on. */
+  rateLimited?: boolean;
+  /** Fraction of the frame covered by person boxes (sum of areas, clamped to
+   *  1). Only set when the response carried people data — it powers the
+   *  clean-frame re-sampling pass, which skips frames it can't measure. */
+  personCoverage?: number;
+  /** Which source produced peopleBoxes/personCoverage — the clean-frame
+   *  re-sampler trigger is calibrated per source (tight boxes ≈ lower). */
+  peopleSource?: "detector" | "gemini";
+  /** Known-surface idx values the ghost filter vetoed in this frame. Taught
+   *  surfaces are exempt from that filter, so a non-zero count for a taught
+   *  idx means the exemption regressed — feeds the [Taught] fate line. */
+  knownGhostVetoedIdx?: number[];
 }
 
 // EdgeAnalysisResult removed — replaced by band-based detection in analyzeFrameForSurfaces
@@ -168,6 +383,7 @@ interface GeminiBoundingBox {
 interface GeminiDetectedSurface {
   location: GeminiBoundingBox;
   surface_type: string;
+  orientation?: "horizontal" | "vertical";
   confidence: number;
   reasoning: string;
   lighting_direction?: string;  // left, right, top, top-left, top-right, ambient
@@ -179,6 +395,21 @@ interface GeminiSurfaceDetectionResult {
   surfaces_found: boolean;
   frame_description: string;
   surfaces: GeminiDetectedSurface[];
+  // Bounding boxes of every visible person (including the chair section they
+  // occupy). Powers the person-overlap ghost filter: with real person
+  // positions we only reject surfaces that actually overlap someone, instead
+  // of geometric center/side-of-frame zone guessing that also kills the real
+  // side table next to a host and the backdrop wall between two subjects.
+  people?: Array<{ location: GeminiBoundingBox }>;
+  // Per-known-surface visibility verdicts, present only when the prompt
+  // carried a KNOWN SET SURFACES section (room-model confirm mode). Each
+  // entry re-locates one known surface in THIS frame's framing.
+  known_surfaces?: Array<{
+    idx: number;
+    present: boolean;
+    location?: GeminiBoundingBox | null;
+    confidence?: number;
+  }>;
   recommended_placement: {
     location: GeminiBoundingBox;
     reason: string;
@@ -187,103 +418,432 @@ interface GeminiSurfaceDetectionResult {
 }
 
 // ============================================================================
+// ROOM MODEL — persistent set memory
+// ============================================================================
+//
+// A creator's recurring scene class (same studio, same camera setup) gets ONE
+// authoritative surface set — the "room model" — built from the cleanest
+// frames and reused: within a scan (consistent labels/boxes), across rescans
+// (stable identity → placements survive), and across episodes shot in the
+// same room (instant, consistent inventory). Matching is perceptual: a scene
+// class whose exemplar dHashes land within hamming range of a stored model's
+// exemplars IS that set coming back.
+
+/** One surface in a room model's `surfaces` jsonb. `idx` is the stable
+ *  per-model surface index — never reused after deletion (append-only), and
+ *  the anchor of the cross-scan groupId `rm{modelId}-s{idx}`. */
+interface RoomModelSurface {
+  idx: number;
+  surfaceType: string;
+  orientation: "horizontal" | "vertical";
+  bbox: { x: number; y: number; w: number; h: number }; // 0-1 floats
+  confidence: number;
+  frameUrl: string | null;
+  // Creator drew this one by hand (teach-a-surface). Human ground truth:
+  // the person-overlap ghost check must never veto its confirmations.
+  taught?: boolean;
+  // Tier 3: the creator APPROVED a detection row of this surface (free
+  // label harvested from the approval flow). Sticky once set. Validated
+  // surfaces get a confidence floor and survive the retirement sweep like
+  // taught ones — an explicit human yes outranks one bad scan.
+  validated?: boolean;
+}
+
+/** Defensive read of a model's jsonb surface list — malformed entries are
+ *  dropped rather than crashing the scan against old/hand-edited rows. */
+function parseRoomModelSurfaces(raw: unknown): RoomModelSurface[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((s: any): s is RoomModelSurface =>
+    s &&
+    typeof s.idx === "number" &&
+    typeof s.surfaceType === "string" &&
+    (s.orientation === "horizontal" || s.orientation === "vertical") &&
+    s.bbox &&
+    typeof s.bbox.x === "number" && typeof s.bbox.y === "number" &&
+    typeof s.bbox.w === "number" && typeof s.bbox.h === "number" &&
+    typeof s.confidence === "number"
+  );
+}
+
+/** Per scene class: up to `cap` non-sentinel shot hashes, longest shots
+ *  first. These are the class's exemplars for model matching and the hash
+ *  material persisted into new/updated models. 'fail'-prefixed sentinel
+ *  hashes (unextractable keyframes) are never exemplars. */
+function collectClassExemplarHashes(index: SceneIndex, cap: number): Map<number, string[]> {
+  const shotsByClass = new Map<number, SceneShot[]>();
+  for (const shot of index.shots) {
+    const arr = shotsByClass.get(shot.sceneId) ?? [];
+    arr.push(shot);
+    shotsByClass.set(shot.sceneId, arr);
+  }
+  const out = new Map<number, string[]>();
+  for (const [classId, shots] of Array.from(shotsByClass.entries())) {
+    const hashes: string[] = [];
+    const sorted = [...shots].sort((a, b) => (b.tEnd - b.tStart) - (a.tEnd - a.tStart));
+    for (const shot of sorted) {
+      if (hashes.length >= cap) break;
+      if (!shot.hash || shot.hash.startsWith("fail")) continue;
+      if (!hashes.includes(shot.hash)) hashes.push(shot.hash);
+    }
+    if (hashes.length > 0) out.set(classId, hashes);
+  }
+  return out;
+}
+
+/** The known-surface list handed to detection for a matched scene class.
+ *  Shape mirrors RoomModelSurface minus frameUrl; confidence rides along so
+ *  confirmations without a fresh score inherit the model's. */
+type KnownSurfaceSpec = Pick<RoomModelSurface, "idx" | "surfaceType" | "orientation" | "bbox" | "confidence" | "taught">;
+
+/** Prompt section appended when a frame's scene class matched a room model.
+ *  Gemini re-locates each known surface instead of re-discovering the room —
+ *  canonical labels stay pinned, only bboxes adjust to this frame's framing. */
+function buildKnownSurfacesPromptSection(known: KnownSurfaceSpec[]): string {
+  const list = known
+    .map((k) => `#${k.idx}: ${k.surfaceType} (${k.orientation}) at approx x ${(k.bbox.x * 100).toFixed(0)}%, y ${(k.bbox.y * 100).toFixed(0)}%, w ${(k.bbox.w * 100).toFixed(0)}%, h ${(k.bbox.h * 100).toFixed(0)}%`)
+    .join("\n");
+  return `
+
+KNOWN SET SURFACES (this exact set was scanned before):
+${list}
+
+This exact set / camera setup has been scanned in previous episodes and the
+surfaces above are its confirmed inventory. For EACH known surface listed,
+report whether it is visible in THIS frame, with an ADJUSTED bounding box for
+this frame's framing. Add a "known_surfaces" array to your JSON response,
+with exactly one entry per known surface:
+"known_surfaces": [
+  {"idx": 0, "present": true, "location": {"x": 5, "y": 5, "width": 35, "height": 45}},
+  {"idx": 1, "present": false, "location": null}
+]
+- "location" uses the same percent (0-100) convention as "surfaces"
+- Do NOT re-list known surfaces in "surfaces" — "surfaces" is ONLY for NEW
+  placement surfaces that are not in the known list above
+- The "people" boxes are still required exactly as described`;
+}
+
+/** Tier 2: prompt section carrying grounded-detector geometry proposals.
+ *  Honest framing — these are machine proposals to JUDGE, not confirmed
+ *  inventory (that assertion belongs only to room-model knowns). Proposals
+ *  the judge accepts flow into the NORMAL surfaces array, so consensus and
+ *  every downstream filter apply unchanged. */
+function buildProposalsPromptSection(proposals: import("./lib/groundedDetector").GroundedProposal[]): string {
+  const list = proposals
+    .map((p, i) => `P${i}: "${p.phrase}" region at approx x ${(p.x * 100).toFixed(0)}%, y ${(p.y * 100).toFixed(0)}%, w ${(p.width * 100).toFixed(0)}%, h ${(p.height * 100).toFixed(0)}%`)
+    .join("\n");
+  return `
+
+DETECTOR REGION PROPOSALS (machine-generated, unverified):
+${list}
+
+A geometry detector flagged the regions above as possible placement
+surfaces in this camera setup. They are PROPOSALS, not truth — the detector
+knows shapes, not suitability. For each proposal: if it corresponds to a
+real, physical, placeable surface visible in THIS frame, include that
+surface in your normal "surfaces" array (correct type, your own adjusted
+bounding box — prefer the proposal's geometry when it looks right, since it
+came from a deterministic detector). If a proposal is wrong, partially
+occluded to uselessness, or not a placement surface, simply omit it — do
+NOT force-match. Also still report any real surface the detector missed.`;
+}
+
+// ============================================================================
 // GEMINI AI PROMPT
 // ============================================================================
 
-const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify the SINGLE most prominent REAL, PHYSICAL flat surface where a product could naturally be placed.
+const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify REAL, PHYSICAL surfaces where a brand could naturally place product or signage.
 
-TASK: Find the ONE best flat surface (table, desk, countertop, shelf) visible in the frame where a small product like a beverage bottle, phone, or gadget could physically sit. Return ONLY the single most prominent and clearly visible surface.
+CRITICAL FRAMING — READ FIRST:
+This footage is almost entirely podcast / interview / talking-head content:
+one or two people seated in a studio or room, talking to camera. In this
+content there are almost ALWAYS two genuinely usable placement surfaces,
+and your job is to FIND them reliably — not to return empty:
+  A) The BACKDROP WALL behind / beside the speaker — the empty vertical
+     plane a sponsor banner, poster, or logo would hang on. This is the
+     single most valuable surface in podcast content. Look for it in EVERY
+     frame, including tight close-ups: there is almost always empty wall to
+     the LEFT and/or RIGHT of the person's head and shoulders.
+  B) The STUDIO DESK / TABLE in front of the speaker — the flat top where
+     the mic, water bottle, or notes sit. A prime horizontal surface.
+Your default posture is NOT "return empty." It is: "inventory the ROOM."
+Locate the backdrop wall and the desk first, then sweep the rest of the
+set: the FLOOR area, side tables, coffee tables, shelves, counters, rugs,
+and clearly EMPTY couch/sofa sections (seat or armrest with no person on
+or adjacent to them). A typical furnished studio/podcast set has 4-6 real
+placement surfaces — walls, floor, and multiple furniture tops. Box the
+EMPTY part of each, and reject the person.
+The ONE thing you must never do is box a PERSON — their body, face, hair,
+lap, hands, clothing, or the chair they sit in (see the anti-hallucination
+rules below). Reject the person, not the room. Only return zero surfaces
+when the background is genuinely unusable (pure outdoor, total blur, or the
+person completely fills the frame edge to edge with no wall visible).
 
-CRITICAL RULES — RETURN MAXIMUM 1 SURFACE:
+BEFORE PICKING ANY SURFACE — describe the 3D layout:
+- What is in the foreground (person, microphone, hands)?
+- What is in the mid-ground (furniture, props)?
+- What is in the background (walls, plants, decor)?
+- Where is the camera positioned (eye-level, above, below, behind)?
+This 3D understanding is required to avoid the most common error: treating
+a flat-looking 2D region as a horizontal surface when it's actually a
+wall, a curtain, a couch back, or empty space.
+
+TASK: Find UP TO 8 of the best placement surfaces visible in the frame.
+Surfaces fall into two distinct categories with different placement use cases:
+
+  1. HORIZONTAL surfaces (orientation: "horizontal") — flat surfaces where physical objects can sit.
+     Examples: desks, tables, countertops, shelves, nightstands, coffee tables, studio desks.
+     Plus FLOOR space — indoor floor area with usable empty room for floor-resting products.
+     Use case: bottles, cans, phones, gadgets, books, packaged goods (table-top sized);
+     sneakers, shoe boxes, large bottles, plants, decorative props (floor-sized).
+
+  2. VERTICAL surfaces (orientation: "vertical") — flat upright planes where signage/posters/art belong.
+     Examples: walls (the empty parts), doors, windows, large empty backdrops.
+     Use case: posters, brand banners, framed art, logos, projected signage.
+
+Return them ranked by suitability. Quality > quantity — if only one surface is genuinely usable, return only one. If none, return zero. Never inflate to hit 2.
+
+CRITICAL RULES:
+- Maximum 8 surfaces total across both orientations — furnished sets have
+  walls AND floor AND several furniture tops all visible at once, and each
+  is real inventory. Still: quality > quantity. Every returned surface must
+  individually pass the verification rules; if only 2 are genuinely usable,
+  return only 2. Never invent surfaces to fill the budget.
 - Only detect REAL physical surfaces that exist in the 3D scene
-- Return ONLY the single best surface — the largest, clearest, most prominent flat horizontal surface
-- If multiple surfaces exist, pick the ONE that is most suitable for product placement (largest visible area, best lit, most natural for a product)
-- The bounding box must tightly wrap ONLY the visible, FLAT, HORIZONTAL surface area
-- The surface must occupy at least 5% of the total frame area (width * height) to be valid
-- Do NOT flag roads, sidewalks, floors, or ground surfaces
-- Do NOT flag walls, ceilings, curtains, or vertical surfaces (unless it's a shelf)
-- Do NOT flag bridges, buildings, vehicles, or outdoor structures
+- Each surface must occupy at least 5% of total frame area
+- Each surface must have CLEAR visual separation from people in the frame
+- Do NOT flag roads, sidewalks, or outdoor ground (concrete, asphalt, dirt)
+- Do NOT flag ceilings or curtains
+- Indoor floors ARE valid (see FLOOR rules below) — but only when usable empty floor area is clearly visible
+- Do NOT flag bridges, vehicles, or outdoor structures
 - Do NOT flag areas with heavy motion blur or out-of-focus regions
-- Do NOT flag surfaces blocked by people's bodies or hands
-- Do NOT flag surfaces that are too small to place a product on
-- If a person occupies more than 50% of the frame (close-up, medium shot, or bust shot), return surfaces_found: false UNLESS a clear table/desk surface is ALSO prominently visible SEPARATE FROM the person's body
-- If the frame is an exterior/outdoor shot with no furniture, return surfaces_found: false
-- If the frame is a close-up of a person with no visible surfaces, return surfaces_found: false
+- Do NOT flag surfaces blocked by people's bodies, hands, or large objects
+- Even in a close-up / bust shot where a person fills the center of the frame,
+  do NOT default to surfaces_found: false — look for the empty backdrop wall to
+  the LEFT and RIGHT of the person's head/shoulders and flag it as a vertical
+  "wall" surface. Return false only if the background is genuinely unusable
+  (pure outdoor, total blur, or the person covers the wall entirely)
+- If the frame is exterior/outdoor with no architectural features, return surfaces_found: false
 
 ANTI-HALLUCINATION RULES (CRITICAL — READ CAREFULLY):
-- You MUST be able to clearly see the physical surface material (wood, glass, metal, stone, etc.)
-- The bounding box MUST NOT overlap with any person's body, clothing, arms, hands, or lap
-- If a laptop is on someone's lap, that is NOT a desk surface — it is a laptop on a person
-- If someone is wearing dark clothing, the dark area is NOT a desk — it is clothing
-- A microphone boom arm, monitor arm, or equipment mount is NOT a surface
-- Do NOT draw a bounding box that covers a person's chest, torso, or lap area and call it a "desk"
-- The surface must be GEOMETRICALLY SEPARATE from any person in the frame — there must be clear visual separation between the person's body and the surface edge
-- If you are unsure whether something is a real surface or just a dark/shadowy region near a person, return surfaces_found: false
+- You MUST be able to clearly see the physical surface material (wood, paint, drywall, glass, metal, stone)
+- The bounding box MUST NOT overlap with any person's body, clothing, arms, hands, lap, legs, knees, or feet
+- A laptop on someone's lap is NOT a desk surface — it is a laptop on a person
+- Dark clothing is NOT a desk — it is clothing
+- A microphone boom, monitor arm, or equipment mount is NOT a surface
+- Do NOT bounding-box someone's chest/torso/lap area and call it a "desk"
+- The surface must be GEOMETRICALLY SEPARATE from any person — clear visual separation between body and surface edge
+- A wall texture you can't actually see (out of focus, behind people, in shadow) is NOT a wall placement surface
+- If unsure whether something is a real surface vs a shadow/dark region near a person, do NOT include it
 
-BOUNDING BOX RULES:
-- x, y = top-left corner of the surface as percentage of frame (0-100)
-- width, height = size of the surface area as percentage of frame (0-100)
-- The box must ONLY cover the visible FLAT HORIZONTAL surface where a product could physically sit
-- Do NOT include table legs, chairs, people, or the area BELOW the table in the bounding box
-- Do NOT include the area ABOVE the table in the bounding box
-- The height of a table/desk bounding box seen at eye level should be THIN (typically 5-20% of frame height), because you are looking at the surface edge-on
-- A wide table seen at eye level might be: x:15, y:55, width:70, height:10 (THIN horizontal strip)
-- A desk seen from slightly above might be: x:20, y:50, width:40, height:20
-- Do NOT make bounding boxes taller than 30% of frame height unless viewed from directly above (top-down)
-- The bounding box center (y + height/2) should be in the LOWER portion of the frame (y > 40%) for tables/desks at eye level
+PEOPLE / CHAIRS / FURNITURE-WITH-PEOPLE — STRICT BAN LIST (MOST COMMON HALLUCINATION):
+The single most common error in podcast/interview frames is labeling a person
+or the chair they're sitting in as a "coffee_table" / "table" / "studio_desk".
+These are NEVER placement surfaces — never flag them, never bound-box them:
+- A person's body, head, face, hair, neck, shoulders, arms, hands, lap, legs, knees, or feet
+- Clothing of any kind (shirt, jacket, hoodie, pants, suit, tracksuit) — even if it looks flat
+- The arm-rest, seat, back, or cushion of a chair, armchair, sofa, or couch
+- A leather/upholstered surface that has a person sitting on, against, or near it
+- A chair that contains a person — even the empty parts of the chair around them
+- The empty AIR GAP between two seated people is not a horizontal surface — do
+  NOT invent a "coffee_table" there unless a real table top is clearly visible
+  in that gap. But do not skip that zone either: the BACKDROP WALL visible
+  BETWEEN two subjects is a valid vertical surface (box the empty wall slice,
+  label it "wall"), and a REAL table/side table between or beside the hosts
+  with its flat top visible is prime inventory — flag both.
+- A pillow, throw, blanket, or cushion on a chair or couch
 
-GOOD SURFACES (flag the single best one):
-- Studio desks in podcast/recording setups — but ONLY if you can see the actual desk surface (the flat top where objects sit), not just equipment or a person sitting
-- Desks, tables, countertops with visible flat area and clear surface material visible
-- Shelves or ledges with clear space
+VERIFICATION CHECK before flagging ANY horizontal surface (run this mentally):
+1. Is there a person occupying or touching the bounding box region? → REJECT
+2. Is the box on or against a chair/sofa/armchair seat or back? → REJECT
+3. Could the entire bounding box be replaced by "person sitting" without changing the frame meaning? → REJECT
+4. Is the box on cushy/fabric/leather upholstery rather than a wood/glass/stone top? → REJECT
+5. Can I see a clear flat HORIZONTAL plane (a top edge where a glass would rest) inside the box? → If NO, REJECT
+
+PODCAST CHAIR SPECIFIC: In talking-head shows, hosts sit in chesterfield/leather
+armchairs. The LEATHER SEAT, ARM-REST, and CHAIR-BACK are NEVER coffee tables.
+Even if a chair arm looks like it could hold a small object, do NOT flag it.
+
+LABEL ACCURACY RULES (CRITICAL):
+- Before assigning a surface_type, look at the bounding box region and ask:
+  "What is physically there?" — match the LABEL to what you actually see.
+- If the region shows a vertical plane (wall, painted backdrop, curtain-back-panel,
+  textured background, mural, art on wall): label as "wall" with orientation:"vertical".
+  Do NOT label vertical regions as desk/table/countertop just because something brand-
+  shaped could go there. Wrong label = wrong placement physics downstream.
+- If the region shows a flat horizontal plane (table top, desk top, counter top, shelf
+  top): label as the appropriate horizontal type.
+- "studio_desk" specifically requires a visible HORIZONTAL desk surface (the flat top
+  where a podcaster would set their water bottle). Do NOT use "studio_desk" for an
+  upper-frame area, an arm-rest, a couch back, or anything that is not a flat horizontal
+  desk top. If you see a podcast/interview studio but the actual desk top is NOT visible
+  in the frame, do NOT flag a "studio_desk" surface.
+- "table" / "coffee_table" / "side_table" require a visible horizontal table top. If the
+  bbox is centered above floor level on a vertical plane, it is NOT a table.
+- A common error to AVOID: labeling the empty wall/backdrop next to a person as
+  "studio_desk" or "table". Walls behind/beside subjects in podcast scenes are walls.
+  Label them as "wall" with orientation:"vertical".
+- Couch backs, chair backs, headboards: not desks. If they're flat enough to hold a
+  poster they could be "wall" (vertical). If they're horizontal arm-rests with width,
+  they could be "table" but only if visible flat top is wide enough for a product.
+- When in doubt between desk and wall, ask: would a glass of water naturally rest on
+  this surface without falling? If no → it's not horizontal → it's wall (or filter).
+
+HORIZONTAL surface bounding box rules:
+- The box must cover ONLY the visible flat top where a product could sit
+- Do NOT include table legs, chairs, people, or the area BELOW or ABOVE the table
+- A wide table at eye level is a THIN horizontal strip: x:15, y:55, width:70, height:10
+- A desk slightly above eye level: x:20, y:50, width:40, height:20
+- Box height should rarely exceed 30% of frame unless viewed top-down
+- For eye-level tables/desks, box center y > 40% (lower portion of frame)
+
+FLOOR surface rules (use surface_type:"floor", orientation:"horizontal"):
+- Only flag floor space when there's a CLEARLY VISIBLE empty patch of indoor
+  floor — wood, carpet, tile, concrete (interior), polished surfaces.
+- Use case is products that rest on the floor: sneakers, shoe boxes, large
+  drink bottles, decorative plants, suitcases, gym equipment, branded props.
+- The floor patch must be:
+  * IN FOCUS (not background blur)
+  * Empty of clutter — no shoes/cables/feet currently on that exact spot
+  * Big enough for a sneaker — at least 8% of frame area
+  * In the LOWER portion of the frame (box center y > 60%)
+- Box typically lives at the bottom of the frame: x:10, y:65, width:35, height:25
+  (a clear patch of carpet at someone's feet but not under their feet).
+- Do NOT flag the floor BENEATH a person's feet — they're standing on it.
+- Do NOT flag floor that's mostly out of focus (depth-of-field background).
+- Outdoor ground (sidewalks, asphalt, grass) is NOT floor — those stay excluded.
+- IN SEATED / TALKING-HEAD CONTENT, floor is LOW priority and error-prone: a lap,
+  dark clothing, a shadow, or a letterbox/black bar is NOT floor. Only flag floor
+  if you see an unmistakable clean patch of real indoor floor in the LOWER THIRD of
+  the frame (box center y > 65). When unsure, drop the floor and return the
+  backdrop wall instead — the wall is almost always the better placement anyway.
+
+VERTICAL surface bounding box rules:
+- The box must cover only the EMPTY/UNOBSTRUCTED part of the wall/door/window
+- Do NOT include picture frames already on the wall, light switches, or wall fixtures
+- Do NOT include parts blocked by furniture or people
+- Walls usually have generous height: x:10, y:10, width:30, height:50 is normal
+- Box should be a substantial usable plane, not tiny patches between objects
+- The wall must be IN FOCUS — out-of-focus background walls are not placement surfaces
+
+PODCAST / INTERVIEW / TALKING-HEAD RULES (this is the primary content — get it right):
+- These frames almost ALWAYS have at least one usable surface: the backdrop wall
+  behind/beside the speaker. Find it. "Default to empty" is WRONG for this content.
+- BACKDROP WALL (highest-value surface): the vertical plane behind the speaker.
+  Flag it as surface_type:"wall", orientation:"vertical". Box the EMPTY region to
+  the LEFT or RIGHT of the speaker's head and shoulders — the box must NOT overlap
+  the person's head, face, or body. If wall is visible on both sides, pick the
+  larger/cleaner empty side. A softly-lit or lightly-textured studio backdrop
+  still counts — it does NOT have to be a pristine blank wall. Skip it only if it
+  is FULLY blocked by the person or completely out of focus.
+- A plain painted / curtained / panelled studio backdrop IS a valid placement wall
+  — that is exactly where sponsor signage goes. Only an EXISTING framed artwork or
+  a wall already packed with posters/shelves is off-limits, and then you place in
+  the empty area BESIDE it, not on it.
+- STUDIO DESK / TABLE in front of the speaker: flag as "studio_desk" or "table"
+  (horizontal) when the flat top plane is visible (where the mic / water bottle
+  rests). Box only the visible empty top — not the front edge, not the equipment.
+  If you can see only the front edge or the gear but not the top plane, skip it.
+- The COUCH / CHAIR the person sits IN is never a surface — arm-rests, cushions,
+  seat-backs, and throw pillows are all excluded — but the WALL behind that couch
+  still is, so return the wall.
+- A coffee/side table counts only if its flat TOP is clearly visible (not fully
+  occluded by legs, drinks already on it, or too low a camera angle).
+- If you cannot describe in one sentence "there is a [surface_type] at [location]
+  made of [material]," then it is not a real surface and should not be flagged.
+
+GOOD SURFACES (flag up to 4 of these):
+- Studio desks in podcast/recording setups (when desk top is visible)
+- Desks, tables, countertops with visible flat area
+- Shelves with clear space
 - Nightstands, side tables, coffee tables
 - Kitchen counters with some clear space
+- Indoor FLOOR — clear empty patch of wood, carpet, tile, polished concrete
+  (in focus, not under someone's feet, big enough for a sneaker/large product)
+- Walls with substantial empty/unobstructed sections (in focus)
+- Doors (when prominently visible in frame, not just edges)
+- Large windows (when behind something brand-relevant could go)
 
-PODCAST / INTERVIEW / TALKING-HEAD RULES:
-- In podcast or interview setups, people sit behind desks or tables — but the desk may NOT be visible in the frame
-- If a single person fills more than 40% of the frame (headshot, medium shot, bust shot, or solo interview angle), return surfaces_found: false — there is NO usable surface
-- If two or more people are visible but no clear table/desk surface is visible between them, return surfaces_found: false
-- Do NOT invent or hallucinate a "desk" or "table" that is not clearly visible with a defined horizontal edge and flat area
-- If you cannot see the actual surface top (the flat plane where a product would sit), do NOT flag it
-- A dark area below a person's torso is NOT a desk — it is clothing, lap, shadow, or dark background
-- Microphones, monitor stands, and equipment edges are NOT surfaces
-- Only flag a desk/table if you can clearly see: (1) the horizontal front edge of the table AND (2) some of the flat top surface behind that edge
-- If the desk is behind/below a person but you can only see a tiny sliver of it, return surfaces_found: false — the surface is not prominent enough
+PRIORITY GUIDANCE — DON'T LET TABLES CROWD OUT EVERYTHING:
+A common failure mode: when a frame has a side table + a clearly visible
+bookshelf + visible floor + visible wall, you return TWO instances of the
+side table (or duplicate detections of one table) and miss the bookshelf,
+floor, and wall. With the 4-surface cap, prefer DIVERSITY over duplicates:
+- If a substantial bookshelf is clearly visible (in focus, books/items
+  visible, multiple shelves), it MUST be one of your returned surfaces.
+  Don't skip it for a third side-table detection.
+- If a clear empty patch of indoor floor is visible in the lower frame
+  (carpet, wood, tile — at someone's feet but not under them), include it
+  as surface_type:"floor", orientation:"horizontal".
+- If a substantial empty wall is visible (in focus, not blurred, not
+  covered in art), include it as surface_type:"wall", orientation:"vertical".
+- Among the 4 returned: aim for at most ONE of each
+  {coffee_table, side_table, nightstand, table} unless there are genuinely
+  two distinct tables in the scene at different positions.
 
 BAD "SURFACES" (do NOT flag):
-- Roads, highways, pavement
-- Building edges, bridge structures
-- Sky, trees, outdoor scenery
-- Floors (even indoor floors)
-- Walls (even if flat)
-- Any area where a product would look unnatural
-- Dark regions below a person's chest/torso (these are NOT desks)
-- Inferred/assumed surfaces that are not clearly visible in the frame
-- A person's lap, thighs, or clothing — even if a laptop or object is resting on them
-- Equipment surfaces like laptop screens, monitor backs, or camera housings
+- Roads, highways, pavement, outdoor ground (asphalt, dirt, grass)
+- Ceilings, curtains
+- Sky, trees, outdoor scenery without architectural features
+- Building exteriors, bridges, vehicles
+- Walls that are completely out of focus (background blur)
+- Walls already covered with art, posters, or shelving (no usable empty area)
+- Dark regions below a person's chest/torso
+- Inferred/assumed surfaces not clearly visible
+- A person's lap, thighs, or clothing
+- Laptop screens, monitor faces, camera housings
+- Microphone boom arms, monitor stands
 
-For the surface found, provide:
-- **location**: Tight bounding box as {x, y, width, height} in percentages (0-100)
-- **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk
-- **confidence**: 0.0 to 1.0 — use >0.7 only if the surface is clearly, unambiguously visible. Use 0.4-0.6 if partially visible. Use <0.4 if uncertain (these will be filtered out).
-- **reasoning**: Brief explanation of why this is the best surface
-- **lighting_direction**: Where the main light source is coming from relative to the surface. One of: "left", "right", "top", "top-left", "top-right", "ambient" (if diffuse/even lighting)
-- **lighting_intensity**: 0.0 to 1.0 — how bright the scene is (0.0 = very dark, 0.5 = moderate, 1.0 = very bright/overexposed)
-- **camera_angle**: The camera's viewing angle relative to the surface. One of: "eye-level", "slightly-above", "top-down", "low-angle"
+CONFIDENCE GUIDANCE:
+- Use >0.7 only if surface is clearly, unambiguously visible with usable area
+- Use 0.4-0.6 for partially visible or partially obstructed
+- Use <0.4 for uncertain (will be filtered out — better to omit)
+
+PEOPLE BOXES (REQUIRED — powers person-overlap verification downstream):
+Alongside the surfaces, return a bounding box for EVERY visible person,
+covering their full visible extent INCLUDING the chair/couch section they
+occupy. Be generous — slightly too large is better than too small. These
+boxes are how the pipeline confirms no surface overlaps a person, which is
+what allows real side tables next to a host and the wall between two
+subjects to be kept. If no people are visible, return "people": [].
+
+For each surface, provide:
+- **location**: bounding box {x, y, width, height} in percentages (0-100)
+- **orientation**: "horizontal" or "vertical"
+- **surface_type**: desk, table, shelf, counter, nightstand, side_table, coffee_table, studio_desk, floor, rug, couch, wall, door, window
+- **confidence**: 0.0 to 1.0 (see guidance above)
+- **reasoning**: brief explanation
+- **lighting_direction**: "left", "right", "top", "top-left", "top-right", "ambient"
+- **lighting_intensity**: 0.0 to 1.0
+- **camera_angle**: "eye-level", "slightly-above", "top-down", "low-angle"
 
 RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
 {
   "surfaces_found": true,
   "frame_description": "Brief description of what's in the frame",
+  "people": [
+    {"location": {"x": 5, "y": 18, "width": 28, "height": 78}},
+    {"location": {"x": 66, "y": 20, "width": 30, "height": 76}}
+  ],
   "surfaces": [
     {
       "location": {"x": 20, "y": 55, "width": 30, "height": 20},
+      "orientation": "horizontal",
       "surface_type": "studio_desk",
       "confidence": 0.85,
-      "reasoning": "Clear studio desk surface, well-lit, main placement area in podcast setup",
+      "reasoning": "Clear studio desk surface, well-lit, main placement area",
       "lighting_direction": "top-left",
       "lighting_intensity": 0.7,
       "camera_angle": "slightly-above"
+    },
+    {
+      "location": {"x": 5, "y": 5, "width": 35, "height": 45},
+      "orientation": "vertical",
+      "surface_type": "wall",
+      "confidence": 0.75,
+      "reasoning": "Empty unobstructed wall section behind subject, in focus",
+      "lighting_direction": "top",
+      "lighting_intensity": 0.6,
+      "camera_angle": "eye-level"
     }
   ],
   "recommended_placement": {
@@ -296,6 +856,7 @@ If NO suitable surfaces exist:
 {
   "surfaces_found": false,
   "frame_description": "Description of frame",
+  "people": [{"location": {"x": 30, "y": 10, "width": 42, "height": 88}}],
   "surfaces": [],
   "recommended_placement": null,
   "no_surface_reason": "Why no placement works here"
@@ -334,6 +895,19 @@ export function addToLocalAssetMap(videoId: string, filePath: string): void {
 // UTILITY FUNCTIONS
 // ============================================================================
 
+/** Parse a stored duration to seconds. Returns null if unparseable.
+ *  Accepts ISO 8601 ("PT1H46M2S", "PT30M", "PT45S" — YouTube Data API
+ *  format, stored verbatim on video_index.duration), plain numeric seconds
+ *  ("2760"), and colon clock formats ("46:03", "1:46:02" — the Facebook
+ *  Graph importer stores durations this way, and rejecting them silently
+ *  degraded every FB scan to the unknown-duration grid). Supports hours,
+ *  minutes, seconds; ignores days/weeks since none of our sources use them. */
+/** Delegates to shared/duration.ts — the reel bin and the AI video picker
+ *  need the same parse, and two copies of it drifted once already. */
+function parseIsoDuration(input: string | null | undefined): number | null {
+  return parseDurationSec(input);
+}
+
 async function getAvailableDiskSpaceMB(): Promise<number> {
   try {
     const tmpDir = os.tmpdir();
@@ -357,15 +931,22 @@ async function getAvailableDiskSpaceMB(): Promise<number> {
             }
           }
         }
-        resolve(1000);
+        // Fail open: an unparseable df must not block scans — the floor can
+        // exceed 1GB for long videos, so a finite guess here could veto a
+        // legitimate scan. Report Infinity, but say so: a scan that ENOSPCs
+        // after this passed is otherwise baffling.
+        console.warn(`[Scanner V2] df output unparseable — treating disk as sufficient (fail-open)`);
+        resolve(Number.POSITIVE_INFINITY);
       });
-      
+
       df.on("error", () => {
-        resolve(1000);
+        console.warn(`[Scanner V2] df failed to spawn — treating disk as sufficient (fail-open)`);
+        resolve(Number.POSITIVE_INFINITY);
       });
     });
   } catch {
-    return 1000;
+    console.warn(`[Scanner V2] Disk space check threw — treating disk as sufficient (fail-open)`);
+    return Number.POSITIVE_INFINITY;
   }
 }
 
@@ -391,6 +972,24 @@ function safeRmdir(dirPath: string): void {
   }
 }
 
+/**
+ * Compare-and-set terminal status write. The cancel-scan route flips status
+ * away from "Scanning" and returns success to the creator immediately, while
+ * the scan's post-processing phases keep running for minutes — an
+ * unconditional write at finalize would then stamp "Ready (N Spots)" over
+ * the cancel, silently un-cancelling it. The single conditional UPDATE in
+ * storage only writes while the row still says "Scanning", so a cancel (or
+ * stuck-scan sweep) that lands at any point wins. Returns whether the write
+ * happened.
+ */
+async function updateStatusIfStillScanning(videoId: number, status: string): Promise<boolean> {
+  const updated = await storage.updateVideoStatusIfScanning(videoId, status);
+  if (!updated) {
+    console.log(`[Scanner V2] Skipping status "${status}" for video ${videoId} — row is no longer "Scanning" (cancelled or swept mid-scan); preserving the current status`);
+  }
+  return updated;
+}
+
 async function getFrameMetadata(framePath: string): Promise<{ width: number; height: number; isVertical: boolean }> {
   try {
     const metadata = await sharp(framePath).metadata();
@@ -409,23 +1008,87 @@ async function getFrameMetadata(framePath: string): Promise<{ width: number; hei
 
 async function extractFrames(
   videoPath: string,
-  outputDir: string
+  outputDir: string,
+  opts: { intervalSeconds?: number; maxFrames?: number } = {},
 ): Promise<string[]> {
   return new Promise((resolve, reject) => {
+    const intervalSeconds = opts.intervalSeconds ?? CONFIG.FRAME_INTERVAL_SECONDS;
+    const maxFrames = opts.maxFrames ?? CONFIG.MAX_FRAMES_PER_VIDEO;
     const absoluteVideoPath = path.resolve(videoPath);
     const absoluteOutputDir = path.resolve(outputDir);
     const outputPattern = path.join(absoluteOutputDir, "frame_%04d.jpg");
-    
+
     console.log(`[Scanner V2] Extracting frames from: ${absoluteVideoPath}`);
     console.log(`[Scanner V2] Output directory: ${absoluteOutputDir}`);
-    
+    console.log(`[Scanner V2] Plan: every ${intervalSeconds}s, up to ${maxFrames} frames`);
+
     if (!fs.existsSync(absoluteVideoPath)) {
       reject(new Error(`Video file not found: ${absoluteVideoPath}`));
       return;
     }
-    
+
     fs.mkdirSync(absoluteOutputDir, { recursive: true });
-    
+
+    const scaleFilter = `scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`;
+
+    // SPARSE plans (long videos, one frame every 10s+) must NOT use the
+    // single-pass fps filter: it decodes the ENTIRE file to emit a handful
+    // of frames — ~20min of decode for an hour at Replit's ~3x realtime,
+    // which no flat timeout survives (the 61-min uniform fallback died at
+    // frame 2). Input-seeking per slot decodes ~one GOP per frame instead:
+    // ~40 seeks finish in a couple of minutes with a per-frame timeout.
+    // Slot numbers stay in the filename (frame_%04d, 1-based like the
+    // fps-filter output) so the caller can recover honest timestamps even
+    // when a mid-list slot fails.
+    if (intervalSeconds >= 10) {
+      (async () => {
+        const extracted: string[] = [];
+        let consecutiveFailures = 0;
+        for (let i = 0; i < maxFrames; i++) {
+          const t = i * intervalSeconds;
+          const out = path.join(absoluteOutputDir, `frame_${String(i + 1).padStart(4, "0")}.jpg`);
+          const ok = await new Promise<boolean>((res) => {
+            const p = spawn("ffmpeg", [
+              "-nostdin", "-y",
+              "-ss", t.toString(),
+              "-i", absoluteVideoPath,
+              "-an",
+              "-frames:v", "1",
+              "-pix_fmt", "yuvj420p",
+              "-vf", scaleFilter,
+              "-q:v", "2",
+              out,
+            ]);
+            const tm = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} res(false); }, 30_000);
+            p.on("close", (c) => {
+              clearTimeout(tm);
+              try {
+                res(c === 0 && fs.existsSync(out) && fs.statSync(out).size > 4096);
+              } catch { res(false); }
+            });
+            p.on("error", () => { clearTimeout(tm); res(false); });
+          });
+          if (ok) {
+            extracted.push(out);
+            consecutiveFailures = 0;
+          } else {
+            try { fs.unlinkSync(out); } catch { /* never written */ }
+            consecutiveFailures++;
+            // Three misses in a row means we've seeked past the real end of
+            // the file (plan duration can overshoot actual) or the file is
+            // unreadable — either way, stop burning 30s per empty slot.
+            if (consecutiveFailures >= 3) {
+              console.log(`[Scanner V2] Seek extraction stopping at slot ${i + 1}/${maxFrames} (3 consecutive misses — likely past end of file)`);
+              break;
+            }
+          }
+        }
+        console.log(`[Scanner V2] Extracted ${extracted.length} frames (per-seek sparse mode, every ${intervalSeconds}s)`);
+        resolve(extracted);
+      })().catch(reject);
+      return;
+    }
+
     const ffmpegArgs = [
       "-nostdin",               // Non-interactive mode
       "-y",                     // Overwrite output files
@@ -433,25 +1096,30 @@ async function extractFrames(
       "-an",                    // Skip audio (faster, avoids codec issues)
       "-vsync", "vfr",         // Variable frame rate (prevents duplicate frames)
       "-pix_fmt", "yuvj420p",  // Force JPEG-compatible pixel format (fixes HEVC/HDR)
-      "-vf", `fps=1/${CONFIG.FRAME_INTERVAL_SECONDS},scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
+      "-vf", `fps=1/${intervalSeconds},${scaleFilter}`,
       "-q:v", "2",
-      "-frames:v", CONFIG.MAX_FRAMES_PER_VIDEO.toString(),
+      "-frames:v", maxFrames.toString(),
       outputPattern,
     ];
-    
+
     console.log(`[Scanner V2] FFmpeg command: ffmpeg ${ffmpegArgs.join(" ")}`);
-    
+
     const ffmpeg = spawn("ffmpeg", ffmpegArgs);
-    
+
     let stderr = "";
     ffmpeg.stderr.on("data", (data) => {
       stderr += data.toString();
     });
-    
+
+    // The fps filter decodes up to spanSec of video to emit its frames —
+    // budget ~700ms per source second (Replit decodes ~3x realtime), never
+    // below the flat default, capped at 15 minutes.
+    const spanSec = intervalSeconds * maxFrames;
+    const timeoutMs = Math.min(15 * 60 * 1000, Math.max(CONFIG.FFMPEG_TIMEOUT_MS, spanSec * 700));
     const timeout = setTimeout(() => {
       ffmpeg.kill("SIGKILL");
-      reject(new Error(`FFmpeg timed out after ${CONFIG.FFMPEG_TIMEOUT_MS}ms`));
-    }, CONFIG.FFMPEG_TIMEOUT_MS);
+      reject(new Error(`FFmpeg timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
     
     ffmpeg.on("close", (code) => {
       clearTimeout(timeout);
@@ -480,6 +1148,654 @@ async function extractFrames(
       clearTimeout(timeout);
       reject(err);
     });
+  });
+}
+
+/**
+ * Extract one frame at each requested timestamp. Used by the scene-first
+ * scan path — instead of sampling the video uniformly every N seconds, we
+ * sample at the midpoints of representative shots per unique scene.
+ *
+ * Returns parallel arrays so the caller can map frame[i] → its real
+ * timestamp (vs. extractFrames where timestamp = i × interval).
+ */
+async function extractFramesAtTimestamps(
+  videoPath: string,
+  outputDir: string,
+  timestamps: number[],
+): Promise<{ frames: string[]; timestamps: number[] }> {
+  const absoluteVideoPath = path.resolve(videoPath);
+  const absoluteOutputDir = path.resolve(outputDir);
+  fs.mkdirSync(absoluteOutputDir, { recursive: true });
+
+  const out: { frames: string[]; timestamps: number[] } = { frames: [], timestamps: [] };
+
+  for (let i = 0; i < timestamps.length; i++) {
+    const t = timestamps[i];
+    const outPath = path.join(absoluteOutputDir, `scene_frame_${i.toString().padStart(4, "0")}.jpg`);
+
+    const ok = await new Promise<boolean>((resolve) => {
+      // -ss BEFORE -i = fast input seek (decoder skips most of the file).
+      // 480 max dim is plenty for Gemini surface detection and saves bytes.
+      const ff = spawn("ffmpeg", [
+        "-nostdin",
+        "-y",
+        "-loglevel", "error",
+        "-ss", String(Math.max(0, t)),
+        "-i", absoluteVideoPath,
+        "-an",
+        "-frames:v", "1",
+        "-pix_fmt", "yuvj420p",
+        "-vf", `scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
+        "-q:v", "2",
+        outPath,
+      ]);
+      let stderr = "";
+      ff.stderr.on("data", (d) => { stderr += d.toString(); });
+      const tm = setTimeout(() => {
+        try { ff.kill("SIGKILL"); } catch {}
+        console.warn(`[Scanner V2] Timestamp extract t=${t}s timed out`);
+        resolve(false);
+      }, 60_000);
+      ff.on("close", (code) => {
+        clearTimeout(tm);
+        if (code === 0 && fs.existsSync(outPath)) {
+          resolve(true);
+        } else {
+          if (stderr) {
+            console.warn(`[Scanner V2] Timestamp extract t=${t}s failed: ${stderr.slice(-150)}`);
+          }
+          resolve(false);
+        }
+      });
+      ff.on("error", (err) => {
+        clearTimeout(tm);
+        console.warn(`[Scanner V2] Timestamp extract spawn error t=${t}s: ${err.message}`);
+        resolve(false);
+      });
+    });
+
+    if (ok) {
+      out.frames.push(outPath);
+      out.timestamps.push(t);
+    }
+  }
+
+  console.log(`[Scanner V2] Scene-first extraction: ${out.frames.length}/${timestamps.length} frames at requested timestamps`);
+  return out;
+}
+
+/**
+ * Extract frames directly from a remote CDN URL via ffmpeg HTTP-range seeking —
+ * no full download, nothing written to disk except the sampled frame JPGs.
+ *
+ * This is the OAuth stream-and-scan path: for each timestamp, ffmpeg opens the
+ * URL, issues an HTTP range request to seek near that timestamp (`-ss` before
+ * `-i` = fast input seek), decodes one frame, and stops. For a well-indexed
+ * progressive mp4 that pulls only the bytes around each frame, not the whole
+ * video. `-reconnect*` flags make it resilient to the transient drops that CDN
+ * range reads occasionally hit.
+ */
+async function extractFramesFromUrl(
+  source: StreamSource,
+  outputDir: string,
+  timestamps: number[],
+): Promise<{ frames: string[]; timestamps: number[] }> {
+  const absoluteOutputDir = path.resolve(outputDir);
+  fs.mkdirSync(absoluteOutputDir, { recursive: true });
+
+  const out: { frames: string[]; timestamps: number[] } = { frames: [], timestamps: [] };
+  const headerArg = source.headers
+    ? Object.entries(source.headers).map(([k, v]) => `${k}: ${v}`).join("\r\n") + "\r\n"
+    : null;
+
+  let consecutiveFailures = 0;
+  for (let i = 0; i < timestamps.length; i++) {
+    const t = timestamps[i];
+    const outPath = path.join(absoluteOutputDir, `stream_frame_${i.toString().padStart(4, "0")}.jpg`);
+
+    const ok = await new Promise<boolean>((resolve) => {
+      const args = [
+        "-nostdin",
+        "-y",
+        "-loglevel", "error",
+        // Resilience for CDN range reads.
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+      ];
+      if (headerArg) args.push("-headers", headerArg);
+      // A proxy-resolved CDN URL is IP-locked to the proxy's egress — ffmpeg
+      // must fetch through the same proxy or googlevideo 403s every read.
+      if (source.httpProxy) args.push("-http_proxy", source.httpProxy);
+      args.push(
+        "-ss", String(Math.max(0, t)),   // fast input seek — range-request to ~t
+        "-i", source.url,
+        "-an",
+        "-frames:v", "1",
+        "-pix_fmt", "yuvj420p",
+        "-vf", `scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
+        "-q:v", "2",
+        outPath,
+      );
+      const ff = spawn("ffmpeg", args);
+      let stderr = "";
+      ff.stderr.on("data", (d) => { stderr += d.toString(); });
+      const tm = setTimeout(() => {
+        try { ff.kill("SIGKILL"); } catch {}
+        console.warn(`[Scanner V2] Stream extract t=${t}s timed out`);
+        resolve(false);
+      }, 60_000);
+      ff.on("close", (code) => {
+        clearTimeout(tm);
+        if (code === 0 && fs.existsSync(outPath)) {
+          resolve(true);
+        } else {
+          if (stderr) console.warn(`[Scanner V2] Stream extract t=${t}s failed: ${stderr.slice(-160)}`);
+          resolve(false);
+        }
+      });
+      ff.on("error", (err) => {
+        clearTimeout(tm);
+        console.warn(`[Scanner V2] Stream extract spawn error t=${t}s: ${err.message}`);
+        resolve(false);
+      });
+    });
+
+    if (ok) {
+      out.frames.push(outPath);
+      out.timestamps.push(t);
+      consecutiveFailures = 0;
+    } else {
+      consecutiveFailures += 1;
+      // If the first several seeks all fail, the URL is unusable (expired,
+      // DASH-only, geo-blocked). Bail early so we fall through to the download
+      // fallback instead of grinding through 24 timeouts.
+      if (consecutiveFailures >= 3 && out.frames.length === 0) {
+        console.warn(`[Scanner V2] Stream extraction: ${consecutiveFailures} consecutive failures with 0 frames — aborting stream path`);
+        break;
+      }
+    }
+  }
+
+  console.log(`[Scanner V2] Stream extraction: ${out.frames.length}/${timestamps.length} frames pulled from CDN URL`);
+  return out;
+}
+
+// Circuit breaker for the stream path: this deploy image's PATH ffmpeg has
+// been segfaulting (-11) on HTTPS CDN reads for weeks. After N consecutive
+// stream attempts that produced no usable frame set, skip the stream path
+// for the rest of the process lifetime (a restart/redeploy resets it)
+// instead of re-burning resolve + probe + minutes of doomed ffmpeg per scan.
+// Mirrors the ladder's existing failure-driven sticky flips (cookie enable,
+// player-client mode).
+const STREAM_BREAKER_LIMIT = 3;
+let streamConsecutiveFailures = 0;
+let streamPathDisabledReason: string | null = null;
+
+/**
+ * Dense uniform frame extraction from a remote CDN URL in a SINGLE ffmpeg pass
+ * (fps filter). The stream flows through ffmpeg transiently — frames are kept,
+ * the video bytes are never saved to disk. This is far more efficient than N
+ * per-timestamp seeks when we want a dense grid (one process, sequential read),
+ * and dense sampling is what maximizes surface-detection recall: we want to SEE
+ * every distinct scene at least once so no placement surface is skipped.
+ */
+async function extractFramesUniformFromUrl(
+  source: StreamSource,
+  outputDir: string,
+  intervalSeconds: number,
+  maxFrames: number,
+): Promise<{ frames: string[]; timestamps: number[]; complete: boolean }> {
+  const absoluteOutputDir = path.resolve(outputDir);
+  fs.mkdirSync(absoluteOutputDir, { recursive: true });
+  const outputPattern = path.join(absoluteOutputDir, "grid_%04d.jpg");
+  const headerArg = source.headers
+    ? Object.entries(source.headers).map(([k, v]) => `${k}: ${v}`).join("\r\n") + "\r\n"
+    : null;
+
+  return new Promise((resolve) => {
+    const args = [
+      "-nostdin",
+      "-y",
+      "-loglevel", "error",
+      "-reconnect", "1",
+      "-reconnect_streamed", "1",
+      "-reconnect_delay_max", "5",
+      // The -reconnect family only fires on connection close/EOF. googlevideo
+      // sometimes throttles an OPEN socket to zero bytes (stale n-parameter
+      // descramble) — without an I/O timeout ffmpeg sits mute until the 8-min
+      // SIGKILL below. 30s of no bytes = abort (and reconnect) instead.
+      "-rw_timeout", "30000000",
+      // Mid-read in-band 403/5xx (CDN URL invalidated by SABR rotation) is
+      // fatal without this — it's an HTTP error, not a connection drop.
+      "-reconnect_on_http_error", "4xx,5xx",
+    ];
+    if (headerArg) args.push("-headers", headerArg);
+    // A proxy-resolved CDN URL is IP-locked to the proxy's egress — ffmpeg
+    // must fetch through the same proxy or googlevideo 403s every read.
+    if (source.httpProxy) args.push("-http_proxy", source.httpProxy);
+    args.push(
+      "-i", source.url,
+      "-an",
+      "-vsync", "vfr",
+      "-pix_fmt", "yuvj420p",
+      "-vf", `fps=1/${intervalSeconds},scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
+      "-q:v", "2",
+      "-frames:v", String(maxFrames),
+      outputPattern,
+    );
+
+    // Pin the ffmpeg-static binary for NETWORK reads (same pattern as the
+    // download ladder): the deploy image's PATH ffmpeg segfaults (-11) on
+    // HTTPS CDN fetches, and this is the one spawn where ffmpeg is the
+    // network client. Local-file decodes elsewhere are fine on either build.
+    const ffmpegBin = ffmpegStaticPath && fs.existsSync(ffmpegStaticPath as unknown as string)
+      ? (ffmpegStaticPath as unknown as string)
+      : "ffmpeg";
+    const ff = spawn(ffmpegBin, args);
+    let stderr = "";
+    ff.stderr.on("data", (d) => { stderr += d.toString(); });
+    const tm = setTimeout(() => {
+      try { ff.kill("SIGKILL"); } catch {}
+      console.warn(`[Scanner V2] Dense stream extraction timed out`);
+      // Resolve with whatever landed so far — the caller's coverage gate
+      // decides whether a partial grid is usable or the download path runs.
+      resolve(collectGrid(true));
+    }, 8 * 60 * 1000);
+
+    // dirtyExit: ffmpeg was killed or died nonzero, so the highest-numbered
+    // grid file may have been truncated mid-write. A truncated JPEG can
+    // exceed the size floor below yet still crash sharp's decoder, and the
+    // dHash-null fallback treats it as its own scene — GUARANTEEING its
+    // selection for detection — so drop the tail file outright. A CLEAN
+    // exit means ffmpeg read the entire input (or hit the -frames:v cap),
+    // so the grid is complete no matter how few frames it holds — exposed
+    // as `complete` for the caller's coverage gate.
+    const collectGrid = (dirtyExit: boolean): { frames: string[]; timestamps: number[]; complete: boolean } => {
+      let files: string[] = [];
+      try {
+        files = fs.readdirSync(absoluteOutputDir)
+          .filter(f => f.startsWith("grid_") && f.endsWith(".jpg"))
+          .filter(f => {
+            // Size floor: a SIGKILL mid-write leaves stub JPEGs that pass
+            // the filename glob; anything under 4KB isn't a decodable frame.
+            try { return fs.statSync(path.join(absoluteOutputDir, f)).size >= 4096; }
+            catch { return false; }
+          })
+          .sort();
+      } catch { /* ignore */ }
+      if (dirtyExit && files.length > 0) {
+        const dropped = files.pop()!;
+        console.warn(`[Scanner V2] Dense grid: dropping tail file ${dropped} (ffmpeg exited dirty — possible mid-write truncation)`);
+      }
+      const frames = files.map(f => path.join(absoluteOutputDir, f));
+      // image2 numbers from grid_0001 up, so file NNNN is ~ (NNNN-1)*interval
+      // seconds. Derive from the filename rather than the array index so a
+      // file dropped by the size floor doesn't shift every later timestamp.
+      const timestamps = files.map((f, i) => {
+        const seq = parseInt(f.match(/grid_(\d+)\.jpg$/)?.[1] ?? "", 10);
+        return (Number.isFinite(seq) && seq >= 1 ? seq - 1 : i) * intervalSeconds;
+      });
+      return { frames, timestamps, complete: !dirtyExit };
+    };
+
+    ff.on("close", (code) => {
+      clearTimeout(tm);
+      if (code !== 0 && stderr) {
+        console.warn(`[Scanner V2] Dense stream extraction ffmpeg code ${code}: ${stderr.slice(-200)}`);
+      }
+      resolve(collectGrid(code !== 0));
+    });
+    ff.on("error", (err) => {
+      clearTimeout(tm);
+      console.warn(`[Scanner V2] Dense stream extraction spawn error: ${err.message}`);
+      resolve(collectGrid(true));
+    });
+  });
+}
+
+/**
+ * Select a scene-complete, evenly-distributed subset of frames for detection.
+ *
+ * Detection recall depends on SEEING every distinct scene at least once — a
+ * surface only visible in one shot is missed if that shot is skipped. So we:
+ *   1. dHash every dense-grid candidate.
+ *   2. Cluster ALL candidate hashes into RECURRING scene classes (single-link,
+ *      same clustering the download path's sceneIndex uses). A multicam
+ *      podcast alternating host/guest/wide is 3 classes, not 60 segments —
+ *      contiguous same-class runs are the "shots" of a grid-derived scene
+ *      index that the caller persists exactly like the download path's.
+ *   3. Allocate the detection budget ACROSS CLASSES proportionally to each
+ *      class's total screen time (≥2 frames per class where possible), and
+ *      spread each class's picks evenly across ALL of its occurrences. This
+ *      covers the whole timeline — the previous chronological midpoint pass
+ *      exhausted the budget on the first ~60 segments, leaving the back half
+ *      of a fast-cutting episode unseen.
+ * Non-selected frames are deleted immediately to bound temp usage.
+ */
+async function selectDiverseFrames(
+  frames: string[],
+  timestamps: number[],
+  opts: { hashThreshold: number; budget: number },
+): Promise<{ frames: string[]; timestamps: number[]; segmentIds: number[]; sceneIndex: SceneIndex | null }> {
+  if (frames.length === 0) return { frames: [], timestamps: [], segmentIds: [], sceneIndex: null };
+
+  // 1. Hash every candidate (parallel-ish; computeDHash is I/O light).
+  const hashes: (string | null)[] = [];
+  for (let i = 0; i < frames.length; i++) {
+    try { hashes.push(await computeDHash(frames[i])); } catch { hashes.push(null); }
+  }
+
+  // 2. Cluster candidates into recurring scene classes. Failed hashes get the
+  //    same 'fail'-prefixed sentinel shape the sceneIndex builder uses — the
+  //    clusterer isolates those as singletons instead of chaining them.
+  let classIds: number[];
+  let gridSceneIndex: SceneIndex | null = null;
+  let classesAreRecurring = true;
+  const safeHashes = hashes.map((h, i) => h ?? `fail${i.toString(16).padStart(12, "0")}`);
+  try {
+    classIds = clusterHashes(safeHashes);
+  } catch (clusterErr: any) {
+    // Degraded fallback: hash-jump segmentation (each contiguous segment its
+    // own class — no recurrence merging, but allocation still spans the
+    // timeline). No scene index is synthesized in this mode.
+    console.warn(`[Scanner V2] Grid hash clustering failed (segment fallback):`, clusterErr?.message || clusterErr);
+    classesAreRecurring = false;
+    classIds = new Array(frames.length).fill(0);
+    let seg = 0;
+    for (let i = 1; i < frames.length; i++) {
+      const prev = hashes[i - 1];
+      const cur = hashes[i];
+      if (prev === null || cur === null || hammingDistance(cur, prev) >= opts.hashThreshold) seg++;
+      classIds[i] = seg;
+    }
+  }
+
+  // 3. Contiguous same-class runs = shots of the grid-derived scene index.
+  //    tEnd of a run is the next run's tStart; the last run extends one grid
+  //    interval past its final frame (the frame represents that interval).
+  const runs: Array<{ start: number; end: number; classId: number }> = [];
+  let runStart = 0;
+  for (let i = 1; i < frames.length; i++) {
+    if (classIds[i] !== classIds[i - 1]) {
+      runs.push({ start: runStart, end: i - 1, classId: classIds[runStart] });
+      runStart = i;
+    }
+  }
+  runs.push({ start: runStart, end: frames.length - 1, classId: classIds[runStart] });
+
+  const gridStep = frames.length > 1
+    ? (timestamps[timestamps.length - 1] - timestamps[0]) / (frames.length - 1)
+    : 1;
+  if (classesAreRecurring && new Set(classIds).size > 0) {
+    gridSceneIndex = {
+      shots: runs.map((r, idx) => ({
+        shotIdx: idx,
+        sceneId: r.classId,
+        tStart: timestamps[r.start],
+        tEnd: idx + 1 < runs.length ? timestamps[runs[idx + 1].start] : timestamps[r.end] + gridStep,
+        hash: safeHashes[Math.floor((r.start + r.end) / 2)],
+      })),
+      sceneCount: new Set(classIds).size,
+      cuts: runs.slice(1).map(r => timestamps[r.start]),
+    };
+  }
+
+  // 4. Budget allocation across classes, proportional to class screen time.
+  //    The grid is uniform, so a class's candidate count IS its duration
+  //    share. Every class gets 1 frame, then a 2nd where it has one (the
+  //    consensus vote needs two independent samples), then extras flow to
+  //    the classes with the most unsampled screen time.
+  const classFrames = new Map<number, number[]>();
+  for (let i = 0; i < frames.length; i++) {
+    const arr = classFrames.get(classIds[i]) ?? [];
+    arr.push(i);
+    classFrames.set(classIds[i], arr);
+  }
+  const classesByDur = Array.from(classFrames.entries()).sort((a, b) => b[1].length - a[1].length);
+  const alloc = new Map<number, number>();
+  let remaining = opts.budget;
+  for (const [cls] of classesByDur) {
+    if (remaining <= 0) break;
+    alloc.set(cls, 1);
+    remaining--;
+  }
+  for (const [cls, idxs] of classesByDur) {
+    if (remaining <= 0) break;
+    if (alloc.get(cls) === 1 && idxs.length >= 2) {
+      alloc.set(cls, 2);
+      remaining--;
+    }
+  }
+  while (remaining > 0) {
+    // One frame at a time to the class with the most candidates per pick —
+    // largest-remainder-style proportionality without float bookkeeping.
+    let bestCls: number | null = null;
+    let bestRatio = 0;
+    for (const [cls, idxs] of classesByDur) {
+      const cur = alloc.get(cls) ?? 0;
+      if (cur >= idxs.length) continue; // class fully sampled
+      const ratio = idxs.length / (cur + 1);
+      if (ratio > bestRatio) { bestRatio = ratio; bestCls = cls; }
+    }
+    if (bestCls === null) break; // every candidate already picked
+    alloc.set(bestCls, (alloc.get(bestCls) ?? 0) + 1);
+    remaining--;
+  }
+
+  // 5. Within each class, spread picks evenly across its chronological
+  //    candidate list — the list spans every occurrence of the class, so a
+  //    class recurring at 2min and 55min gets sampled at both ends.
+  const picks = new Set<number>();
+  for (const [cls, idxs] of classesByDur) {
+    const n = alloc.get(cls) ?? 0;
+    for (let k = 0; k < n; k++) {
+      picks.add(idxs[Math.min(idxs.length - 1, Math.floor(((k + 0.5) * idxs.length) / n))]);
+    }
+  }
+
+  // 6. Materialize selection; unlink the rest.
+  const selectedIdx = Array.from(picks).sort((a, b) => a - b);
+  const selectedSet = new Set(selectedIdx);
+  for (let i = 0; i < frames.length; i++) {
+    if (!selectedSet.has(i)) safeUnlink(frames[i]);
+  }
+
+  console.log(`[Scanner V2] Scene-class selection: ${classFrames.size} recurring class(es) across ${runs.length} run(s) from ${frames.length} candidates → ${selectedIdx.length} detection frames (budget ${opts.budget})`);
+  // Segment id per selected frame — the contiguous-run segmentation computed
+  // above. The streamed path uses these as consensus groups only when no
+  // scene index could be synthesized, so cross-scene detections never vote
+  // for each other even in the degraded mode.
+  const segmentOf = (idx: number): number => {
+    for (let r = 0; r < runs.length; r++) {
+      if (idx >= runs[r].start && idx <= runs[r].end) return r;
+    }
+    return 0;
+  };
+  return {
+    frames: selectedIdx.map(i => frames[i]),
+    timestamps: selectedIdx.map(i => timestamps[i]),
+    segmentIds: selectedIdx.map(segmentOf),
+    sceneIndex: gridSceneIndex,
+  };
+}
+
+/**
+ * Detect scene-cut timestamps in a video using ffmpeg's scene filter.
+ *
+ * Why: When the camera cuts to a different shot (e.g. wide podcast room →
+ * solo close-up), surfaces from one shot shouldn't merge with surfaces
+ * from the next, and product placements made in shot A shouldn't render
+ * in shot B. This function returns the timestamps (seconds) of detected
+ * cuts so downstream code can group surfaces by shot.
+ *
+ * Approach: ffmpeg's `select=gt(scene,N)` filter computes the per-frame
+ * scene-change probability (0-1, based on histogram diff between frames);
+ * when it crosses N (default 0.3), ffmpeg flags it as a cut. We pipe the
+ * showinfo output to stderr and parse `pts_time:` lines.
+ *
+ * Returns: sorted array of seconds, e.g. [12.5, 28.0, 45.2]. Always
+ * includes 0 implicitly as the start of the first shot — callers can
+ * prepend if needed. Empty array means no cuts detected (single shot).
+ *
+ * Cost: one extra ffmpeg pass over the video. ~10-20% of extract time.
+ * Acceptable since we already have the file local at this point.
+ */
+async function detectSceneCuts(
+  videoPath: string,
+  threshold: number = 0.3,
+  durationSec: number = 0, // known from ffprobe/DB; 0 = unknown
+): Promise<number[]> {
+  return new Promise((resolve) => {
+    const absoluteVideoPath = path.resolve(videoPath);
+    if (!fs.existsSync(absoluteVideoPath)) {
+      console.warn(`[Scene Cuts] Video not found: ${absoluteVideoPath}`);
+      resolve([]);
+      return;
+    }
+
+    // -vf "fps=F,scale=320:-2,select='gt(scene,T)',showinfo" prints info for
+    // each detected cut. The fps filter FIRST bounds how many frames the
+    // scale+scene stages ever score, regardless of duration — a hard cut
+    // between two sampled frames still scores near-max, so cuts survive
+    // subsampling. F is clamped to [2.5, 10]:
+    //   - F >= 2.5 keeps the reported cut within 1/F <= 0.4s of the true cut,
+    //     exactly refineCutBoundary's ±400ms window, so the frame-accurate
+    //     boundary is still recovered downstream;
+    //   - F <= 10 caps filter cost even when duration is unknown.
+    // Shots shorter than 1/F can vanish, but buildSceneIndex already drops
+    // shots under 0.5s. Cut timestamps come from showinfo pts_time (real
+    // video seconds, quantized to 1/F) — not frame-index math — so nothing
+    // downstream needs to know about the sampling.
+    // -an drops audio (faster). -f null discards the output (we only want stderr).
+    // 18000 target: an hour-long episode samples at ~5fps (0.2s quantization),
+    // and only 2h+ files sit at the 2.5 floor (0.4s). Filter cost at 320px is
+    // trivial next to decode, and the finer grid matters on rapid-cut videos
+    // where buildSceneIndex skips per-cut refinement (≥200 cuts) and the
+    // detection timestamp ships as-is.
+    const TARGET_SCORED_FRAMES = 18000; // 3659s episode -> F≈4.9 -> ~18k frames vs ~110k native
+    const fpsSample = durationSec > 0
+      ? Math.min(10, Math.max(2.5, TARGET_SCORED_FRAMES / durationSec))
+      : 10;
+    const args = [
+      "-nostdin",
+      "-i", absoluteVideoPath,
+      "-an",
+      "-vf", `fps=${fpsSample},scale=320:-2,select='gt(scene,${threshold})',showinfo`,
+      "-f", "null",
+      "-",
+    ];
+
+    console.log(`[Scene Cuts] Detecting cuts (threshold=${threshold}) in ${absoluteVideoPath}`);
+    const ffmpeg = spawn("ffmpeg", args);
+
+    let stderr = "";
+    ffmpeg.stderr.on("data", (data) => { stderr += data.toString(); });
+
+    // Budget derives from the KNOWN duration, not a fixed constant: the fps
+    // filter removes filter-side work but ffmpeg must still DECODE every
+    // native frame to feed it, and decode is the irreducible cost. Observed
+    // ~3x realtime on Replit — a fixed 20min budget left <2% margin on a
+    // 61min episode and one vCPU-contention spike erased it (observed: the
+    // decode killed with the tail undone, so a camera setup living in the
+    // back half never got its own scene class). Floor of 2.5x realtime plus
+    // 60s slack, never below the old 20min. If the timeout still fires, the
+    // close handler parses the partial stderr and resolves real cuts for the
+    // decoded prefix — far better than an empty list (empty → sceneCount=1 →
+    // degenerate sampling). A backstop resolves [] if the close event never
+    // arrives after the kill.
+    const MIN_DECODE_X_REALTIME = 2.5;
+    const CUT_DETECT_BUDGET_MS = Math.max(
+      20 * 60 * 1000,
+      durationSec > 0 ? Math.ceil((durationSec / MIN_DECODE_X_REALTIME) * 1000) + 60_000 : 0,
+    );
+    let settled = false;
+    let timedOut = false;
+    const settle = (cuts: number[]) => {
+      if (settled) return;
+      settled = true;
+      resolve(cuts);
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      try { ffmpeg.kill("SIGKILL"); } catch {}
+      console.warn(`[Scene Cuts] Timed out after ${CUT_DETECT_BUDGET_MS / 60000}min — will parse partial cut list from decoded prefix`);
+      setTimeout(() => {
+        if (!settled) {
+          console.warn(`[Scene Cuts] No close event after kill — returning empty cut list`);
+          settle([]);
+        }
+      }, 15_000).unref();
+    }, CUT_DETECT_BUDGET_MS);
+
+    ffmpeg.on("close", () => {
+      clearTimeout(timeout);
+      // showinfo lines look like: "[Parsed_showinfo_1 @ 0x...] n: 0 pts: ... pts_time:12.5 ..."
+      // We extract the pts_time values.
+      const cuts: number[] = [];
+      const re = /pts_time:(\d+(?:\.\d+)?)/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(stderr)) !== null) {
+        const t = parseFloat(m[1]);
+        if (Number.isFinite(t) && t > 0) cuts.push(t);
+      }
+      // Dedup + sort (shouldn't have duplicates but be safe).
+      const sorted = Array.from(new Set(cuts)).sort((a, b) => a - b);
+      const partialNote = timedOut && sorted.length > 0
+        ? ` (PARTIAL — decode killed at ${CUT_DETECT_BUDGET_MS / 60000}min; cuts cover first ~${sorted[sorted.length - 1].toFixed(0)}s, the REMAINDER BECOMES ONE TAIL SHOT — any camera setup living only past that point cannot get its own scene class)`
+        : "";
+      console.log(`[Scene Cuts] Detected ${sorted.length} cut(s)${partialNote}: ${sorted.slice(0, 10).map(t => t.toFixed(1)).join(", ")}${sorted.length > 10 ? " ..." : ""}`);
+      settle(sorted);
+    });
+
+    ffmpeg.on("error", (err) => {
+      clearTimeout(timeout);
+      console.warn(`[Scene Cuts] ffmpeg spawn failed (non-fatal):`, err?.message || err);
+      settle([]);
+    });
+  });
+}
+
+/**
+ * Given a sorted list of scene-cut timestamps and a target timestamp,
+ * return the 0-indexed scene block ID. Block N covers [cuts[N-1], cuts[N]),
+ * with block 0 starting at 0. Out-of-range timestamps clamp to the last
+ * block. Used downstream to constrain clusterSurfaces so the same
+ * "Coffee Table" detection in two different shots doesn't merge.
+ */
+function sceneBlockForTimestamp(cuts: number[], t: number): number {
+  if (cuts.length === 0 || t < 0) return 0;
+  // cuts are start-of-new-shot. If t < cuts[0], block 0.
+  // If cuts[i-1] <= t < cuts[i], block i.
+  for (let i = 0; i < cuts.length; i++) {
+    if (t < cuts[i]) return i;
+  }
+  return cuts.length;
+}
+
+/**
+ * Probe a LOCAL file's duration with ffprobe. Uploads carry no DB duration
+ * (YouTube imports store ISO 8601, uploads store nothing), and scanning a
+ * local file blind against the CONFIG default plan meant a 61-minute upload
+ * scanned only its first 48 seconds. Returns 0 on any failure — callers
+ * treat that as "duration unknown" and keep their existing plan.
+ */
+async function probeLocalDurationSec(videoPath: string): Promise<number> {
+  return new Promise((resolve) => {
+    const ff = spawn("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      videoPath,
+    ]);
+    let out = "";
+    ff.stdout.on("data", (d) => { out += d.toString(); });
+    ff.on("close", () => {
+      const v = parseFloat(out.trim());
+      resolve(Number.isFinite(v) && v > 0 ? v : 0);
+    });
+    ff.on("error", () => resolve(0));
   });
 }
 
@@ -736,22 +2052,67 @@ async function analyzeFrameForSurfaces(
 }
 
 /**
+ * IoU (intersection over union) between two normalized bounding boxes.
+ * Both boxes use {x, y, width, height} in 0-1 space.
+ */
+function bboxIoU(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): number {
+  const ax2 = a.x + a.width;
+  const ay2 = a.y + a.height;
+  const bx2 = b.x + b.width;
+  const by2 = b.y + b.height;
+  const interX1 = Math.max(a.x, b.x);
+  const interY1 = Math.max(a.y, b.y);
+  const interX2 = Math.min(ax2, bx2);
+  const interY2 = Math.min(ay2, by2);
+  const interW = Math.max(0, interX2 - interX1);
+  const interH = Math.max(0, interY2 - interY1);
+  const interArea = interW * interH;
+  const aArea = a.width * a.height;
+  const bArea = b.width * b.height;
+  const union = aArea + bArea - interArea;
+  if (union <= 0) return 0;
+  return interArea / union;
+}
+
+/**
  * Remove overlapping surface detections, keeping the higher-confidence one.
- * Two surfaces overlap if their vertical centers are within 10% of frame height.
+ *
+ * Per-frame NMS: when two boxes overlap heavily (IoU > 0.4) OR have very close
+ * centers AND the same surface type, they describe the same physical surface
+ * and we keep the higher-confidence one. The previous y-center-only check
+ * missed the green+blue duplicate case where two coffee_table detections
+ * landed on the same actual coffee table with slightly different bboxes.
  */
 function deduplicateSurfaces(surfaces: DetectedSurface[]): DetectedSurface[] {
   if (surfaces.length <= 1) return surfaces;
 
-  // Sort by confidence descending
   const sorted = [...surfaces].sort((a, b) => b.confidence - a.confidence);
   const kept: DetectedSurface[] = [];
 
+  const IOU_THRESHOLD = 0.4;
+  const CENTER_DIST_THRESHOLD = 0.12;
+
+  const canonical = (t: string) => SURFACE_TYPE_SYNONYMS[t.toLowerCase()] || t;
+
   for (const surface of sorted) {
-    const centerY = surface.boundingBox.y + surface.boundingBox.height / 2;
+    const sType = canonical(surface.surfaceType);
+    const sCenterX = surface.boundingBox.x + surface.boundingBox.width / 2;
+    const sCenterY = surface.boundingBox.y + surface.boundingBox.height / 2;
+
     const overlaps = kept.some(k => {
+      const kType = canonical(k.surfaceType);
+      const kCenterX = k.boundingBox.x + k.boundingBox.width / 2;
       const kCenterY = k.boundingBox.y + k.boundingBox.height / 2;
-      return Math.abs(centerY - kCenterY) < 0.10;
+      const centerDist = Math.hypot(sCenterX - kCenterX, sCenterY - kCenterY);
+      const iou = bboxIoU(surface.boundingBox, k.boundingBox);
+      // Drop if same canonical type AND (high IoU OR very close centers)
+      const sameType = sType === kType;
+      return (sameType && iou > IOU_THRESHOLD) || (sameType && centerDist < CENTER_DIST_THRESHOLD);
     });
+
     if (!overlaps) {
       kept.push(surface);
     }
@@ -803,7 +2164,9 @@ function parseGeminiResponse(rawResponse: string): GeminiSurfaceDetectionResult 
 async function analyzeFrameWithGemini(
   framePath: string,
   timestamp: number,
-  isVertical: boolean
+  isVertical: boolean,
+  knownSurfaces?: KnownSurfaceSpec[],
+  proposals?: import("./lib/groundedDetector").GroundedProposal[]
 ): Promise<FrameAnalysisResult> {
   const defaultResult: FrameAnalysisResult = {
     hasSurface: false,
@@ -811,31 +2174,52 @@ async function analyzeFrameWithGemini(
     surfaces: [],
     isVertical,
   };
-  
+
   try {
     console.log(`[Gemini] Analyzing frame at ${timestamp}s...`);
-    
+
     const imageBuffer = fs.readFileSync(framePath);
     const base64Image = imageBuffer.toString('base64');
     const metadata = await sharp(framePath).metadata();
     const mimeType = metadata.format === 'png' ? 'image/png' : 'image/jpeg';
-    
-    const timeoutPromise = new Promise<null>((_, reject) => {
-      setTimeout(() => reject(new Error('Gemini timeout')), CONFIG.GEMINI_TIMEOUT_MS);
-    });
-    
-    const analysisPromise = ai.models.generateContent({
+
+    // Tier 2 slice 1: tight person boxes from the in-process COCO-SSD
+    // (already loaded lazily by the remix pipeline). Kicked off BEFORE the
+    // Gemini call so its ~50-350ms rides inside Gemini's multi-second
+    // latency. Deterministic tight boxes replace Gemini's deliberately
+    // "generous" person+chair envelopes in the ghost filter — the envelope
+    // that swallowed real side tables. null = detector unavailable → fall
+    // back to Gemini's people boxes exactly as before.
+    // Hard-bounded: the FIRST call pays the lazy tfjs-node model load
+    // (30-60s on small instances); a wedged load must degrade to Gemini's
+    // boxes, never hang the scan (SCAN_IN_FLIGHT would make that sticky).
+    const personDetectorPromise: Promise<Array<{ x: number; y: number; width: number; height: number; confidence: number }> | null> =
+      process.env.PERSON_DETECTOR === "0"
+        ? Promise.resolve(null)
+        : Promise.race([
+            detectPeopleInFrame(framePath).catch(() => null),
+            new Promise<null>((r) => setTimeout(() => r(null), 90_000)),
+          ]);
+
+    // Room-model confirm mode: a matched scene class appends its known
+    // surface inventory so the model re-locates them instead of
+    // re-discovering the room from scratch every frame. Grounded proposals
+    // (Tier 2) stack on top — knowns are asserted inventory, proposals are
+    // unverified geometry to judge.
+    let prompt = SURFACE_DETECTION_PROMPT;
+    if (knownSurfaces && knownSurfaces.length > 0) prompt += buildKnownSurfacesPromptSection(knownSurfaces);
+    if (proposals && proposals.length > 0) prompt += buildProposalsPromptSection(proposals);
+
+    const response = await geminiGenerate({
       model: "gemini-2.5-flash",
       contents: [{
         role: "user",
         parts: [
-          { text: SURFACE_DETECTION_PROMPT },
+          { text: prompt },
           { inlineData: { mimeType, data: base64Image } }
         ]
       }],
     });
-    
-    const response = await Promise.race([analysisPromise, timeoutPromise]);
     
     if (!response) {
       console.error('[Gemini] Request timed out');
@@ -856,23 +2240,182 @@ async function analyzeFrameWithGemini(
     }
     
     console.log(`[Gemini] Frame ${timestamp}s: ${parsed.frame_description}`);
-    console.log(`[Gemini] Surfaces found: ${parsed.surfaces_found}, count: ${parsed.surfaces.length}`);
-    
+    console.log(`[Gemini] Surfaces found: ${parsed.surfaces_found}, count: ${parsed.surfaces?.length ?? 0}`);
+
     if (parsed.no_surface_reason) {
       console.log(`[Gemini] No surface reason: ${parsed.no_surface_reason}`);
     }
-    
-    if (!parsed.surfaces_found || parsed.surfaces.length === 0) {
-      // Gemini analyzed successfully but found no surfaces — don't fall back to edge
-      return { ...defaultResult, aiAnalyzed: true };
+
+    // Person boxes from the same response. With real person positions the
+    // ghost filter becomes an actual overlap test — only candidates that
+    // genuinely sit on a person get rejected. The geometric zone heuristics
+    // below remain solely as the fallback for responses without people data:
+    // they guess where people probably are (center frame, side thirds) and
+    // those guesses also killed real inventory — the side table next to a
+    // host, the wall slice between two subjects. Parsed BEFORE the empty-
+    // surfaces early return: a frame with zero surfaces still reports its
+    // person coverage (that's the clean-frame re-sampler's trigger signal)
+    // and may still confirm known set surfaces.
+    const geminiPeopleBoxes = (Array.isArray(parsed.people) ? parsed.people : [])
+      .filter((p) => p?.location && typeof p.location.x === "number" && typeof p.location.y === "number")
+      .map((p) => ({
+        x: p.location.x / 100,
+        y: p.location.y / 100,
+        w: (p.location.width ?? 0) / 100,
+        h: (p.location.height ?? 0) / 100,
+      }))
+      .filter((p) => p.w > 0 && p.h > 0);
+    // PREFER the detector's tight boxes when it ran (null = didn't). A
+    // union would keep Gemini's generous envelope in the test and defeat
+    // the slice: the whole point is that a side table beside the host sits
+    // OUTSIDE the tight person box and survives the remainder test on the
+    // first scan of a new set. Detector [] means "ran, no people" — a real
+    // signal, same as Gemini's explicit empty array.
+    const detectorPeople = await personDetectorPromise;
+    // Tight boxes are preferred only when the detector actually FOUND
+    // someone. Detector-empty while Gemini reported people is disagreement
+    // (COCO misses seated/occluded hosts at 480px), and treating it as
+    // truth would zero personOverlapFraction AND skip the zone heuristics —
+    // every ghost defense off at once.
+    const detectorFound = detectorPeople !== null && detectorPeople.length > 0;
+    const peopleBoxes = detectorFound
+      ? detectorPeople!.map((p) => ({ x: p.x, y: p.y, w: p.width, h: p.height }))
+      : geminiPeopleBoxes;
+    if (detectorPeople !== null) {
+      console.log(`[Tier2] Person detector: ${detectorPeople.length} tight box(es) (Gemini reported ${geminiPeopleBoxes.length})${detectorFound ? "" : " — using Gemini boxes"}`);
+    }
+    // An explicit empty array is a real signal ("no people in frame") and
+    // enables overlap mode just like populated boxes do; only a MISSING
+    // field (older model output, malformed response) AND no detector run
+    // falls back to zones.
+    const hasPeopleData = detectorFound || Array.isArray(parsed.people);
+    const peopleSource: "detector" | "gemini" | undefined =
+      detectorFound ? "detector" : hasPeopleData ? "gemini" : undefined;
+    // Total person-covered fraction of a box (sum of per-person
+    // intersections, clamped — people rarely overlap each other in frame).
+    // The REMAINDER (non-person area) is the actual placement real estate:
+    // a backdrop wall extends BEHIND a seated host, so a generous person
+    // box always overlaps it heavily even when plenty of empty wall shows
+    // around them. Rejecting on overlap fraction alone killed real
+    // backdrop walls at 60-80% overlap; the usable-remainder test keeps
+    // them while still killing boxes that basically ARE the person.
+    const personOverlapFraction = (bx: number, by: number, bw: number, bh: number): number => {
+      let inter = 0;
+      for (const p of peopleBoxes) {
+        const ix = Math.max(0, Math.min(bx + bw, p.x + p.w) - Math.max(bx, p.x));
+        const iy = Math.max(0, Math.min(by + bh, p.y + p.h) - Math.max(by, p.y));
+        inter += ix * iy;
+      }
+      const area = bw * bh;
+      return area > 0 ? Math.min(1, inter / area) : 0;
+    };
+    const personCoverage = hasPeopleData
+      ? Math.min(1, peopleBoxes.reduce((sum, p) => sum + p.w * p.h, 0))
+      : undefined;
+
+    // Room-model confirmations (defensive parse). A confirmed known surface
+    // becomes a candidate detection TAGGED with its model idx, carrying the
+    // model's canonical surfaceType/orientation — Gemini's fresh label is
+    // ignored for knowns, which is what stops label flip across episodes.
+    // Confirmations still face the person-remainder ghost check (a person
+    // now sitting where the desk was is still a person) but SKIP the
+    // fallback zone heuristics — the model already vetted this surface.
+    const knownConfirmed: DetectedSurface[] = [];
+    const knownGhostVetoedIdx: number[] = [];
+    if (knownSurfaces && knownSurfaces.length > 0 && Array.isArray(parsed.known_surfaces)) {
+      for (const k of parsed.known_surfaces) {
+        if (!k || typeof k.idx !== "number" || k.present !== true) continue;
+        const model = knownSurfaces.find((ks) => ks.idx === k.idx);
+        if (!model) continue;
+        const loc = k.location;
+        if (!loc || typeof loc.x !== "number" || typeof loc.y !== "number" ||
+            typeof loc.width !== "number" || typeof loc.height !== "number") continue;
+        const bbX = loc.x / 100;
+        const bbY = loc.y / 100;
+        const bbW = loc.width / 100;
+        const bbH = loc.height / 100;
+        if (bbW <= 0 || bbH <= 0) continue;
+        // Taught surfaces are human ground truth — the creator drew the box
+        // and vouched for it. A small side table beside a host lives
+        // entirely inside the GENEROUS person envelope by construction, so
+        // the overlap test would veto exactly the surfaces teaching exists
+        // to rescue. Gemini saying present:false is the only way a taught
+        // surface sits out a frame.
+        if (hasPeopleData && !model.taught) {
+          const frac = personOverlapFraction(bbX, bbY, bbW, bbH);
+          const remainder = bbW * bbH * (1 - frac);
+          const minRemainder = model.orientation === "vertical" ? 0.04 : 0.02;
+          if (frac > 0.85 || remainder < minRemainder) {
+            console.log(`[Gemini] GHOST FILTER: Rejected known #${k.idx} (${model.surfaceType}) — ${(frac * 100).toFixed(0)}% person overlap, ${(remainder * 100).toFixed(1)}% person-free`);
+            knownGhostVetoedIdx.push(k.idx);
+            continue;
+          }
+        }
+        knownConfirmed.push({
+          surfaceType: model.surfaceType,
+          orientation: model.orientation,
+          confidence: typeof k.confidence === "number" ? k.confidence : model.confidence,
+          boundingBox: { x: bbX, y: bbY, width: bbW, height: bbH },
+          timestamp,
+          knownIdx: k.idx,
+        });
+      }
+      console.log(`[Gemini] Known set surfaces: ${knownConfirmed.length}/${knownSurfaces.length} confirmed in this frame`);
     }
 
-    // Map Gemini surfaces, filter low-confidence, validate against ghost patterns
-    // We want exactly 1 prominent surface per frame to avoid ghost/duplicate detections
-    const allSurfaces: DetectedSurface[] = parsed.surfaces
-      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.6) // Higher threshold: only high-quality detections
+    if ((!parsed.surfaces_found || !parsed.surfaces || parsed.surfaces.length === 0) && knownConfirmed.length === 0) {
+      // Gemini analyzed successfully but found no surfaces — don't fall back to edge
+      return { ...defaultResult, aiAnalyzed: true, personCoverage, peopleSource, knownGhostVetoedIdx };
+    }
+
+    // Infer orientation from surface_type if Gemini didn't provide it explicitly.
+    // Vertical types: walls, doors, windows. Everything else is horizontal.
+    const inferOrientation = (surfaceType: string): "horizontal" | "vertical" => {
+      const t = surfaceType.toLowerCase();
+      if (t === "wall" || t === "door" || t === "window") return "vertical";
+      return "horizontal";
+    };
+
+    // Sanity-correct Gemini's worst label mistakes BEFORE filtering. The
+    // most common one we've seen: backdrops/walls behind subjects in
+    // podcast scenes get labeled "studio_desk" or "table" because Gemini
+    // sees brand-placement-shape but doesn't verify it's actually a
+    // horizontal surface. Re-label these as "wall" so downstream code +
+    // brand-side displays see the right surface type.
+    const correctMislabel = (s: GeminiDetectedSurface): GeminiDetectedSurface => {
+      const claimedType = s.surface_type.toLowerCase();
+      const claimedOrientation = s.orientation || inferOrientation(s.surface_type);
+      // Only inspect surfaces Gemini called horizontal (desks, tables, etc.)
+      if (claimedOrientation !== "horizontal") return s;
+      const bbY = s.location.y / 100;
+      const bbH = s.location.height / 100;
+      const centerY = bbY + bbH / 2;
+      // Common mislabel: bbox center is in the top 40% of the frame AND
+      // the bbox is reasonably tall (>25% frame height). Real horizontal
+      // surfaces at eye level are thin strips in the lower half; anything
+      // tall + high in the frame is almost certainly a wall/backdrop.
+      const isUpperHalf = centerY < 0.40;
+      const isTall = bbH > 0.25;
+      // Shelves are exempt — they legitimately appear high in the frame
+      const isShelf = claimedType.includes("shelf");
+      if (!isShelf && isUpperHalf && isTall) {
+        console.log(`[Gemini] LABEL CORRECTION: ${s.surface_type} → wall (bbox center y=${(centerY*100).toFixed(0)}%, h=${(bbH*100).toFixed(0)}% — likely a wall, not a horizontal surface)`);
+        return { ...s, surface_type: "wall", orientation: "vertical" };
+      }
+      return s;
+    };
+
+    // Map Gemini surfaces, filter low-confidence, validate against ghost patterns.
+    // Known-surface confirmations never pass through here — they were built
+    // above with the model's canonical identity and their own safety check.
+    const allSurfaces: DetectedSurface[] = (Array.isArray(parsed.surfaces) ? parsed.surfaces : [])
+      .map(correctMislabel)
+      // 0.60 (was 0.75): per-frame precision is now enforced by the
+      // per-scene consensus vote + verification pass downstream — a lower
+      // gate here feeds the vote more recall without shipping noise.
+      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.60)
       .filter((s: GeminiDetectedSurface) => {
-        // GHOST SURFACE FILTER — reject bounding boxes that likely overlap a person's body
+        const orientation = s.orientation || inferOrientation(s.surface_type);
         const bbX = s.location.x / 100;
         const bbY = s.location.y / 100;
         const bbW = s.location.width / 100;
@@ -880,31 +2423,116 @@ async function analyzeFrameWithGemini(
         const centerX = bbX + bbW / 2;
         const centerY = bbY + bbH / 2;
         const area = bbW * bbH;
+        const surfTypeLower = s.surface_type.toLowerCase();
+        const isFloor = surfTypeLower.includes('floor');
+        const isShelf = surfTypeLower.includes('shelf');
 
-        // Ghost pattern 1: Bounding box centered on person's torso area
-        // In podcast setups, person typically occupies frame center (x: 25-75%, y: 15-60%)
-        // A real desk/table surface should be BELOW the person (y > 55%) or to the SIDE
+        if (orientation === "vertical") {
+          // A wall plane extends BEHIND the people in front of it, so heavy
+          // person overlap is NORMAL for a real backdrop wall. Reject only
+          // when the box is essentially the person (>85% covered) or when
+          // the person-free remainder is too small to hang anything on
+          // (<4% of frame — signage needs a substantial visible plane).
+          if (hasPeopleData) {
+            const frac = personOverlapFraction(bbX, bbY, bbW, bbH);
+            const remainder = area * (1 - frac);
+            if (frac > 0.85) {
+              console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — vertical bbox ${(frac*100).toFixed(0)}% covered by person boxes (is the person)`);
+              return false;
+            }
+            if (remainder < 0.04) {
+              console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — only ${(remainder*100).toFixed(1)}% of frame is person-free wall (too small for signage)`);
+              return false;
+            }
+          }
+          return true;
+        }
+
+        // PERSON-OVERLAP MODE (people data present). A table top a host
+        // leans over (or a side table inside a GENEROUS person box that
+        // includes the chair) legitimately overlaps — the tests are: is the
+        // box essentially the person (>85% covered → lap/torso/chair-seat
+        // hallucination), and does enough person-free surface remain to set
+        // a product on (>=2% of frame). Two absolute physics checks stay: a
+        // "horizontal" surface spanning half the frame height isn't a table
+        // top from any camera angle, and a non-shelf horizontal living
+        // entirely in the upper frame is a mislabeled wall.
+        if (hasPeopleData) {
+          const frac = personOverlapFraction(bbX, bbY, bbW, bbH);
+          const remainder = area * (1 - frac);
+          // Small side furniture BESIDE a host is the one geometry boxes
+          // cannot disambiguate: a real side table inside the generous
+          // person+chair envelope and a chair-arm hallucination are the
+          // same rectangle. When some remainder is visible (frac <= 0.95),
+          // defer the judgment to the semantic layers — consensus still
+          // needs multi-frame agreement and the verify pass looks at the
+          // actual pixels. Fully-swallowed boxes (frac > 0.95) still die;
+          // the teach flow is the human override for those.
+          const isSmallSideFurniture =
+            /side_table|coffee_table|nightstand/.test(surfTypeLower) && area <= 0.08;
+          if (isSmallSideFurniture && frac > 0.40 && frac <= 0.95) {
+            console.log(`[Gemini] GHOST FILTER: Deferring ${s.surface_type} to consensus+verify — ${(frac*100).toFixed(0)}% person overlap but small side furniture with visible remainder`);
+          } else {
+          if (frac > 0.85) {
+            console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — ${(frac*100).toFixed(0)}% of bbox overlaps person boxes (is the person)`);
+            return false;
+          }
+          if (remainder < 0.02) {
+            console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — only ${(remainder*100).toFixed(1)}% of frame is person-free surface (too small for a product)`);
+            return false;
+          }
+          }
+          if (!isFloor && bbH > 0.45) {
+            console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox too tall for a horizontal surface (h=${(bbH*100).toFixed(0)}%, max 45%)`);
+            return false;
+          }
+          if (!isShelf && bbY + bbH < 0.40) {
+            console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox entirely in upper frame (bottom at ${((bbY+bbH)*100).toFixed(0)}%)`);
+            return false;
+          }
+          return true;
+        }
+
+        // FALLBACK ZONE HEURISTICS (no people data) — the original guesses.
+
+        // Ghost pattern 1: small box centered on person's torso area
         const isInPersonZone = centerX > 0.20 && centerX < 0.80 && centerY > 0.15 && centerY < 0.55;
-        const isSmallArea = area < 0.10; // Small surfaces in person zone are very suspect
+        const isSmallArea = area < 0.10;
         if (isInPersonZone && isSmallArea) {
-          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox center (${(centerX*100).toFixed(0)}%, ${(centerY*100).toFixed(0)}%) is in person zone with small area ${(area*100).toFixed(1)}%`);
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox center (${(centerX*100).toFixed(0)}%, ${(centerY*100).toFixed(0)}%) in person zone, small area ${(area*100).toFixed(1)}%`);
           return false;
         }
 
-        // Ghost pattern 2: Tall bounding box overlapping person center
-        // Real desk surfaces seen at eye level should be thin (height < 25%)
-        // A bbox that is both tall AND centered on person area is likely on the person
+        // Ghost pattern 2: tall box overlapping person center (real eye-level tables are thin)
+        // Center frame: 0.25-0.75. Real eye-level tables are < 25% tall horizontal strips.
         if (bbH > 0.25 && centerY < 0.55 && centerX > 0.25 && centerX < 0.75) {
           console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — tall bbox (h=${(bbH*100).toFixed(0)}%) centered on person area`);
           return false;
         }
 
-        // Ghost pattern 3: Surface entirely in the upper half of frame
-        // Real tables/desks are almost always in the lower portion (y > 40%)
-        // unless it's a shelf (which is fine)
-        const isShelf = s.surface_type.toLowerCase().includes('shelf');
+        // Ghost pattern 2b: tall box on a SIDE-OF-FRAME person (the Shay Shay case).
+        // In two-host podcast frames, hosts sit at the LEFT (x ~0-0.30) and RIGHT
+        // (x ~0.70-1.0) of frame. Gemini sometimes calls a leather chair seat or
+        // a person's torso/lap/legs a "coffee_table" because it sees a flat-ish
+        // tone. Reject any horizontal-surface bbox whose center is in the outer
+        // thirds AND is taller than a real eye-level table strip (>20% frame
+        // height). Floor surfaces are exempt — floor space at someone's feet
+        // legitimately sits at the side of frame.
+        const isInSidePersonZone = !isFloor && (centerX < 0.30 || centerX > 0.70) && centerY > 0.10 && centerY < 0.85;
+        if (isInSidePersonZone && bbH > 0.20) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — tall bbox (h=${(bbH*100).toFixed(0)}%) at side-of-frame person zone (cx=${(centerX*100).toFixed(0)}%)`);
+          return false;
+        }
+
+        // Ghost pattern 2c: bbox spans most of frame height — that's a person/chair, not a table.
+        if (!isFloor && bbH > 0.30) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox too tall for a horizontal surface (h=${(bbH*100).toFixed(0)}%, max 30%)`);
+          return false;
+        }
+
+        // Ghost pattern 3: horizontal surface entirely in upper frame (shelves exempt)
         if (!isShelf && bbY + bbH < 0.40) {
-          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox entirely in upper frame (bottom edge at ${((bbY+bbH)*100).toFixed(0)}%)`);
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox entirely in upper frame (bottom at ${((bbY+bbH)*100).toFixed(0)}%)`);
           return false;
         }
 
@@ -912,6 +2540,7 @@ async function analyzeFrameWithGemini(
       })
       .map((s: GeminiDetectedSurface) => ({
         surfaceType: s.surface_type.charAt(0).toUpperCase() + s.surface_type.slice(1),
+        orientation: s.orientation || inferOrientation(s.surface_type),
         confidence: s.confidence,
         boundingBox: {
           x: s.location.x / 100,
@@ -920,28 +2549,48 @@ async function analyzeFrameWithGemini(
           height: s.location.height / 100,
         },
         timestamp,
-        // Lighting & camera data for realistic product placement
         lightingDirection: s.lighting_direction || undefined,
         lightingIntensity: typeof s.lighting_intensity === 'number' ? s.lighting_intensity : undefined,
         cameraAngle: s.camera_angle || undefined,
       }))
       .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)
-      .slice(0, 1); // Max 1 surface per frame — only the single most prominent surface
+      .slice(0, 8); // Max 8 surfaces per frame — full room inventory; consensus prunes
+                    // (shelves + tables + floor + wall) without dropping real
+                    // surfaces. Per-frame dedup + cluster IoU still merge
+                    // duplicates of the same physical surface downstream.
 
-    if (allSurfaces.length === 0) {
-      return { ...defaultResult, aiAnalyzed: true };
+    // Belt-and-braces against the "do NOT re-list knowns" instruction being
+    // ignored: a fresh detection sitting on a confirmed known surface is the
+    // same physical surface wearing a second identity — dropping it here
+    // keeps the model from later appending its own desk as a "new" surface.
+    const freshSurfaces = knownConfirmed.length === 0
+      ? allSurfaces
+      : allSurfaces.filter((s) => {
+          const twin = knownConfirmed.find((k) => bboxIoU(s.boundingBox, k.boundingBox) > 0.5);
+          if (twin) {
+            console.log(`[Gemini] Dropped fresh ${s.surfaceType} — duplicates known #${twin.knownIdx} (${twin.surfaceType})`);
+          }
+          return !twin;
+        });
+
+    const combinedSurfaces = [...freshSurfaces, ...knownConfirmed];
+    if (combinedSurfaces.length === 0) {
+      return { ...defaultResult, aiAnalyzed: true, personCoverage, peopleSource, knownGhostVetoedIdx };
     }
 
-    const maxConfidence = Math.max(...allSurfaces.map(s => s.confidence));
+    const maxConfidence = Math.max(...combinedSurfaces.map(s => s.confidence));
 
     return {
       hasSurface: true,
       confidence: maxConfidence,
-      surfaces: allSurfaces,
+      surfaces: combinedSurfaces,
       isVertical,
       aiAnalyzed: true,
+      personCoverage,
+      peopleSource,
+      knownGhostVetoedIdx,
     };
-    
+
   } catch (err: any) {
     // Log detailed error info to diagnose production issues (API key, base URL, connectivity)
     const errMsg = err?.message || String(err);
@@ -976,7 +2625,9 @@ async function analyzeFrameWithGeminiRetry(
   framePath: string,
   timestamp: number,
   isDense: boolean = false,
-  maxRetries: number = 5
+  knownSurfaces?: KnownSurfaceSpec[],
+  maxRetries: number = 5,
+  proposals?: import("./lib/groundedDetector").GroundedProposal[]
 ): Promise<any> {
   const defaultResult = {
     surfaces: [],
@@ -986,7 +2637,7 @@ async function analyzeFrameWithGeminiRetry(
   let lastErr: any = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await analyzeFrameWithGemini(framePath, timestamp, isDense);
+      return await analyzeFrameWithGemini(framePath, timestamp, isDense, knownSurfaces, proposals);
     } catch (err: any) {
       lastErr = err;
       if (!err.isRateLimit) {
@@ -1001,8 +2652,13 @@ async function analyzeFrameWithGeminiRetry(
       }
     }
   }
-  console.error(`[Gemini] Rate limit retries exhausted at ${timestamp}s — returning empty`);
-  return defaultResult;
+  // Exhausted 429s are an ABSTENTION, not a verdict — the model never saw
+  // the frame. Without the marker this empty result counted as a real
+  // "no surfaces" vote in the scene consensus denominator, so ONE
+  // rate-limited frame in a 2-frame scene vetoed every surface the other
+  // frame found. The scan loop drops marked frames from framesAnalyzed.
+  console.error(`[Gemini] Rate limit retries exhausted at ${timestamp}s — abstaining from consensus`);
+  return { ...defaultResult, rateLimited: true };
 }
 
 // ============================================================================
@@ -1269,19 +2925,30 @@ function suggestBrands(sceneSetting: string, mood: string): string[] {
 async function enrichSurfacesWithContext(
   videoId: number,
   permanentFramesDir: string,
+  excludeIds?: Set<number>,
 ): Promise<void> {
   console.log(`[FullScale Edge Context] Starting post-scan enrichment for video ${videoId}`);
 
-  const surfaces = await storage.getDetectedSurfaces(videoId);
+  // Skip Filtered rows (machine- or creator-rejected — enrichment used to
+  // overwrite their surfaceType with a live refined type, silently
+  // resurrecting them) and prior-scan rows awaiting end-of-scan retirement.
+  const allRows = await storage.getDetectedSurfaces(videoId);
+  const surfaces = allRows.filter(s =>
+    s.surfaceType !== "Filtered" && !excludeIds?.has(s.id));
   if (surfaces.length === 0) {
     console.log("[FullScale Edge Context] No surfaces to enrich");
     return;
   }
 
-  // Group surfaces by timestamp — only analyze one frame per unique timestamp
+  // Group surfaces by rounded timestamp — matches the scanner's filename
+  // convention (Math.round(t) under scene-first sampling). Math.floor was
+  // here previously and lost every scene-first surface whose timestamp
+  // landed >= x.5s (e.g. 64.5s → looked for "frame_64s.jpg" but scanner
+  // saved "frame_65s.jpg"). Math.round is uniform-scan-compatible too —
+  // integer timestamps round to themselves.
   const timestampMap = new Map<number, typeof surfaces>();
   for (const surface of surfaces) {
-    const ts = Math.floor(Number(surface.timestamp));
+    const ts = Math.round(Number(surface.timestamp));
     if (!timestampMap.has(ts)) {
       timestampMap.set(ts, []);
     }
@@ -1292,12 +2959,32 @@ async function enrichSurfacesWithContext(
 
   let enrichedCount = 0;
 
-  for (const [timestamp, surfacesAtTime] of timestampMap) {
-    const frameFilename = `frame_${timestamp}s.jpg`;
-    const framePath = path.join(permanentFramesDir, frameFilename);
+  // Refined-type votes per canonical surface group. Surface identity is
+  // established at consensus time (one surfaceGroupId per physical surface);
+  // writing a per-timestamp refined type onto individual rows fractured that
+  // identity — the same physical table ended up half "Table" half "Desk"
+  // depending on which frames this pass got to look at. Votes are collected
+  // here and the group-majority type is applied to ALL rows of each group
+  // after the loop. Rows without a groupId (legacy scans) keep the old
+  // per-timestamp refinement.
+  const groupTypeVotes = new Map<string, string[]>();
 
-    if (!fs.existsSync(framePath)) {
-      console.log(`[FullScale Edge Context] Frame not found: ${frameFilename}, skipping`);
+  for (const [timestamp, surfacesAtTime] of Array.from(timestampMap.entries())) {
+    // Try the canonical filename first (Math.round of timestamp), then
+    // fall back to Math.floor for legacy surfaces from older scans whose
+    // frames were saved with the floor convention.
+    const candidates = [
+      `frame_${timestamp}s.jpg`,
+      `frame_${Math.floor(Number(surfacesAtTime[0].timestamp))}s.jpg`,
+    ];
+    let framePath = "";
+    for (const fn of candidates) {
+      const p = path.join(permanentFramesDir, fn);
+      if (fs.existsSync(p)) { framePath = p; break; }
+    }
+
+    if (!framePath) {
+      console.log(`[FullScale Edge Context] Frame not found in ${permanentFramesDir} (tried ${candidates.join(", ")}), skipping`);
       continue;
     }
 
@@ -1313,14 +3000,25 @@ async function enrichSurfacesWithContext(
     const result = await analyzeSceneContext(framePath, bestSurface.surfaceType, isVertical);
     if (!result) continue;
 
-    // Update ALL surfaces at this timestamp with the context
+    // Update ALL surfaces at this timestamp with the context. The refined
+    // TYPE is only written directly for group-less legacy rows — grouped
+    // rows vote, and the group majority is applied below so every row of a
+    // physical surface carries one consistent type.
     for (const surface of surfacesAtTime) {
+      const groupId = (surface as any).surfaceGroupId as string | null | undefined;
       try {
-        await storage.updateDetectedSurface(surface.id, {
-          surfaceType: result.refinedSurfaceType,
+        const patch: Record<string, any> = {
           sceneContext: `${result.sceneSetting} | ${result.mood} | Brands: ${result.brandCategories.slice(0, 3).join(", ")}`,
           surroundings: result.surroundings.slice(0, 10),
-        });
+        };
+        if (groupId) {
+          const votes = groupTypeVotes.get(groupId) ?? [];
+          votes.push(result.refinedSurfaceType);
+          groupTypeVotes.set(groupId, votes);
+        } else {
+          patch.surfaceType = result.refinedSurfaceType;
+        }
+        await storage.updateDetectedSurface(surface.id, patch);
         enrichedCount++;
       } catch (err) {
         console.error(`[FullScale Edge Context] Failed to update surface ${surface.id}:`, err);
@@ -1328,7 +3026,30 @@ async function enrichSurfacesWithContext(
     }
   }
 
-  console.log(`[FullScale Edge Context] Enriched ${enrichedCount}/${surfaces.length} surfaces`);
+  // Apply the majority refined type per group to EVERY row of the group —
+  // including rows at timestamps whose frames weren't found above. First
+  // vote wins ties (frames are processed in timestamp order, and the
+  // earliest refinement saw the same evidence as the rest).
+  for (const [groupId, votes] of Array.from(groupTypeVotes.entries())) {
+    const tally = new Map<string, number>();
+    let majority = votes[0];
+    for (const v of votes) {
+      const n = (tally.get(v) ?? 0) + 1;
+      tally.set(v, n);
+      if (n > (tally.get(majority) ?? 0)) majority = v;
+    }
+    const groupRows = surfaces.filter(s => (s as any).surfaceGroupId === groupId);
+    for (const row of groupRows) {
+      if (row.surfaceType === majority) continue;
+      try {
+        await storage.updateDetectedSurface(row.id, { surfaceType: majority });
+      } catch (err) {
+        console.error(`[FullScale Edge Context] Failed to apply group type to surface ${row.id}:`, err);
+      }
+    }
+  }
+
+  console.log(`[FullScale Edge Context] Enriched ${enrichedCount}/${surfaces.length} surfaces (${groupTypeVotes.size} group-consistent type refinements)`);
 }
 
 // ============================================================================
@@ -1356,10 +3077,20 @@ async function captureSurfaceKeyframes(videoId: number): Promise<void> {
     return;
   }
 
+  // Load this video's scene-cut timestamps so cross-shot surfaces don't
+  // cluster together. A coffee table in shot A and a coffee table in shot B
+  // are different objects even if their bboxes look similar.
+  let sceneCuts: number[] = [];
+  try {
+    const video = await storage.getVideoById(videoId);
+    const raw = (video as any)?.sceneBoundaries;
+    if (Array.isArray(raw)) sceneCuts = raw.filter(t => typeof t === "number" && Number.isFinite(t));
+  } catch { /* ignore */ }
+
   // Cluster surfaces to identify which ones represent the same physical surface
   // Use the same clustering logic as normalization
-  const clusters = clusterSurfaces(validSurfaces as any);
-  console.log(`[Keyframes] Found ${clusters.length} cluster(s) across ${validSurfaces.length} surfaces`);
+  const clusters = clusterSurfaces(validSurfaces as any, sceneCuts);
+  console.log(`[Keyframes] Found ${clusters.length} cluster(s) across ${validSurfaces.length} surfaces (scene cuts: ${sceneCuts.length})`);
 
   const keyframeBatch: Array<{
     surfaceId: number;
@@ -1427,12 +3158,161 @@ async function captureSurfaceKeyframes(videoId: number): Promise<void> {
 // product placement across frames of the same camera angle.
 
 interface SurfaceCluster {
-  surfaces: { id: number; bbX: number; bbY: number; bbW: number; bbH: number; confidence: number }[];
+  surfaces: { id: number; bbX: number; bbY: number; bbW: number; bbH: number; confidence: number; groupId?: string | null }[];
   surfaceType: string;
+  // Scene the cluster lives in (sceneId or per-shot block) — post-processing
+  // must never merge or dedupe across scenes.
+  sceneKey?: number;
+  // Canonical-surface identity stamped at consensus insert. Optional because
+  // legacy rows pre-date the column; identity-aware passes fall back to
+  // spatial behavior when it's absent.
+  groupId?: string | null;
 }
 
 // Normalize surface type synonyms to a canonical name
 // e.g., "Studio_desk", "studio_desk", "desk", "table" all → "Table"
+// ── AUTH 2b: per-scene model verification ─────────────────────────
+// Second opinion on consensus survivors: show Gemini the scene's
+// best-supported frame plus the candidate boxes and ask it to confirm each
+// one is really the named surface, at that location, and not covering a
+// person. Fail-open: any API/parse failure keeps the consensus result
+// (consensus already filtered — verification only ever REMOVES).
+async function verifySceneSurfaces(
+  framePath: string,
+  candidates: Array<{ surfaceType: string; bbox: { x: number; y: number; width: number; height: number } }>,
+): Promise<Set<number> | null> {
+  try {
+    if (!fs.existsSync(framePath) || candidates.length === 0) return null;
+    const base64Image = fs.readFileSync(framePath).toString("base64");
+    const list = candidates
+      .map((c, i) => `${i}: ${c.surfaceType} at x=${(c.bbox.x * 100).toFixed(0)}% y=${(c.bbox.y * 100).toFixed(0)}% w=${(c.bbox.width * 100).toFixed(0)}% h=${(c.bbox.height * 100).toFixed(0)}%`)
+      .join("\n");
+    const prompt = `You are auditing candidate surface detections for product placement. The attached image is one frame of the scene. Candidates (bbox as percent of frame, origin top-left):\n${list}\n\nFor EACH candidate index, answer keep=true ONLY if ALL of these hold:\n- the named surface type is genuinely visible at that box location\n- the label is correct (a floor region is not a "wall"; a couch back is not a "table")\n- the box does NOT primarily cover a person, their clothing, or the chair they sit in\nReturn STRICT JSON only, no markdown fences: {"verdicts":[{"index":0,"keep":true,"reason":"short"}]} with exactly one verdict per candidate.`;
+
+    // The verify call lands right after the detection burst — the most
+    // rate-limited moment of the scan. Small backoff loop for 429s.
+    let response: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        response = await geminiGenerate({
+          model: "gemini-2.5-flash",
+          contents: [{
+            role: "user",
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType: "image/jpeg", data: base64Image } },
+            ],
+          }],
+        });
+        break;
+      } catch (callErr: any) {
+        const msg = String(callErr?.message || callErr);
+        if (/429|rate.?limit|quota|resource.?exhausted/i.test(msg) && attempt < 2) {
+          const backoff = 2000 * Math.pow(2, attempt);
+          console.warn(`[Scanner V2] Verify pass rate-limited — retrying in ${backoff / 1000}s`);
+          await new Promise((r) => setTimeout(r, backoff));
+          continue;
+        }
+        // geminiGenerate REJECTS on timeout (the old race resolved null);
+        // preserve the fail-open timeout semantics this pass was built with.
+        if (/timeout/i.test(msg)) { response = null; break; }
+        throw callErr;
+      }
+    }
+    if (!response) {
+      console.warn(`[Scanner V2] Verify pass timed out (fail-open)`);
+      return null;
+    }
+
+    const textContent = (response as any).candidates?.[0]?.content?.parts?.[0];
+    if (!textContent || !("text" in textContent) || !textContent.text) return null;
+
+    let jsonStr = String(textContent.text).trim();
+    if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
+    else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
+    if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
+    const parsed = JSON.parse(jsonStr.trim());
+    if (!Array.isArray(parsed?.verdicts)) return null;
+
+    const keep = new Set<number>();
+    let wellFormedVerdicts = 0;
+    for (const v of parsed.verdicts) {
+      if (typeof v?.index === "number" && typeof v?.keep === "boolean") {
+        wellFormedVerdicts++;
+        if (v.keep === true) keep.add(v.index);
+      }
+    }
+    // An all-reject is trusted only when the model explicitly returned a
+    // well-formed verdict for EVERY candidate (a deliberate judgment);
+    // partial/malformed responses fail open — consensus already filtered.
+    if (keep.size === 0 && wellFormedVerdicts < candidates.length) {
+      console.warn(`[Scanner V2] Verify pass returned ${wellFormedVerdicts}/${candidates.length} verdicts with none kept — fail-open`);
+      return null;
+    }
+    if (keep.size === 0) {
+      console.log(`[Scanner V2] Verify pass deliberately rejected all ${candidates.length} candidate(s)`);
+    }
+    return keep;
+  } catch (err: any) {
+    console.warn(`[Scanner V2] Scene verification failed (fail-open):`, err?.message || err);
+    return null;
+  }
+}
+
+// ── Full-res bbox refinement (brand-commit re-scan) ────────────────
+// Scan-time detection ran on frames capped at FRAME_MAX_DIMENSION (1280).
+// When a brand commits and the placement renders, this refines the surface
+// bbox against a FULL-RESOLUTION frame for pixel-accurate compositing.
+// Fail-open: any error/implausible answer keeps the scan-time bbox.
+export async function refineSurfaceBBoxOnFrame(
+  framePath: string,
+  surfaceType: string,
+  bbox: { x: number; y: number; width: number; height: number },
+): Promise<{ x: number; y: number; width: number; height: number } | null> {
+  try {
+    if (!fs.existsSync(framePath)) return null;
+    const proxyKeyOk = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== "dummy-key";
+    if (!proxyKeyOk && !aiDirect) return null;
+    const base64Image = fs.readFileSync(framePath).toString("base64");
+    const prompt = `This is a full-resolution video frame. A "${surfaceType}" surface was previously detected at approximately x=${(bbox.x * 100).toFixed(1)}%, y=${(bbox.y * 100).toFixed(1)}%, width=${(bbox.width * 100).toFixed(1)}%, height=${(bbox.height * 100).toFixed(1)}% (percent of frame, origin top-left). Return the PRECISE bounding box of the EMPTY placeable area of that exact surface — tightened to this higher-resolution frame. Respond with STRICT JSON only: {"x": number, "y": number, "width": number, "height": number} in percent 0-100, or {"not_visible": true} if that surface is not visible in this frame.`;
+
+    // geminiGenerate rejects on timeout — the enclosing try's fail-open
+    // catch preserves the old resolve-null semantics.
+    const response = await geminiGenerate({
+      model: "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: base64Image } }] }],
+    });
+    if (!response) return null;
+    const part = (response as any).candidates?.[0]?.content?.parts?.[0];
+    if (!part || !("text" in part) || !part.text) return null;
+    let jsonStr = String(part.text).trim();
+    if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
+    else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
+    if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
+    const parsed = JSON.parse(jsonStr.trim());
+    if (parsed?.not_visible) return null;
+    const refined = {
+      x: Number(parsed.x) / 100,
+      y: Number(parsed.y) / 100,
+      width: Number(parsed.width) / 100,
+      height: Number(parsed.height) / 100,
+    };
+    if ([refined.x, refined.y, refined.width, refined.height].some((v) => !Number.isFinite(v) || v < 0 || v > 1)) return null;
+    if (refined.width <= 0.01 || refined.height <= 0.01) return null;
+    // Plausibility: the refinement must still be the SAME surface — reject
+    // answers that wandered elsewhere in the frame.
+    const iou = bboxIoU(refined, bbox);
+    if (iou < 0.2) {
+      console.warn(`[Scanner V2] BBox refinement wandered (IoU ${iou.toFixed(2)}) — keeping scan-time bbox`);
+      return null;
+    }
+    return refined;
+  } catch (err: any) {
+    console.warn(`[Scanner V2] BBox refinement failed (fail-open):`, err?.message || err);
+    return null;
+  }
+}
+
 const SURFACE_TYPE_SYNONYMS: Record<string, string> = {
   desk: "Table",
   table: "Table",
@@ -1446,9 +3326,13 @@ const SURFACE_TYPE_SYNONYMS: Record<string, string> = {
   nightstand: "Nightstand",
   side_table: "Nightstand",
   coffee_table: "Coffee Table",
+  couch: "Couch",
+  sofa: "Couch",
+  rug: "Rug",
+  carpet: "Rug",
 };
 
-function canonicalSurfaceType(type: string): string {
+export function canonicalSurfaceType(type: string): string {
   const lower = type.toLowerCase().trim();
   return SURFACE_TYPE_SYNONYMS[lower] || type.charAt(0).toUpperCase() + type.slice(1);
 }
@@ -1457,12 +3341,19 @@ function canonicalSurfaceType(type: string): string {
  * Cluster surfaces by CANONICAL type and spatial proximity.
  * Two surfaces join the same cluster if:
  * - Same canonical type (Table/Desk/Studio_desk all merge)
- * - Bounding box centers are within CLUSTER_TOLERANCE of each other (normalized 0-1)
+ * - IoU > 0.30 against ANY existing surface in the cluster, OR
+ * - Bounding box centers are within CLUSTER_TOLERANCE of each other (fallback for thin strips)
+ *
+ * IoU-against-all-members fixes the green+blue duplicate case: when bboxes
+ * drift across frames, the rolling cluster member chain merges them into
+ * one cluster instead of breaking off a new one.
  */
 function clusterSurfaces(
-  surfaces: Array<{ id: number; surfaceType: string; boundingBoxX: string; boundingBoxY: string; boundingBoxWidth: string; boundingBoxHeight: string; confidence: string }>,
+  surfaces: Array<{ id: number; surfaceType: string; timestamp?: string | number; boundingBoxX: string; boundingBoxY: string; boundingBoxWidth: string; boundingBoxHeight: string; confidence: string; sceneId?: number | null; surfaceGroupId?: string | null }>,
+  sceneCuts: number[] = [],
 ): SurfaceCluster[] {
-  const CLUSTER_TOLERANCE = 0.20; // 20% of frame = same surface
+  const CLUSTER_TOLERANCE = 0.18; // L∞ center distance (fallback)
+  const IOU_MERGE = 0.30;
 
   const clusters: SurfaceCluster[] = [];
 
@@ -1474,18 +3365,37 @@ function clusterSurfaces(
     const centerX = bbX + bbW / 2;
     const centerY = bbY + bbH / 2;
     const canonical = canonicalSurfaceType(s.surfaceType);
+    const candidateBox = { x: bbX, y: bbY, width: bbW, height: bbH };
+    // Scene key — prefer the persisted sceneId (from sceneIndex's perceptual
+    // clustering), fall back to per-shot sceneBlock for surfaces that were
+    // detected before scene-first indexing shipped. Two surfaces with the
+    // same sceneId are in the same physical scene (host shot returns), so
+    // cross-shot clustering IS allowed there. Different sceneId = different
+    // room = never cluster.
+    const ts = typeof s.timestamp === "number" ? s.timestamp : parseFloat(String(s.timestamp ?? 0));
+    const sceneKey = (typeof s.sceneId === "number")
+      ? s.sceneId
+      : sceneBlockForTimestamp(sceneCuts, Number.isFinite(ts) ? ts : 0);
 
     let matched = false;
     for (const cluster of clusters) {
       if (canonicalSurfaceType(cluster.surfaceType) !== canonical) continue;
+      // HARD GATE: different scenes never cluster.
+      if (cluster.sceneKey !== undefined && cluster.sceneKey !== sceneKey) continue;
 
-      // Check if this surface's center is near any existing surface in the cluster
-      const representative = cluster.surfaces[0];
-      const repCX = representative.bbX + representative.bbW / 2;
-      const repCY = representative.bbY + representative.bbH / 2;
+      // Match against ANY member — bboxes drift across frames so the rolling
+      // chain (frame N matches N+1, N+1 matches N+2, ...) keeps the cluster
+      // intact even when the first and last bboxes wouldn't match each other.
+      const isMatch = cluster.surfaces.some(member => {
+        const memberBox = { x: member.bbX, y: member.bbY, width: member.bbW, height: member.bbH };
+        if (bboxIoU(candidateBox, memberBox) > IOU_MERGE) return true;
+        const mCX = member.bbX + member.bbW / 2;
+        const mCY = member.bbY + member.bbH / 2;
+        return Math.abs(centerX - mCX) < CLUSTER_TOLERANCE && Math.abs(centerY - mCY) < CLUSTER_TOLERANCE;
+      });
 
-      if (Math.abs(centerX - repCX) < CLUSTER_TOLERANCE && Math.abs(centerY - repCY) < CLUSTER_TOLERANCE) {
-        cluster.surfaces.push({ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) });
+      if (isMatch) {
+        cluster.surfaces.push({ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence), groupId: s.surfaceGroupId ?? null });
         matched = true;
         break;
       }
@@ -1493,13 +3403,116 @@ function clusterSurfaces(
 
     if (!matched) {
       clusters.push({
-        surfaceType: canonical, // Use canonical name for the cluster
-        surfaces: [{ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) }],
+        surfaceType: canonical,
+        sceneKey,
+        groupId: s.surfaceGroupId ?? null,
+        surfaces: [{ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence), groupId: s.surfaceGroupId ?? null }],
       });
     }
   }
 
+  // Cluster-level identity: the dominant member group (most rows; ties break
+  // toward higher cumulative confidence). Members from a different group got
+  // spatially merged into this cluster — post-processing stamps them with
+  // the dominant id so a physical surface keeps exactly one identity.
+  // Room-model ids (rm{modelId}-s{idx}) ALWAYS beat fresh g-ids regardless
+  // of row count: the model id is the persistent identity, and letting a
+  // fresh sighting outvote it would re-mint the same physical surface as a
+  // new g-group — which the finalize upsert would then append to the model
+  // as a duplicate that gets confirmed on every future scan.
+  for (const cluster of clusters) {
+    const byGroup = new Map<string, { rows: number; conf: number }>();
+    for (const m of cluster.surfaces) {
+      if (!m.groupId) continue;
+      const agg = byGroup.get(m.groupId) ?? { rows: 0, conf: 0 };
+      agg.rows++;
+      agg.conf += m.confidence;
+      byGroup.set(m.groupId, agg);
+    }
+    let dominant: string | null = null;
+    let dominantAgg = { rows: -1, conf: -1, isModel: false };
+    for (const [gid, agg] of Array.from(byGroup.entries())) {
+      const isModel = gid.startsWith("rm");
+      const wins = isModel !== dominantAgg.isModel
+        ? isModel
+        : agg.rows > dominantAgg.rows || (agg.rows === dominantAgg.rows && agg.conf > dominantAgg.conf);
+      if (wins) {
+        dominant = gid;
+        dominantAgg = { rows: agg.rows, conf: agg.conf, isModel };
+      }
+    }
+    cluster.groupId = dominant;
+  }
+
   return clusters;
+}
+
+/**
+ * After clustering produces the median bboxes, two SEPARATE clusters of the
+ * same canonical type can still end up overlapping (e.g. Gemini split the
+ * same coffee table into two semantic groups due to confidence drift).
+ * Merge clusters whose median bboxes have IoU > 0.4 — drop the
+ * lower-cumulative-confidence one, mark its surfaces Filtered.
+ *
+ * Operates GROUP-WISE: clusters carrying the same surfaceGroupId are one
+ * canonical surface that spatial clustering happened to split, so they're
+ * coalesced into a single unit first — a group either survives whole or is
+ * dropped whole, never partially. And a HARD scene gate: two units in
+ * different scenes are different physical objects no matter how perfectly
+ * their bboxes overlap (same wall position in the host shot and the guest
+ * shot), so cross-scene dedupe never happens.
+ */
+async function dedupeOverlappingClusters(
+  clusters: SurfaceCluster[],
+  computeMedianFn: (c: SurfaceCluster['surfaces']) => { x: number; y: number; w: number; h: number },
+): Promise<{ keep: SurfaceCluster[]; drop: SurfaceCluster[] }> {
+  const IOU_MERGE = 0.40;
+
+  // Coalesce same-group clusters into one unit. Group-less clusters (legacy
+  // rows) stay one-unit-per-cluster, preserving the old behavior for them.
+  const byGroup = new Map<string, SurfaceCluster>();
+  const units: SurfaceCluster[] = [];
+  for (const c of clusters) {
+    if (!c.groupId) {
+      units.push(c);
+      continue;
+    }
+    const existing = byGroup.get(c.groupId);
+    if (existing) {
+      existing.surfaces = existing.surfaces.concat(c.surfaces);
+    } else {
+      const unit: SurfaceCluster = { surfaceType: c.surfaceType, sceneKey: c.sceneKey, groupId: c.groupId, surfaces: [...c.surfaces] };
+      byGroup.set(c.groupId, unit);
+      units.push(unit);
+    }
+  }
+
+  const enriched = units.map(c => ({
+    cluster: c,
+    median: computeMedianFn(c.surfaces),
+    score: c.surfaces.reduce((sum, s) => sum + s.confidence, 0),
+  })).sort((a, b) => b.score - a.score);
+
+  const keep: SurfaceCluster[] = [];
+  const drop: SurfaceCluster[] = [];
+  for (const e of enriched) {
+    const eBox = { x: e.median.x, y: e.median.y, width: e.median.w, height: e.median.h };
+    const conflict = keep.find(k => {
+      if (canonicalSurfaceType(k.surfaceType) !== canonicalSurfaceType(e.cluster.surfaceType)) return false;
+      // HARD scene gate: different scenes never dedupe.
+      if (k.sceneKey !== undefined && e.cluster.sceneKey !== undefined && k.sceneKey !== e.cluster.sceneKey) return false;
+      const kEnriched = enriched.find(x => x.cluster === k);
+      if (!kEnriched) return false;
+      const kBox = { x: kEnriched.median.x, y: kEnriched.median.y, width: kEnriched.median.w, height: kEnriched.median.h };
+      return bboxIoU(eBox, kBox) > IOU_MERGE;
+    });
+    if (conflict) {
+      drop.push(e.cluster);
+    } else {
+      keep.push(e.cluster);
+    }
+  }
+  return { keep, drop };
 }
 
 /**
@@ -1527,31 +3540,53 @@ function computeMedianBBox(surfaces: SurfaceCluster['surfaces']): { x: number; y
  * consistent bounding box per group, and updates all surfaces to use it.
  * Also filters out phantom surfaces that are too small (<5% frame area).
  */
-async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
+async function normalizeSurfaceBoundingBoxes(videoId: number, excludeIds?: Set<number>, taughtGroupIds?: Set<string>): Promise<void> {
   console.log(`[Normalize] Starting bounding box normalization for video ${videoId}`);
 
-  const surfaces = await storage.getDetectedSurfaces(videoId);
+  // excludeIds = the previous scan's rows (still active until end-of-scan
+  // retirement). Keep them out of clustering/dedupe so they can't compete
+  // with — or overwrite the bboxes of — this run's detections.
+  const allRows = await storage.getDetectedSurfaces(videoId);
+  const surfaces = excludeIds ? allRows.filter(s => !excludeIds.has(s.id)) : allRows;
   if (surfaces.length < 2) {
     console.log(`[Normalize] Only ${surfaces.length} surface(s), nothing to normalize`);
     return;
   }
 
   // Step 1: Filter out phantom and invalid surfaces
-  const MIN_SURFACE_AREA = 0.03; // 3% of frame area minimum
-  const MAX_SURFACE_HEIGHT = 0.40; // Surface seen at eye level shouldn't be >40% of frame height
+  // Height limits differ by orientation: horizontal surfaces (tables/desks)
+  // seen at eye level are inherently thin strips (max ~40%), but vertical
+  // surfaces (walls/doors/windows) legitimately span most of the frame.
+  // Without per-orientation limits, every detected wall got removed as
+  // "oversized" — exactly what the user just hit.
+  const MIN_SURFACE_AREA = 0.03; // 3% of frame area minimum (applies to both orientations)
+  const MAX_HORIZONTAL_HEIGHT = 0.40; // tables/desks at eye level
+  const MAX_VERTICAL_HEIGHT = 0.95; // walls can fill almost the entire frame
   const phantomIds: number[] = [];
   for (const s of surfaces) {
+    // Taught surfaces are creator ground truth — the creator drew the box.
+    // The area/height heuristics exist to kill hallucinated detections, and
+    // they were deterministically erasing small taught furniture every scan
+    // (teach accepted boxes below the 3% floor). Never phantom-filter them.
+    const rowGid = (s as any).surfaceGroupId as string | null | undefined;
+    if (rowGid && taughtGroupIds?.has(rowGid)) continue;
     const width = parseFloat(String(s.boundingBoxWidth));
     const height = parseFloat(String(s.boundingBoxHeight));
     const area = width * height;
+    const orientation = (s as any).orientation as string | null | undefined;
+    // Backstop for legacy rows that pre-date the orientation field —
+    // infer from surfaceType so the filter still does the right thing.
+    const isVertical = orientation === "vertical"
+      || ["wall", "door", "window"].includes((s.surfaceType || "").toLowerCase());
+    const heightLimit = isVertical ? MAX_VERTICAL_HEIGHT : MAX_HORIZONTAL_HEIGHT;
 
     if (area < MIN_SURFACE_AREA) {
       phantomIds.push(s.id);
       console.log(`[Normalize] Removing phantom surface ${s.id} (${s.surfaceType}, area=${(area * 100).toFixed(1)}% < ${(MIN_SURFACE_AREA * 100)}%)`);
-    } else if (height > MAX_SURFACE_HEIGHT && s.surfaceType !== "Filtered") {
-      // Bounding box is unrealistically tall — likely includes legs/floor/people
+    } else if (height > heightLimit && s.surfaceType !== "Filtered") {
+      // Bounding box exceeds the per-orientation max — likely overlaps people/floor
       phantomIds.push(s.id);
-      console.log(`[Normalize] Removing oversized surface ${s.id} (${s.surfaceType}, height=${(height * 100).toFixed(1)}% > ${(MAX_SURFACE_HEIGHT * 100)}%)`);
+      console.log(`[Normalize] Removing oversized ${isVertical ? "vertical" : "horizontal"} surface ${s.id} (${s.surfaceType}, height=${(height * 100).toFixed(1)}% > ${(heightLimit * 100)}%)`);
     }
   }
 
@@ -1564,15 +3599,77 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
     }
   }
 
-  // Step 2: Cluster remaining valid surfaces
+  // Step 2: Cluster remaining valid surfaces. Pass scene cuts so cross-shot
+  // surfaces don't merge — same rationale as captureSurfaceKeyframes.
   const validSurfaces = surfaces.filter(s => !phantomIds.includes(s.id));
-  const clusters = clusterSurfaces(validSurfaces as any);
+  let sceneCuts: number[] = [];
+  try {
+    const video = await storage.getVideoById(videoId);
+    const raw = (video as any)?.sceneBoundaries;
+    if (Array.isArray(raw)) sceneCuts = raw.filter(t => typeof t === "number" && Number.isFinite(t));
+  } catch { /* ignore */ }
+  const clusters = clusterSurfaces(validSurfaces as any, sceneCuts);
 
-  console.log(`[Normalize] Found ${clusters.length} cluster(s) from ${validSurfaces.length} surfaces`);
+  console.log(`[Normalize] Found ${clusters.length} cluster(s) from ${validSurfaces.length} surfaces (scene cuts: ${sceneCuts.length})`);
 
-  // Step 3: For each cluster with 2+ surfaces, compute median bbox and update all
-  let normalizedCount = 0;
+  // Step 2a: identity adoption. When spatial clustering merges rows from
+  // more than one consensus group into a single cluster, post-processing has
+  // decided they're the same physical surface — every merged row adopts the
+  // cluster's dominant surfaceGroupId so identity stays one-per-surface all
+  // the way to the inventory. Rows with no groupId (legacy scans) adopt too
+  // when the cluster has one; clusters with no grouped rows are left alone.
   for (const cluster of clusters) {
+    if (!cluster.groupId) continue;
+    for (const member of cluster.surfaces) {
+      if (member.groupId === cluster.groupId) continue;
+      try {
+        await storage.updateDetectedSurface(member.id, { surfaceGroupId: cluster.groupId });
+        member.groupId = cluster.groupId;
+      } catch (err) {
+        console.warn(`[Normalize] Failed to adopt group id on surface ${member.id}:`, err);
+      }
+    }
+  }
+
+  // Step 2b: Drop overlapping clusters of the same canonical type. clusterSurfaces
+  // groups by IoU/center-distance against members, but two clusters of the same
+  // type can still drift far enough apart that no individual member matches —
+  // their MEDIANS, however, can still overlap heavily. This pass catches the
+  // green+blue duplicate case where Gemini split one real coffee table into two
+  // semantic groups across many frames.
+  const { keep: keptClusters, drop: dropCandidates } = await dedupeOverlappingClusters(clusters, computeMedianBBox);
+  // Taught clusters never lose the dedupe: a 1-row taught cluster (~0.9
+  // cumulative confidence) loses to any multi-row cluster on score, which
+  // deterministically erased the creator's own box every scan. Spared
+  // clusters rejoin the kept set so step 3 still normalizes their rows.
+  const droppedClusters: typeof dropCandidates = [];
+  for (const cluster of dropCandidates) {
+    if (cluster.groupId && taughtGroupIds?.has(cluster.groupId)) {
+      console.log(`[Normalize] Sparing taught cluster ${cluster.groupId} (${cluster.surfaceType}) from dedupe drop`);
+      keptClusters.push(cluster);
+    } else {
+      droppedClusters.push(cluster);
+    }
+  }
+  if (droppedClusters.length > 0) {
+    console.log(`[Normalize] Dropping ${droppedClusters.length} overlapping cluster(s) of duplicate type`);
+    for (const cluster of droppedClusters) {
+      for (const surface of cluster.surfaces) {
+        try {
+          await storage.updateDetectedSurface(surface.id, {
+            surfaceType: "Filtered",
+            sceneContext: `Removed: duplicate ${cluster.surfaceType} cluster overlapping a stronger one`,
+          });
+        } catch (err) {
+          console.warn(`[Normalize] Failed to filter duplicate cluster surface ${surface.id}:`, err);
+        }
+      }
+    }
+  }
+
+  // Step 3: For each kept cluster with 2+ surfaces, compute median bbox and update all
+  let normalizedCount = 0;
+  for (const cluster of keptClusters) {
     if (cluster.surfaces.length < 2) continue;
 
     const medianBox = computeMedianBBox(cluster.surfaces);
@@ -1594,7 +3691,7 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
     }
   }
 
-  console.log(`[Normalize] Normalized ${normalizedCount} surfaces across ${clusters.length} cluster(s)`);
+  console.log(`[Normalize] Normalized ${normalizedCount} surfaces across ${keptClusters.length} cluster(s)`);
 }
 
 // ============================================================================
@@ -1602,19 +3699,30 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
 // ============================================================================
 
 /**
- * Groups surfaces across frames into temporal tracks based on surface type
- * and bounding box similarity. This identifies when a surface "starts" and
- * "ends" in the video. Keeps only the single best track (longest duration,
- * highest confidence) and marks the rest as Filtered.
+ * Groups surfaces across frames into temporal tracks by canonical surface
+ * identity. This identifies when a surface "starts" and "ends" in the video.
+ * Keeps the best track (longest duration, highest confidence) PER canonical
+ * surface and marks that surface's weaker fragmented sightings as Filtered —
+ * distinct surfaces always keep their own best track.
  *
- * This prevents ghost/duplicate surfaces and ensures we show 1 prominent
- * surface with clear start/end timestamps.
+ * This prevents ghost/duplicate tracks of one surface without ever deleting
+ * a different physical surface that happens to share its type or position.
  */
-async function groupSurfacesTemporally(videoId: number): Promise<void> {
-  console.log(`[Temporal] Starting temporal grouping for video ${videoId}`);
+async function groupSurfacesTemporally(
+  videoId: number,
+  intervalHint: number = CONFIG.FRAME_INTERVAL_SECONDS,
+  excludeIds?: Set<number>,
+): Promise<void> {
+  console.log(`[Temporal] Starting temporal grouping for video ${videoId} (interval hint: ${intervalHint}s)`);
 
   const surfaces = await storage.getDetectedSurfaces(videoId);
-  const validSurfaces = surfaces.filter(s => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface");
+  // excludeIds = the previous scan's rows. They're retired at end-of-scan, but
+  // until then they're still active in the DB — letting them into the track
+  // competition means old detections can outscore and delete the new scan's.
+  const validSurfaces = surfaces.filter(s =>
+    s.surfaceType !== "Filtered" &&
+    s.surfaceType !== "Potential Surface" &&
+    !excludeIds?.has(s.id));
 
   if (validSurfaces.length < 2) {
     console.log(`[Temporal] Only ${validSurfaces.length} valid surface(s), skipping temporal grouping`);
@@ -1624,63 +3732,79 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
   // Sort by timestamp
   const sorted = [...validSurfaces].sort((a, b) => parseFloat(String(a.timestamp)) - parseFloat(String(b.timestamp)));
 
-  // Build tracks: consecutive frames with same surface type and overlapping bounding boxes
+  // Track identity — the canonical surface group when the row has one.
+  // Chaining used to accept `same type OR similar center-Y`, which fused
+  // DIFFERENT physical surfaces (a desk and the shelf behind it sit at
+  // similar heights) into one track labeled after whichever came first.
+  // A track is now one identity, full stop. Rows without a groupId (legacy
+  // scans) fall back to a type+scene composite — same-type-same-scene
+  // chaining without the cross-identity position shortcut.
+  const trackKeyOf = (s: (typeof sorted)[number]): string =>
+    ((s as any).surfaceGroupId as string | null | undefined)
+      ?? `${s.surfaceType.toLowerCase()}:scene${(s as any).sceneId ?? 0}`;
+
+  // Build tracks: consecutive frames of the SAME canonical surface
   interface SurfaceTrack {
     surfaceType: string;
+    key: string;
     surfaces: typeof sorted;
     startTime: number;
     endTime: number;
     avgConfidence: number;
   }
 
-  const tracks: SurfaceTrack[] = [];
-  let currentTrack: typeof sorted = [sorted[0]];
-
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = sorted[i - 1];
-    const curr = sorted[i];
-    const prevTs = parseFloat(String(prev.timestamp));
-    const currTs = parseFloat(String(curr.timestamp));
-    const timeDiff = currTs - prevTs;
-
-    // Check if surfaces are consecutive (within 1.5x frame interval) and same type
-    const isSameType = curr.surfaceType.toLowerCase() === prev.surfaceType.toLowerCase();
-    const isConsecutive = timeDiff <= CONFIG.FRAME_INTERVAL_SECONDS * 1.5;
-
-    // Check bounding box overlap (center Y within 15% tolerance)
-    const prevCenterY = parseFloat(String(prev.boundingBoxY)) + parseFloat(String(prev.boundingBoxHeight)) / 2;
-    const currCenterY = parseFloat(String(curr.boundingBoxY)) + parseFloat(String(curr.boundingBoxHeight)) / 2;
-    const isSimilarPosition = Math.abs(prevCenterY - currCenterY) < 0.15;
-
-    if (isConsecutive && (isSameType || isSimilarPosition)) {
-      currentTrack.push(curr);
-    } else {
-      // Close current track and start a new one
-      const timestamps = currentTrack.map(s => parseFloat(String(s.timestamp)));
-      tracks.push({
-        surfaceType: currentTrack[0].surfaceType,
-        surfaces: [...currentTrack],
-        startTime: Math.min(...timestamps),
-        endTime: Math.max(...timestamps),
-        avgConfidence: currentTrack.reduce((sum, s) => sum + parseFloat(String(s.confidence)), 0) / currentTrack.length,
-      });
-      currentTrack = [curr];
-    }
+  // Partition rows by identity FIRST, then chain each partition by time gap
+  // independently. Chaining the global timestamp order broke multicam scenes:
+  // when frames yield 2+ consensus surfaces each, rows of different groups
+  // alternate at every timestamp (desk@100s, wall@100s, desk@109s, ...), so
+  // every key change closed the track, nearly every track was a singleton,
+  // and best-per-group kept ONE row per surface — silently filtering the
+  // supporting-frame rows that give videoExporter fades and remix
+  // densification their keyframe density. Distinct groups never interact.
+  const rowsByKey = new Map<string, typeof sorted>();
+  for (const s of sorted) {
+    const key = trackKeyOf(s);
+    const arr = rowsByKey.get(key) ?? [];
+    arr.push(s);
+    rowsByKey.set(key, arr);
   }
 
-  // Close the last track
-  const timestamps = currentTrack.map(s => parseFloat(String(s.timestamp)));
-  tracks.push({
-    surfaceType: currentTrack[0].surfaceType,
-    surfaces: [...currentTrack],
-    startTime: Math.min(...timestamps),
-    endTime: Math.max(...timestamps),
-    avgConfidence: currentTrack.reduce((sum, s) => sum + parseFloat(String(s.confidence)), 0) / currentTrack.length,
-  });
+  const tracks: SurfaceTrack[] = [];
+  const closeTrack = (key: string, trackRows: typeof sorted) => {
+    const timestamps = trackRows.map(s => parseFloat(String(s.timestamp)));
+    tracks.push({
+      surfaceType: trackRows[0].surfaceType,
+      key,
+      surfaces: [...trackRows],
+      startTime: Math.min(...timestamps),
+      endTime: Math.max(...timestamps),
+      avgConfidence: trackRows.reduce((sum, s) => sum + parseFloat(String(s.confidence)), 0) / trackRows.length,
+    });
+  };
+
+  for (const [key, rows] of Array.from(rowsByKey.entries())) {
+    // "Consecutive" means within 1.5× the actual scan interval. The hint is
+    // the caller-measured median gap between analyzed frames — scene-first
+    // and grid-diverse sampling space frames irregularly (shot midpoints,
+    // 9s+ grids), so a config-constant interval here marked every real gap
+    // as non-consecutive, fragmenting tracks into one-frame slivers and
+    // filtering 95%+ of detections.
+    let currentTrack: typeof sorted = [rows[0]];
+    for (let i = 1; i < rows.length; i++) {
+      const timeDiff = parseFloat(String(rows[i].timestamp)) - parseFloat(String(rows[i - 1].timestamp));
+      if (timeDiff <= intervalHint * 1.5) {
+        currentTrack.push(rows[i]);
+      } else {
+        closeTrack(key, currentTrack);
+        currentTrack = [rows[i]];
+      }
+    }
+    closeTrack(key, currentTrack);
+  }
 
   console.log(`[Temporal] Found ${tracks.length} surface track(s):`);
   for (const track of tracks) {
-    const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
+    const duration = track.endTime - track.startTime + intervalHint;
     console.log(`[Temporal]   ${track.surfaceType}: ${track.startTime}s - ${track.endTime}s (${duration}s, ${track.surfaces.length} frames, ${(track.avgConfidence * 100).toFixed(0)}% avg confidence)`);
   }
 
@@ -1689,8 +3813,8 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
     // Store temporal range in scene_context for the surfaces in this track
     if (tracks.length === 1) {
       const track = tracks[0];
-      const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
-      const contextNote = `Visible: ${track.startTime}s - ${track.endTime + CONFIG.FRAME_INTERVAL_SECONDS}s (${duration}s)`;
+      const duration = track.endTime - track.startTime + intervalHint;
+      const contextNote = `Visible: ${track.startTime}s - ${track.endTime + intervalHint}s (${duration}s)`;
       for (const s of track.surfaces) {
         try {
           await storage.updateDetectedSurface(s.id, { sceneContext: contextNote });
@@ -1702,34 +3826,52 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
 
   // Score tracks: prefer longer duration and higher confidence
   const scoredTracks = tracks.map(track => {
-    const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
+    const duration = track.endTime - track.startTime + intervalHint;
     // Score = duration (in seconds) * average confidence
     const score = duration * track.avgConfidence;
     return { ...track, score, duration };
   }).sort((a, b) => b.score - a.score);
 
-  // Keep only the best track
-  const bestTrack = scoredTracks[0];
-  const bestDuration = bestTrack.duration;
-  console.log(`[Temporal] Best track: ${bestTrack.surfaceType} (${bestTrack.startTime}s - ${bestTrack.endTime}s, ${bestDuration}s, score=${bestTrack.score.toFixed(2)})`);
-
-  // Store temporal range in the best track's surfaces
-  const contextNote = `Visible: ${bestTrack.startTime}s - ${bestTrack.endTime + CONFIG.FRAME_INTERVAL_SECONDS}s (${bestDuration}s)`;
-  for (const s of bestTrack.surfaces) {
-    try {
-      await storage.updateDetectedSurface(s.id, { sceneContext: contextNote });
-    } catch (err) { /* non-fatal */ }
+  // Keep the best track PER CANONICAL SURFACE. Keying by (type, scene) kept
+  // ONE track per type per scene — two REAL walls in the same wide shot
+  // meant one of them lost. A distinct group is a distinct physical surface
+  // and always survives; only weaker RE-DETECTIONS of the same surface
+  // (fragmented sightings of one group) lose to that group's best track.
+  const bestPerGroup = new Map<string, typeof scoredTracks[0]>();
+  for (const t of scoredTracks) {
+    const existing = bestPerGroup.get(t.key);
+    if (!existing || t.score > existing.score) {
+      bestPerGroup.set(t.key, t);
+    }
+  }
+  const keepIds = new Set<number>();
+  const winningTracks = Array.from(bestPerGroup.values());
+  for (const t of winningTracks) {
+    console.log(`[Temporal] Keeping ${t.surfaceType} [${t.key}]: ${t.startTime}s - ${t.endTime}s (${t.duration}s, score=${t.score.toFixed(2)})`);
+    const contextNote = `Visible: ${t.startTime}s - ${t.endTime + intervalHint}s (${t.duration}s)`;
+    for (const s of t.surfaces) {
+      keepIds.add(s.id);
+      try {
+        await storage.updateDetectedSurface(s.id, { sceneContext: contextNote });
+      } catch (err) { /* non-fatal */ }
+    }
   }
 
-  // Filter out surfaces from non-best tracks
-  for (let i = 1; i < scoredTracks.length; i++) {
-    const track = scoredTracks[i];
-    console.log(`[Temporal] Filtering out track: ${track.surfaceType} (${track.startTime}s - ${track.endTime}s, score=${track.score.toFixed(2)})`);
+  // Filter out surfaces NOT in their group's winning track. These are weaker
+  // fragments of the SAME canonical surface (e.g. a brief 2-frame sighting
+  // when the group's primary track has 5 frames). Other groups — including
+  // same-type groups in the same scene — keep their own winners.
+  for (const track of scoredTracks) {
+    if (track.surfaces.every(s => keepIds.has(s.id))) continue; // entirely a winner
     for (const s of track.surfaces) {
+      if (keepIds.has(s.id)) continue;
+      const winner = bestPerGroup.get(track.key);
+      const winnerLabel = winner ? `${winner.surfaceType} (${winner.duration}s)` : "best track";
+      console.log(`[Temporal] Filtering surface ${s.id} (${track.surfaceType}, ${track.duration}s) — winning track for this surface is ${winnerLabel}`);
       try {
         await storage.updateDetectedSurface(s.id, {
           surfaceType: "Filtered",
-          sceneContext: `Removed: lower-priority track (${track.surfaceType}, ${track.duration}s) — best track is ${bestTrack.surfaceType} (${bestDuration}s)`,
+          sceneContext: `Removed: weaker ${track.surfaceType} sighting (${track.duration}s) — best track for this surface is ${winnerLabel}`,
         });
       } catch (err) {
         console.warn(`[Temporal] Failed to filter surface ${s.id}:`, err);
@@ -1737,29 +3879,184 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
     }
   }
 
-  console.log(`[Temporal] Kept ${bestTrack.surfaces.length} surfaces, filtered ${validSurfaces.length - bestTrack.surfaces.length} from weaker tracks`);
+  console.log(`[Temporal] Kept ${keepIds.size} surfaces across ${bestPerGroup.size} canonical surface track(s), filtered ${validSurfaces.length - keepIds.size}`);
 }
 
 // ============================================================================
 // MAIN SCAN FUNCTIONS
 // ============================================================================
 
+// Single-flight lock per videoId. Prevents stacked scans when the user clicks
+// the Scan button repeatedly while a scan is already running. Subsequent calls
+// for the same videoId join the in-flight promise rather than starting a new
+// scan, so the user gets one scan and one consistent result regardless of how
+// many times they click. The map clears once each scan settles.
+const SCAN_IN_FLIGHT = new Map<number, Promise<ScanResult>>();
+
+export function isVideoScanInFlight(videoId: number): boolean {
+  return SCAN_IN_FLIGHT.has(videoId);
+}
+
+// GLOBAL scan throttle: one Replit VM cannot decode/analyze N videos at
+// once — 10 parallel scans contend the vCPU until ffmpeg watchdogs fire
+// and an OOM takes everything down. Excess scans WAIT here (their status
+// stays "Scanning"; the queue delay reads as a slower scan, which under
+// contention it would have been anyway — just without the crash risk).
+const MAX_CONCURRENT_SCANS = Math.max(1, parseInt(process.env.MAX_CONCURRENT_SCANS || "2", 10) || 2);
+let runningScanCount = 0;
+const scanSlotWaiters: Array<() => void> = [];
+async function acquireScanSlot(videoId: number): Promise<void> {
+  if (runningScanCount >= MAX_CONCURRENT_SCANS) {
+    console.log(`[Scanner V2] Video ${videoId}: waiting for a scan slot (${runningScanCount}/${MAX_CONCURRENT_SCANS} running, ${scanSlotWaiters.length} queued)`);
+    // Queued scans still hold status "Scanning" — keep updated_at fresh so
+    // a long queue can't trip the 120-min stuck-scan sweep.
+    const hb = setInterval(() => {
+      storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
+    }, 5 * 60 * 1000);
+    (hb as any).unref?.();
+    try {
+      await new Promise<void>((r) => scanSlotWaiters.push(r));
+    } finally {
+      clearInterval(hb);
+    }
+  }
+  runningScanCount++;
+}
+function releaseScanSlot(): void {
+  runningScanCount = Math.max(0, runningScanCount - 1);
+  const next = scanSlotWaiters.shift();
+  if (next) next();
+}
+
 export async function processVideoScan(
+  videoId: number,
+  forceRescan: boolean = false,
+  scanMode: keyof typeof scanModes = "standard"
+): Promise<ScanResult> {
+  // If a scan is already running for this video, return the existing promise.
+  // The caller's "click again" results in the same response as the original
+  // run — no wipe, no parallel work, no race.
+  const existing = SCAN_IN_FLIGHT.get(videoId);
+  if (existing) {
+    console.log(`[Scanner V2] Video ${videoId}: scan already in progress, joining existing run (forceRescan=${forceRescan} ignored)`);
+    return existing;
+  }
+
+  const promise = (async () => {
+    await acquireScanSlot(videoId);
+    try {
+      // Hard slot cap: a never-settling scan (wedged child process, hung
+      // fetch) would otherwise hold 1 of MAX_CONCURRENT_SCANS slots for the
+      // process lifetime and quietly halve/zero scan throughput. 90min is
+      // far above any legitimate scan; the timed-out run's status flips so
+      // the UI doesn't spin forever.
+      const HARD_SCAN_CAP_MS = 90 * 60 * 1000;
+      let capTimer: NodeJS.Timeout | undefined;
+      const capPromise = new Promise<ScanResult>((resolve) => {
+        capTimer = setTimeout(async () => {
+          console.error(`[Scanner V2] Video ${videoId}: HARD CAP (${HARD_SCAN_CAP_MS / 60000}min) — releasing scan slot; the run is abandoned`);
+          try { await updateStatusIfStillScanning(videoId, "Scan Failed"); } catch {}
+          resolve({ success: false, videoId, surfacesDetected: 0, error: "Scan exceeded the hard time cap" });
+        }, HARD_SCAN_CAP_MS);
+        (capTimer as any).unref?.();
+      });
+      return await Promise.race([
+        processVideoScanInner(videoId, forceRescan, scanMode).finally(() => clearTimeout(capTimer)),
+        capPromise,
+      ]);
+    } finally {
+      releaseScanSlot();
+      SCAN_IN_FLIGHT.delete(videoId);
+    }
+  })();
+
+  SCAN_IN_FLIGHT.set(videoId, promise);
+  return promise;
+}
+
+async function processVideoScanInner(
   videoId: number,
   forceRescan: boolean = false,
   scanMode: keyof typeof scanModes = "standard"
 ): Promise<ScanResult> {
   console.log(`[Scanner V2] ========== STARTING SCAN ==========`);
   console.log(`[Scanner V2] Video ID: ${videoId}, Force Rescan: ${forceRescan}`);
-  
+
   const tempDir = path.join(os.tmpdir(), `scan-v2-${videoId}-${Date.now()}`);
   const framesDir = path.join(tempDir, "frames");
-  
+
+  // Snapshot existing surface IDs BEFORE any wipe. If this scan succeeds with
+  // new surfaces we'll delete the snapshotted ones at the end. If the scan
+  // fails or finds nothing, we leave the prior data alone — preserves the
+  // creator's previous results across an error or a click-twice rescan.
+  // priorActiveCount tracks only the rows a brand can actually see: the raw
+  // snapshot includes every soft-deleted Filtered/"Potential Surface" row
+  // from all prior rescans (rescans never hard-delete), so using its length
+  // in a status string inflates monotonically — 4 active surfaces atop 130
+  // retired rows must revert to "Ready (4 Spots)", not "Ready (134 Spots)".
+  let priorSurfaceIds: number[] = [];
+  let priorActiveCount = 0;
+  // groupId per ACTIVE prior row — the retirement sweep spares taught rows
+  // only when they were still live at scan start. A row the creator rejected
+  // is already Filtered and stays that way; sparing must never resurrect it.
+  const priorGroupById = new Map<number, string>();
+  const priorApprovedIds = new Set<number>();
   try {
-    // PRE-FLIGHT CHECKS
+    const prior = await storage.getDetectedSurfaces(videoId);
+    priorSurfaceIds = prior.map(s => s.id);
+    for (const s of prior) {
+      const gid = (s as any).surfaceGroupId as string | null | undefined;
+      if (gid && s.surfaceType !== "Filtered") {
+        priorGroupById.set(s.id, gid);
+        // Row-level approval signal — spares the row from the retirement
+        // sweep even before the model round-trip stamps validated (the
+        // first scan after approval is exactly the one that must not lose it).
+        if ((s as any).creatorApproved === true) priorApprovedIds.add(s.id);
+      }
+    }
+    // Count CANONICAL surfaces, not rows — each surface owns many
+    // supporting-frame rows, and a failed rescan reverting to
+    // "Ready (23 Spots)" over 4 physical surfaces is the row-count fiction
+    // this pipeline exists to kill. Rows from before groupIds existed fall
+    // back to type+scene identity (same coalesce storage counts by).
+    priorActiveCount = new Set(
+      prior
+        .filter(s => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface")
+        .map(s => ((s as any).surfaceGroupId as string | null | undefined) ?? `${s.surfaceType}:${(s as any).sceneId ?? 0}`)
+    ).size;
+    if (priorSurfaceIds.length > 0) {
+      console.log(`[Scanner V2] Snapshotted ${priorSurfaceIds.length} existing surface rows (${priorActiveCount} active canonical surfaces) — will replace only on successful scan`);
+    }
+  } catch (err: any) {
+    console.warn(`[Scanner V2] Could not snapshot existing surfaces:`, err?.message || err);
+  }
+
+  try {
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return { success: false, videoId, surfacesDetected: 0, error: "Video not found" };
+    }
+
+    console.log(`[Scanner V2] Video: ${video.title} (${video.youtubeId})`);
+
+    if (!forceRescan && video.status !== "Pending Scan") {
+      return {
+        success: false,
+        videoId,
+        surfacesDetected: 0,
+        error: `Video status is "${video.status}", not "Pending Scan"`,
+      };
+    }
+
+    // PRE-FLIGHT CHECKS — flat floor only. The stream path writes just a
+    // few hundred small JPEGs, so scaling this gate with duration would
+    // veto stream-only scans of long videos that never touch
+    // download-sized space. The duration-scaled requirement lives in the
+    // re-check right before the download fallback commits to its pull —
+    // the only phase that actually needs that much room.
     const availableMB = await getAvailableDiskSpaceMB();
-    console.log(`[Scanner V2] Available disk space: ${availableMB}MB`);
-    
+    console.log(`[Scanner V2] Available disk space: ${availableMB}MB (required: ${CONFIG.MIN_DISK_SPACE_MB}MB)`);
+
     if (availableMB < CONFIG.MIN_DISK_SPACE_MB) {
       console.error(`[Scanner V2] Insufficient disk space: ${availableMB}MB < ${CONFIG.MIN_DISK_SPACE_MB}MB required`);
       return {
@@ -1769,26 +4066,22 @@ export async function processVideoScan(
         error: `Insufficient disk space: ${availableMB}MB available, ${CONFIG.MIN_DISK_SPACE_MB}MB required`,
       };
     }
-    
-    const video = await storage.getVideoById(videoId);
-    if (!video) {
-      return { success: false, videoId, surfacesDetected: 0, error: "Video not found" };
-    }
-    
-    console.log(`[Scanner V2] Video: ${video.title} (${video.youtubeId})`);
-    
-    if (!forceRescan && video.status !== "Pending Scan") {
-      return {
-        success: false,
-        videoId,
-        surfacesDetected: 0,
-        error: `Video status is "${video.status}", not "Pending Scan"`,
-      };
-    }
-    
+
+    // Mark "Scanning" up front — BEFORE any download/stream resolution — so the
+    // library poll sees the transition immediately instead of clearing the
+    // spinner while a slow source resolution is still in flight. (A later
+    // updateVideoStatus("Scanning") is a harmless no-op re-write.)
+    await storage.updateVideoStatus(videoId, "Scanning");
+
     // LOCATE VIDEO FILE
     let videoPath: string | undefined;
-    
+
+    // OAuth stream-and-scan: frames pulled directly from a CDN URL without ever
+    // downloading the full video (see streamResolver.ts + extractFramesFromUrl).
+    // When this succeeds, we skip the local-file requirement entirely and feed
+    // these frames straight into detection.
+    let streamedFrames: { frames: string[]; timestamps: number[]; segmentIds: number[]; sceneIndex: SceneIndex | null } | null = null;
+
     if ((video as any).filePath?.startsWith('/storage/')) {
       try {
         const objectKey = (video as any).filePath.replace(/^\/storage\//, 'public/');
@@ -1815,166 +4108,1296 @@ export async function processVideoScan(
       }
     }
 
+    // YOUTUBE FALLBACK: imported videos (via /api/youtube/sync or
+    // import-selected) have no filePath — only a youtubeId. Pull the source
+    // to tempDir so the rest of the scan pipeline has bytes to work with.
+    // tempDir is cleaned up in the finally block, so the source video is
+    // discarded automatically once frames are extracted (light-cloud model:
+    // we never persist creator source files).
+    const looksLikeRealYouTubeId = (id: string) =>
+      !!id && !id.startsWith("upload-") && !id.startsWith("ig-")
+        && !id.startsWith("fb-") && !id.startsWith("demo-")
+        && !id.startsWith("hero-");
+
+    let scanPlan: { intervalSeconds: number; maxFrames: number } = {
+      intervalSeconds: CONFIG.FRAME_INTERVAL_SECONDS,
+      maxFrames: CONFIG.MAX_FRAMES_PER_VIDEO,
+    };
+    // True until a duration-derived plan replaces the CONFIG defaults. Local
+    // files (uploads) used to skip planning entirely and scan 48s of an
+    // hour-long file — the local path below probes ffprobe when this is
+    // still set.
+    let scanPlanIsDefault = true;
+
+    // Hard cap at 1 hour — anything longer scans only the first hour of
+    // content (creator-confirmed: nothing >1hr in scope). Shared by the
+    // stream grid sizing, the download plan, and the local-file plan.
+    // 65 minutes, matching the platform ceiling in shared/reel.ts. This was
+    // 60 * 60 with the note "creator-confirmed: nothing >1hr in scope" — that
+    // confirmation was withdrawn when long form was allowed in, and at 65
+    // minutes the old cap silently dropped the last five minutes of a source:
+    // no frames, no surfaces, no scene index, and nothing said so.
+    const MAX_DURATION_SEC = 65 * 60;
+
+    // Plan adaptive sampling — duration-banded, NOT a fixed frame target.
+    // Fixed-target was wrong: 75 frames on a 30-min video = every 24s,
+    // way too sparse for podcasts where surfaces shift between cuts.
+    // Sliding scale gets denser sampling on shorter content where
+    // action density is higher, and reasonable spacing on longer content.
+    const planFromDuration = (durSec: number): { intervalSeconds: number; maxFrames: number } => {
+      // Cap effective duration at 1hr — long videos still scan, just
+      // limited to first hour of content.
+      const eff = Math.min(durSec, MAX_DURATION_SEC);
+      let interval: number;
+      if (eff <= 5 * 60) interval = 2;          // ≤5min: every 2s
+      else if (eff <= 15 * 60) interval = 3;    // 5–15min: every 3s
+      else if (eff <= 30 * 60) interval = 4;    // 15–30min: every 4s
+      else interval = 5;                         // 30–60min: every 5s
+      const maxFrames = Math.ceil(eff / interval);
+      return { intervalSeconds: interval, maxFrames };
+    };
+
+    // Resolve video duration. Primary source: the DB (YouTube import stores
+    // ISO 8601 like "PT1H46M2S" in video.duration). Fast + reliable since
+    // we already have it. Fallback: yt-dlp metadata probe — but that's
+    // slow and frequently times out on long videos, so we only try it if
+    // the DB doesn't have a duration.
+    const durationSec = (() => {
+      const fromDb = parseIsoDuration((video as any).duration);
+      if (fromDb && fromDb > 0) {
+        console.log(`[Scanner V2] Duration from DB: ${fromDb}s (${(fromDb/60).toFixed(1)} min)`);
+        return fromDb;
+      }
+      return null;
+    })();
+
+    // yt-dlp probe result, shared between the stream path and the download
+    // fallback — each probe spawns yt-dlp and can take tens of seconds, so
+    // a stream attempt that probes and then fails coverage must not force
+    // the fallback to probe the same video again.
+    let ytProbedDurationSec: number | null = null;
+
+    // ─── OAuth STREAM-AND-SCAN (primary path for imported videos) ───────────
+    // For YouTube/IG/FB imports (no local filePath), resolve a direct CDN URL
+    // via the creator's OAuth credentials and pull sample frames straight from
+    // it — no full download, no upload. This is the intended model: the source
+    // is never persisted. Falls through to the download fallbacks below only if
+    // URL resolution or streaming extraction fails.
+    const platform = (video as any).platform as string | undefined;
+    // Twitch/TikTok/X: whole acquisition path is generic yt-dlp keyed on a
+    // rebuilt watch URL. Null when the stored id is malformed.
+    const genericSourceUrl = isYtDlpPlatform(platform)
+      ? sourceUrlForStoredId(platform, video.youtubeId)
+      : null;
+    const isStreamableImport =
+      process.env.SCANNER_DISABLE_STREAM !== "1" &&
+      !videoPath &&
+      ((platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) ||
+       !!genericSourceUrl ||
+       ((platform === "instagram" || platform === "facebook") &&
+        (video.youtubeId.startsWith("instagram:") || video.youtubeId.startsWith("facebook:"))));
+    if (process.env.SCANNER_DISABLE_STREAM === "1" && !videoPath) {
+      console.warn(`[Scanner V2] SCANNER_DISABLE_STREAM=1 — stream-and-scan disabled by operator, going straight to the download ladder`);
+    }
+
+    // Creator's YouTube OAuth token — shared by the stream-URL resolve, the
+    // duration probe, and the download fallback below (Path B: authenticated
+    // requests bypass anonymous bot detection). Fetched once per scan; null
+    // for non-YouTube sources and local files.
+    const oauthToken = !videoPath && platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)
+      ? await getFreshYoutubeTokenForUser(video.userId).catch(() => null)
+      : null;
+
+    if (isStreamableImport && streamPathDisabledReason) {
+      console.warn(`[Scanner V2] Stream-and-scan SKIPPED — circuit breaker open (${streamPathDisabledReason}); going straight to the download ladder`);
+    }
+    if (isStreamableImport && !streamPathDisabledReason) {
+      let source: StreamSource | null = null;
+      try {
+        if (platform === "youtube") {
+          source = await resolveYoutubeStreamUrl(video.youtubeId, oauthToken || undefined);
+        } else if (genericSourceUrl) {
+          source = await resolveGenericStreamUrl(genericSourceUrl, `${platform} ${video.youtubeId}`);
+        } else {
+          const user = await storage.getUserById((video as any).userId);
+          const token = safeDecrypt(user?.facebookAccessToken);
+          if (!token) {
+            console.warn(`[Scanner V2] No Facebook token for user ${(video as any).userId} — cannot stream ${platform}`);
+          } else {
+            source = await resolveGraphStreamUrl(video.youtubeId, platform as "instagram" | "facebook", token);
+          }
+        }
+      } catch (e: any) {
+        console.warn(`[Scanner V2] Stream URL resolution threw: ${e?.message || e}`);
+      }
+
+      if (source) {
+        // DENSE-then-DIVERSE detection: pull a dense uniform grid in one
+        // streaming pass (interval GRID_INTERVAL), then perceptually dedup to a
+        // scene-diverse subset for Gemini. Dense grid = every scene is SEEN so
+        // no surface is skipped; dedup = Gemini budget spent on distinct
+        // scenes/angles, not near-identical frames. This is the OAuth
+        // detection model: the stream flows through ffmpeg transiently, nothing
+        // is persisted.
+        const GRID_CAP = 400;                     // hard ceiling on candidate frames
+        // The DB duration is often absent for imports (and unparseable
+        // formats parse to null) — mirror the download fallback and probe
+        // yt-dlp before sizing the grid blind. Sizing blind against a
+        // too-small grid silently caps coverage at the first few minutes
+        // of a video of unknown length.
+        let streamDurationSec = durationSec;
+        if (!streamDurationSec && (platform === "youtube" || genericSourceUrl)) {
+          ytProbedDurationSec = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined, genericSourceUrl || undefined);
+          streamDurationSec = ytProbedDurationSec;
+          if (streamDurationSec) {
+            console.log(`[Scanner V2] Duration from yt-dlp probe: ${streamDurationSec}s`);
+          }
+        }
+        const eff = streamDurationSec ? Math.min(streamDurationSec, MAX_DURATION_SEC) : null;
+        // Interval adapts to duration so the candidate grid spans the WHOLE
+        // (capped) video without exceeding GRID_CAP: short clips get dense 2s
+        // sampling; a 1hr podcast gets ~9s sampling across all 60 min. dHash
+        // dedup below then trims to the scene-diverse detection set. Unknown
+        // duration sizes for the full 1-hour cap (9s × 400 = 3600s) — the
+        // extractor stops at end-of-stream anyway, so short videos just
+        // finish early, while a tighter blind grid would quietly scan only
+        // the head of a long one.
+        const gridInterval = eff ? Math.max(2, Math.ceil(eff / GRID_CAP)) : 9;
+        const gridMax = eff ? Math.min(GRID_CAP, Math.ceil(eff / gridInterval)) : GRID_CAP;
+
+        console.log(`[Scanner V2] Stream-and-scan: dense grid every ${gridInterval}s (up to ${gridMax} candidates spanning ${eff ? (eff/60).toFixed(1)+'min' : 'unknown dur'}) from ${platform} CDN URL (no download)`);
+        fs.mkdirSync(framesDir, { recursive: true });
+        const grid = await extractFramesUniformFromUrl(source, framesDir, gridInterval, gridMax);
+
+        // COVERAGE GATE: a truncated dense pass (CDN throttle, mid-stream
+        // 403, the extractor's 8-min SIGKILL cap) returns a partial grid of
+        // head-of-video frames. Accepting it marks the video scanned with
+        // the whole back half unseen AND suppresses the download fallback
+        // below (gated on !streamedFrames) — the worst kind of failure, an
+        // invisible one. A clean ffmpeg exit means the entire input was
+        // read (or the frame cap was hit), so the grid is complete no
+        // matter how few frames it holds — a fully-streamed short Reel
+        // with no stored duration is accepted here, not bounced to the
+        // download path. Truncated (dirty-exit) grids must span ≥70% of
+        // the (capped) duration; with unknown duration, a sane frame floor.
+        const coveredSec = grid.frames.length > 0
+          ? grid.timestamps[grid.timestamps.length - 1] + gridInterval
+          : 0;
+        const acceptReason = grid.frames.length === 0
+          ? null
+          : grid.complete
+          ? "clean ffmpeg exit (entire input read)"
+          : eff !== null && coveredSec >= 0.7 * eff
+          ? `covered ${coveredSec}s of ${eff}s (≥70%)`
+          : eff === null && grid.frames.length >= 10
+          ? `${grid.frames.length} frames meet the 10-frame floor (unknown duration)`
+          : null;
+
+        if (acceptReason) {
+          console.log(`[Scanner V2] Stream-and-scan: grid accepted — ${acceptReason}; ${grid.frames.length} frames spanning ~${coveredSec}s`);
+          // Detection budget: how many frames actually go to Gemini. Larger
+          // than the old fixed 24 — recall matters more than cost per the
+          // creator's directive that detection quality is paramount.
+          const detectionBudget = Math.max(CONFIG.MAX_FRAMES_PER_VIDEO, Math.min(60, grid.frames.length));
+          const selected = await selectDiverseFrames(grid.frames, grid.timestamps, {
+            hashThreshold: 10,       // dHash hamming ≥10/64 ≈ meaningfully different scene/angle
+            budget: detectionBudget,
+          });
+          if (selected.frames.length > 0) {
+            streamedFrames = selected;
+            streamConsecutiveFailures = 0;
+            console.log(`[Scanner V2] Stream-and-scan: ${grid.frames.length} candidates → ${selected.frames.length} diverse frames for detection — skipping download`);
+          }
+        } else if (grid.frames.length > 0) {
+          console.warn(
+            `[Scanner V2] Stream-and-scan: truncated dense grid covered only ${coveredSec}s of ` +
+            (eff !== null
+              ? `${eff}s (${grid.frames.length} frames, <70%)`
+              : `unknown duration (${grid.frames.length} frames, below 10-frame floor)`) +
+            ` — treating stream attempt as FAILED`
+          );
+        }
+        if (!streamedFrames) {
+          console.warn(`[Scanner V2] Stream-and-scan produced no usable frame set — falling back to download`);
+          streamConsecutiveFailures += 1;
+          if (streamConsecutiveFailures >= STREAM_BREAKER_LIMIT) {
+            streamPathDisabledReason = `${streamConsecutiveFailures} consecutive stream attempts produced no usable frames`;
+            console.error(`[Scanner V2] Stream-and-scan DISABLED for this process: ${streamPathDisabledReason}. All scans go straight to the download ladder until restart.`);
+          }
+          // Purge the whole grid (including size-floor stubs the collector
+          // excluded from its return but left on disk): the download
+          // fallback's uniform extractor globs this same dir for *.jpg,
+          // and stale grid frames would mix into its results with wrong
+          // timestamps. Must run on EVERY unaccepted stream attempt — a
+          // stub-only grid has frames.length === 0 and would otherwise
+          // skip the purge entirely.
+          try {
+            for (const f of fs.readdirSync(framesDir)) {
+              if (f.startsWith("grid_") && f.endsWith(".jpg")) safeUnlink(path.join(framesDir, f));
+            }
+          } catch { /* best-effort cleanup */ }
+        }
+      }
+    }
+
+    // Heartbeat: the stuck-scan sweep ages rows by updated_at, and the
+    // resolve/probe/stream phases above plus the download fallbacks below
+    // can legitimately run for tens of minutes with zero row writes.
+    // Refresh updated_at at each long-phase boundary via the CAS — status
+    // stays "Scanning", so a cancel that already flipped it is never
+    // clobbered and the write is a no-op.
+    await storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
+
+    if (!videoPath && !streamedFrames &&
+        (((video as any).platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) || genericSourceUrl)) {
+      console.log(`[Scanner V2] No filePath; attempting ${platform} download for ${video.youtubeId}`);
+      fs.mkdirSync(tempDir, { recursive: true });
+      // Stored ids can contain "/" (tiktok @user/video/123) — sanitize.
+      const downloadPath = path.join(tempDir, `${safeFileStem(video.youtubeId)}.mp4`);
+
+      // Path B (OAuth): the hoisted oauthToken above rides along on every
+      // request here so anonymous bot detection doesn't block long
+      // downloads. Falls back to anonymous if no token is available.
+
+      // Resolve duration for the duration-banded plan (planFromDuration
+      // above). Probe results feed back into ytProbedDurationSec so the
+      // degenerate-index fallback later in the local path can reuse them.
+      let probedDuration = durationSec ?? ytProbedDurationSec;
+      if (!probedDuration) {
+        probedDuration = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined, genericSourceUrl || undefined);
+        if (probedDuration) {
+          console.log(`[Scanner V2] Duration from yt-dlp probe: ${probedDuration}s`);
+          ytProbedDurationSec = probedDuration;
+        }
+      }
+
+      // Per-platform duration gate (Twitch VODs: HLS-only, often multi-hour
+      // — a pull the light-cloud /tmp budget can't absorb). Clear error
+      // instead of a mid-download ENOSPC mystery.
+      const platformMaxSec = platformMaxDurationSec(platform ?? "");
+      if (platformMaxSec && probedDuration && probedDuration > platformMaxSec) {
+        throw new Error(
+          `${platform} videos over ${Math.round(platformMaxSec / 60)} minutes aren't supported yet — ` +
+          `this one is ~${Math.round(probedDuration / 60)} minutes. Try a clip or a shorter VOD.`
+        );
+      }
+
+      if (probedDuration && probedDuration > 0) {
+        scanPlan = planFromDuration(probedDuration);
+        scanPlanIsDefault = false;
+        const coveredMin = (scanPlan.intervalSeconds * scanPlan.maxFrames / 60).toFixed(1);
+        const fullMin = (probedDuration / 60).toFixed(1);
+        const cappedNote = probedDuration > MAX_DURATION_SEC ? ` (CAPPED at ${MAX_DURATION_SEC / 60}min — full video is ${fullMin}min)` : "";
+        console.log(`[Scanner V2] Plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames = ${coveredMin}min coverage${cappedNote}`);
+      } else {
+        // Duration unknown — default to "5 min, every 2s" plan = 150 frames.
+        scanPlan = { intervalSeconds: 2, maxFrames: 150 };
+        scanPlanIsDefault = false;
+        console.log(`[Scanner V2] Duration unknown — using fallback plan: every 2s × 150 frames (5min coverage)`);
+      }
+
+      // Download budget: enough seconds to cover the planned frames + a buffer.
+      const plannedRange = scanPlan.intervalSeconds * scanPlan.maxFrames + 30;
+      const cappedDuration = probedDuration ? Math.min(probedDuration, MAX_DURATION_SEC) : null;
+      const rawTrimSec = cappedDuration ? Math.min(cappedDuration, plannedRange) : plannedRange;
+      // A trim covering ≥90% of the video saves almost nothing but forces
+      // yt-dlp to fork ffmpeg as its --download-sections downloader — the
+      // exact invocation dying with "ffmpeg exited with code -11" on this
+      // deploy image. Full pulls use yt-dlp's native downloader (no ffmpeg
+      // networking), so skip the trim when it buys <10%. Only for videos
+      // WITHIN the 1hr cap — beyond it the trim IS the cap, and dropping it
+      // would pull the entire multi-hour file.
+      const trimSec =
+        cappedDuration && probedDuration && probedDuration <= MAX_DURATION_SEC && rawTrimSec >= 0.9 * cappedDuration
+          ? undefined
+          : rawTrimSec;
+      const pulledSec = trimSec ?? cappedDuration ?? rawTrimSec;
+      if (trimSec === undefined) {
+        console.log(`[Scanner V2] Trim skipped (${rawTrimSec}s ≥ 90% of ${cappedDuration}s) — full pull via native downloader`);
+      }
+
+      // Re-check disk right before committing to the pull — the scan
+      // preflight ran before the trim size was known, the stream attempt
+      // above may have written hundreds of frames since, and /tmp is shared
+      // with sourceCache, uploads, and the yt-dlp binary. Throwing (instead
+      // of letting yt-dlp ENOSPC mid-file) skips the whole retry ladder,
+      // whose later rungs drop the trim and pull strictly MORE bytes at
+      // the same full disk. ~0.4 MB/s covers ≤720p plus merge headroom.
+      const dlRequiredMB = Math.max(CONFIG.MIN_DISK_SPACE_MB, Math.ceil(pulledSec * 0.4));
+      const dlAvailableMB = await getAvailableDiskSpaceMB();
+      if (dlAvailableMB < dlRequiredMB) {
+        throw new Error(`Insufficient disk space for source download: ${dlAvailableMB}MB available, ~${dlRequiredMB}MB needed for a ${pulledSec}s pull`);
+      }
+
+      const ok = await downloadYouTubeVideo(video.youtubeId, downloadPath, {
+        trimToSeconds: trimSec,
+        timeoutMs: 10 * 60 * 1000, // 10min cap — long videos with full-duration scans take longer
+        oauthToken: oauthToken || undefined,
+        sourceUrl: genericSourceUrl || undefined,
+      });
+      if (ok && fs.existsSync(downloadPath)) {
+        videoPath = downloadPath;
+        console.log(`[Scanner V2] ${platform} download succeeded: ${videoPath}`);
+        // Tee the pull into the playback/editorial cache so review playback
+        // and the editorial pipeline become cache hits instead of separate
+        // YouTube downloads from the same IP. Only when the trim window
+        // covers the whole video — a >1hr capped pull or an
+        // unknown-duration bounded pull is a truncated source and must
+        // never be served to the player.
+        if (probedDuration && probedDuration > 0 && probedDuration <= pulledSec) {
+          seedSourceCache(videoId, downloadPath);
+        }
+      } else {
+        console.error(`[Scanner V2] ${platform} download failed for ${video.youtubeId}`);
+      }
+    }
+
+    // FACEBOOK / INSTAGRAM FALLBACK: imported videos (via /api/social/sync)
+    // have no filePath — the importer only stored Graph API metadata. Resolve
+    // the CDN-hosted source URL on-demand using the user's stored Page access
+    // token (also valid for the linked IG Business account), download to
+    // tempDir, and let the existing finally{} cleanup discard the bytes.
+    // Same light-cloud model as the YouTube path above.
+    const isFbOrIg =
+      !videoPath && !streamedFrames &&
+      ((video as any).platform === "facebook" || (video as any).platform === "instagram") &&
+      (video.youtubeId.startsWith("facebook:") || video.youtubeId.startsWith("instagram:"));
+
+    if (isFbOrIg) {
+      const platform = (video as any).platform as "facebook" | "instagram";
+      const user = await storage.getUserById((video as any).userId);
+      const token = safeDecrypt(user?.facebookAccessToken);
+      if (!token) {
+        console.error(`[Scanner V2] No Facebook access token for user ${(video as any).userId} — cannot download ${platform} source`);
+      } else {
+        console.log(`[Scanner V2] No filePath; attempting ${platform} download for ${video.youtubeId}`);
+        fs.mkdirSync(tempDir, { recursive: true });
+        const safeId = video.youtubeId.replace(/[^a-zA-Z0-9]/g, "_");
+        const downloadPath = path.join(tempDir, `${safeId}.mp4`);
+        const ok = platform === "facebook"
+          ? await downloadFacebookVideo(video.youtubeId, token, downloadPath)
+          : await downloadInstagramVideo(video.youtubeId, token, downloadPath);
+        if (ok && fs.existsSync(downloadPath)) {
+          videoPath = downloadPath;
+          console.log(`[Scanner V2] ${platform} download succeeded: ${videoPath}`);
+          // Graph CDN downloads are always the full video — safe to tee
+          // into the playback/editorial cache unconditionally.
+          seedSourceCache(videoId, downloadPath);
+        } else {
+          console.error(`[Scanner V2] ${platform} download failed for ${video.youtubeId}`);
+        }
+      }
+    }
+
     // DEBUG LOGGING
     console.log('[Scanner V2] DEBUG - youtubeId:', video.youtubeId);
     console.log('[Scanner V2] DEBUG - LOCAL_ASSET_MAP keys:', Object.keys(LOCAL_ASSET_MAP));
     console.log('[Scanner V2] DEBUG - Resolved videoPath:', videoPath);
-    
-    if (!videoPath || !fs.existsSync(videoPath)) {
-      console.error(`[Scanner V2] Video file not found: ${videoPath}`);
-      await storage.updateVideoStatus(videoId, "Pending Upload");
+
+    // No frames from streaming AND no local/downloaded file → genuine failure.
+    // Give a descriptive, actionable status instead of the ambiguous
+    // "Pending Upload" (which the UI rendered identically to "Pending Scan",
+    // making a failed scan look like nothing happened).
+    if (!streamedFrames && (!videoPath || !fs.existsSync(videoPath))) {
+      console.error(`[Scanner V2] No frames from stream and no video file: ${videoPath}`);
+      const platform = (video as any).platform as string | undefined;
+      const failStatus =
+        platform === "instagram" || platform === "facebook"
+          ? "Scan Failed — Reconnect Instagram/Facebook"
+          : platform === "youtube" || isYtDlpPlatform(platform)
+          ? "Scan Failed — Source Unavailable"
+          : "Pending Upload";
+      await updateStatusIfStillScanning(videoId, failStatus);
       return {
         success: false,
         videoId,
         surfacesDetected: 0,
-        error: "Video file not found. Upload required.",
+        error: streamedFrames === null && (platform === "youtube" || platform === "instagram" || platform === "facebook" || isYtDlpPlatform(platform))
+          ? `Could not access ${platform} source. The video may be private, geo-blocked, or unavailable.`
+          : "Video file not found. Upload required.",
       };
     }
-    
-    const fileSizeMB = fs.statSync(videoPath).size / 1024 / 1024;
-    console.log(`[Scanner V2] Video file size: ${fileSizeMB.toFixed(2)}MB`);
-    
-    // UPDATE STATUS & CLEAR OLD DATA
-    await storage.clearDetectedSurfaces(videoId);
-    await storage.updateVideoStatus(videoId, "Scanning");
-    
+
+    if (videoPath) {
+      const fileSizeMB = fs.statSync(videoPath).size / 1024 / 1024;
+      console.log(`[Scanner V2] Video file size: ${fileSizeMB.toFixed(2)}MB`);
+    }
+
     fs.mkdirSync(framesDir, { recursive: true });
-    
-    // EXTRACT FRAMES
-    console.log(`[Scanner V2] Extracting frames...`);
-    const frames = await extractFrames(videoPath, framesDir);
-    
+
+    let frames: string[] = [];
+    let frameTimestamps: number[] = [];
+    // Streamed path: dHash segment id per frame (consensus grouping when no sceneIndex exists)
+    let streamSegmentIds: number[] | null = null;
+    let usedSceneFirst = false;
+    let sceneIndex: SceneIndex | null = null;
+    // Provenance for the persisted index/inventory: ffmpeg cut detection on a
+    // local file, or classes clustered from the streamed dense grid.
+    let sceneIndexSource: "sceneIndex" | "grid" = "sceneIndex";
+    // A degenerate index (zero cuts on a long video) still gets persisted,
+    // but its single all-covering scene must not become the consensus
+    // bucket — the local dHash segmentation below takes over for grouping.
+    let indexDegenerate = false;
+
+    if (streamedFrames) {
+      // OAuth stream path: frames were already pulled from the CDN URL. No
+      // ffmpeg cut detection here (that reads the whole file, which we
+      // deliberately never downloaded) — but the dense grid's dHash classes
+      // give us a real scene index of their own: recurring camera setups
+      // with per-run tStart/tEnd. Adopt it (and persist it, unless that
+      // would downgrade a refined index — see below), so streamed scans get
+      // real sceneIds instead of stamping 0 on every row.
+      frames = streamedFrames.frames;
+      frameTimestamps = streamedFrames.timestamps;
+      streamSegmentIds = streamedFrames.segmentIds;
+      if (streamedFrames.sceneIndex && streamedFrames.sceneIndex.sceneCount > 0) {
+        sceneIndex = streamedFrames.sceneIndex;
+        sceneIndexSource = "grid";
+        // Grid cuts are quantized to the sampling interval (~9s on an hour
+        // file). A prior download-path scan may have persisted frame-accurate
+        // refined cuts — overwriting those silently degrades sceneBlockId
+        // enrichment and the client's shot-constrained placement. Persist
+        // only when the stored index is absent/empty or itself grid-derived:
+        // the source stamp below marks new grid rows, and all-integer cuts
+        // identify legacy grid rows (refined cuts carry 1/60s fractions).
+        // The grid index still drives THIS scan in-memory either way.
+        const existingIdx = (video as any).sceneIndex as (SceneIndex & { source?: string }) | null | undefined;
+        const existingIsRefined = !!existingIdx &&
+          Array.isArray(existingIdx.cuts) && existingIdx.cuts.length > 0 &&
+          existingIdx.source !== "grid" &&
+          existingIdx.cuts.some(c => !Number.isInteger(c));
+        if (existingIsRefined) {
+          console.log(`[Scanner V2] Keeping existing frame-accurate scene index (${existingIdx!.cuts.length} refined cuts) — adopting it for grouping and stamping`);
+          // Rows must be stamped in the SAME sceneId space as the index the
+          // API serves — the placement preview compares surface.sceneId
+          // against sceneIds computed from the served index, and the grid
+          // clustering numbers its classes independently. The grid index
+          // already did its job (frame selection); everything downstream
+          // (consensus keys, row stamping, inventory) uses the kept index.
+          sceneIndex = existingIdx!;
+          sceneIndexSource = "sceneIndex";
+        } else {
+          try {
+            await storage.updateVideoIndex(videoId, {
+              sceneIndex: { ...sceneIndex, source: "grid" } as any,
+              sceneBoundaries: sceneIndex.cuts as any,
+            });
+            console.log(`[Scanner V2] Persisted grid-derived scene index: ${sceneIndex.sceneCount} unique scene(s) across ${sceneIndex.shots.length} run(s)`);
+          } catch (gidxErr: any) {
+            console.warn(`[Scanner V2] Failed to persist grid scene index (non-fatal):`, gidxErr?.message || gidxErr);
+          }
+        }
+      }
+      console.log(`[Scanner V2] Using ${frames.length} streamed frames (${sceneIndex ? "grid scene classes" : "dHash segments"}; ffmpeg cut detection skipped — no local file)`);
+    } else if (videoPath) {
+      // LOCAL/DOWNLOADED path — scene-first detection for denser, cheaper sampling.
+      // Resolve duration first. Uploads reach here with the CONFIG default
+      // plan (no DB duration, no yt-dlp probe) — scanning blind against it
+      // meant a 61-minute upload scanned only its first 48 seconds. One
+      // ffprobe on the local file fixes the plan; the duration also sizes
+      // the uniform fallback below when scene-first sampling doesn't happen.
+      let localDurationSec = durationSec ?? ytProbedDurationSec;
+      if (scanPlanIsDefault || !localDurationSec) {
+        const probed = await probeLocalDurationSec(videoPath);
+        if (probed > 0) {
+          localDurationSec = probed;
+          // Publish to function scope: the measurement write (and anything
+          // else downstream) otherwise sees null for every upload.
+          if (!ytProbedDurationSec) ytProbedDurationSec = probed;
+          if (scanPlanIsDefault) {
+            scanPlan = planFromDuration(probed);
+            scanPlanIsDefault = false;
+            console.log(`[Scanner V2] Local file duration ${probed.toFixed(0)}s (ffprobe) — plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames`);
+          }
+        }
+      }
+
+      // SCENE-FIRST: detect cuts and cluster shots into unique scenes BEFORE
+      // extracting frames. Sample 1-2 frames per UNIQUE SCENE rather than
+      // uniformly — a podcast with 60 cuts but 2 unique scenes goes from 50
+      // frames to ~4. Failure is non-fatal — falls back to uniform.
+      let sceneCuts: number[] = [];
+      try {
+        // Cut detection legitimately runs 20min+ under the duration-derived
+        // budget; without writes the 120-min stuck-scan sweep would reap a
+        // live decode on a multi-hour upload. CAS heartbeat — a cancel that
+        // already flipped status is never clobbered.
+        const cutHeartbeat = setInterval(() => {
+          storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
+        }, 5 * 60 * 1000);
+        cutHeartbeat.unref?.();
+        try {
+          sceneCuts = await detectSceneCuts(videoPath, 0.3, localDurationSec || 0);
+        } finally {
+          clearInterval(cutHeartbeat);
+        }
+        await storage.updateVideoIndex(videoId, { sceneBoundaries: sceneCuts as any });
+        console.log(`[Scanner V2] Persisted ${sceneCuts.length} scene cut(s) to videoIndex.sceneBoundaries`);
+      } catch (sceneErr: any) {
+        console.warn(`[Scanner V2] Scene-cut detection failed (non-fatal):`, sceneErr?.message || sceneErr);
+      }
+
+      try {
+        sceneIndex = await buildSceneIndex(videoPath, sceneCuts);
+        if (sceneIndex) {
+          await storage.updateVideoIndex(videoId, {
+            sceneIndex: sceneIndex as any,
+            sceneBoundaries: sceneIndex.cuts as any,
+          });
+          console.log(`[Scanner V2] Persisted scene index: ${sceneIndex.sceneCount} unique scene(s) across ${sceneIndex.shots.length} shot(s); refined ${sceneIndex.cuts.length} cuts`);
+        }
+      } catch (sidxErr: any) {
+        console.warn(`[Scanner V2] Scene index build failed (non-fatal):`, sidxErr?.message || sidxErr);
+      }
+
+      // A degenerate index (zero cuts on a long video — usually cut
+      // detection timing out, not a genuinely single-shot hour) means
+      // "one scene" is an artifact. Scene-first sampling would trust it
+      // and extract ~6 frames for the whole file; take the uniform
+      // fallback below instead, sized by duration.
+      indexDegenerate = !!sceneIndex && (sceneIndex as any).degenerate === true;
+
+      if (sceneIndex && sceneIndex.sceneCount > 0 && !indexDegenerate) {
+        // ≥2 frames per scene ALWAYS — the consensus vote needs at least two
+        // independent samples of a scene to confirm a surface ("double
+        // authentication"). Budget grows to 36 frames to keep 2/scene
+        // feasible for multi-scene episodes.
+        const SCENE_FIRST_BUDGET = 36;
+        const desiredPerScene = Math.max(
+          2,
+          Math.min(6, Math.floor(SCENE_FIRST_BUDGET / sceneIndex.sceneCount)),
+        );
+        const samples = sampleMultiTimestampsPerScene(sceneIndex, desiredPerScene);
+        const trimmed = samples.slice(0, SCENE_FIRST_BUDGET);
+        console.log(`[Scanner V2] Scene-first extraction: ${trimmed.length} frames across ${sceneIndex.sceneCount} unique scene(s) (${desiredPerScene}/scene target)`);
+
+        const result = await extractFramesAtTimestamps(videoPath, framesDir, trimmed.map(s => s.t));
+        if (result.frames.length > 0) {
+          frames = result.frames;
+          frameTimestamps = result.timestamps;
+          usedSceneFirst = true;
+        } else {
+          console.warn(`[Scanner V2] Scene-first extraction returned 0 frames — falling back to uniform`);
+        }
+      }
+
+      if (!usedSceneFirst) {
+        // Long-video uniform fallback: the banded plan's maxFrames assumes
+        // cut-dense content (an hour file = 720 frames = 720 sequential
+        // Gemini calls). Whenever scene-first sampling didn't happen on a
+        // >10-min video — degenerate index, zero cuts, or an extraction
+        // that failed or returned nothing — spread a fixed budget (one
+        // frame per ~90s, clamped 24-60) uniformly across the WHOLE
+        // duration so an hour-long file gets real coverage at bounded cost.
+        if (localDurationSec && localDurationSec > 10 * 60) {
+          const uniformBudget = Math.max(24, Math.min(60, Math.round(localDurationSec / 90)));
+          const eff = Math.min(localDurationSec, MAX_DURATION_SEC);
+          scanPlan = {
+            intervalSeconds: Math.max(1, Math.floor(eff / uniformBudget)),
+            maxFrames: uniformBudget,
+          };
+          console.log(`[Scanner V2] Scene-first unavailable for ${(localDurationSec / 60).toFixed(1)}min video — uniform fallback: every ${scanPlan.intervalSeconds}s × ${uniformBudget} frames`);
+        }
+        console.log(`[Scanner V2] Extracting frames with plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames`);
+        frames = await extractFrames(videoPath, framesDir, scanPlan);
+        // Timestamps come from the slot number baked into the filename
+        // (frame_0001 = t=0), not the array index — sparse per-seek
+        // extraction can skip a failed mid-list slot, and an index-based
+        // mapping would shift every later timestamp by one interval.
+        frameTimestamps = frames.map((f, i) => {
+          const m = /frame_(\d+)\.jpg$/.exec(f);
+          const slot = m ? parseInt(m[1], 10) - 1 : i;
+          return slot * scanPlan.intervalSeconds;
+        });
+      }
+    }
+
     if (frames.length === 0) {
-      await storage.updateVideoStatus(videoId, "Scan Failed");
+      await updateStatusIfStillScanning(videoId, "Scan Failed");
       return { success: false, videoId, surfacesDetected: 0, error: "No frames extracted" };
     }
-    
-    console.log(`[Scanner V2] Extracted ${frames.length} frames`);
-    
+
+    console.log(`[Scanner V2] Using ${frames.length} frames (${usedSceneFirst ? "scene-first" : "uniform"})`);
+
+    // Heartbeat: frame extraction (stream or download+extract) may have
+    // eaten most of the sweep threshold — mark the row fresh before the
+    // per-frame detection loop starts.
+    await storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
+
     const { isVertical } = await getFrameMetadata(frames[0]);
     console.log(`[Scanner V2] Video orientation: ${isVertical ? "VERTICAL (9:16)" : "HORIZONTAL (16:9)"}`);
-    
+
+    // ── Room-model match: is this a set we already know? ──────────
+    // Each scene class's exemplar hashes (shot-midpoint dHashes) are compared
+    // against the creator's stored room models. A class within hamming range
+    // of a model IS that studio/camera setup coming back — detection switches
+    // to confirm mode for its frames (known surfaces re-located, not
+    // re-discovered), and its surfaces inherit the model's stable groupIds so
+    // placements survive rescans and recur across episodes. Failure is
+    // non-fatal: a modelless scan is just today's behavior.
+    interface SceneModelMatch {
+      model: RoomModel;
+      surfaces: RoomModelSurface[];
+      distance: number;
+    }
+    const modelBySceneKey = new Map<number, SceneModelMatch>();
+    if (sceneIndex && !indexDegenerate && sceneIndex.sceneCount > 0) {
+      try {
+        // Same alias set the teach route matches under — videoIndex.userId
+        // is a mixed users.id/email column, and a model created under one
+        // key must stay loadable from a video keyed by the other, or a
+        // taught surface lands in a model this video's scans never read
+        // (and the scan mints a duplicate model for the same room).
+        const ownerAliases = new Set<string>([video.userId]);
+        try {
+          const owner = String(video.userId).includes("@")
+            ? await storage.getUserByEmail(video.userId)
+            : await storage.getUserById(video.userId);
+          if (owner) {
+            ownerAliases.add(owner.id);
+            if (owner.email) {
+              ownerAliases.add(owner.email);
+              ownerAliases.add(owner.email.toLowerCase());
+            }
+          }
+        } catch { /* alias widening is best-effort */ }
+        const roomModels = await storage.getRoomModelsForUsers(Array.from(ownerAliases));
+        if (roomModels.length > 0) {
+          const classExemplars = collectClassExemplarHashes(sceneIndex, 5);
+          for (const [classId, classHashes] of Array.from(classExemplars.entries())) {
+            let best: SceneModelMatch | null = null;
+            for (const model of roomModels) {
+              // Min hamming across the exemplar cross product — sentinel
+              // hashes were already excluded on the class side, and are
+              // skipped on the model side too.
+              let minDist = Number.MAX_SAFE_INTEGER;
+              for (const mh of model.sceneExemplarHashes ?? []) {
+                if (!mh || mh.startsWith("fail")) continue;
+                for (const ch of classHashes) {
+                  const d = hammingDistance(ch, mh);
+                  if (d < minDist) minDist = d;
+                }
+              }
+              // Same threshold the scene clusterer uses — "same scene" and
+              // "same set" should agree on what visually close means. When
+              // several models qualify, the closest one wins.
+              if (minDist < 12 && (!best || minDist < best.distance)) {
+                const modelSurfaces = parseRoomModelSurfaces(model.surfaces);
+                if (modelSurfaces.length > 0) {
+                  best = { model, surfaces: modelSurfaces, distance: minDist };
+                }
+              }
+            }
+            if (best) {
+              modelBySceneKey.set(classId, best);
+              console.log(`[RoomModel] Scene class ${classId} matched model #${best.model.id} (${best.surfaces.length} surfaces, seen in ${best.model.episodeCount ?? 1} episode(s))`);
+            }
+          }
+          // DRIFT RECOVERY: cut-detection variance shifts shot midpoints
+          // between scans, so the same physical set can hash 12-17 bits from
+          // its own model's exemplars and go unmatched at the strict
+          // threshold — orphaning its taught surfaces (observed live:
+          // "matched NO model" warnings on the taught set). Second pass at a
+          // looser threshold (<18), guarded three ways so it cannot smear
+          // sets together: only SUBSTANTIAL classes (>=5 shots — singleton
+          // b-roll stays out), only models NOT already claimed by a strict
+          // match this scan, and still closest-model-wins.
+          const claimedModelIds = new Set(Array.from(modelBySceneKey.values()).map(m => m.model.id));
+          const shotsPerClass = new Map<number, number>();
+          for (const shot of sceneIndex.shots) {
+            shotsPerClass.set(shot.sceneId, (shotsPerClass.get(shot.sceneId) ?? 0) + 1);
+          }
+          for (const [classId, classHashes] of Array.from(classExemplars.entries())) {
+            if (modelBySceneKey.has(classId)) continue;
+            if ((shotsPerClass.get(classId) ?? 0) < 5) continue;
+            let best: SceneModelMatch | null = null;
+            for (const model of roomModels) {
+              if (claimedModelIds.has(model.id)) continue;
+              let minDist = Number.MAX_SAFE_INTEGER;
+              for (const mh of model.sceneExemplarHashes ?? []) {
+                if (!mh || mh.startsWith("fail")) continue;
+                for (const ch of classHashes) {
+                  const d = hammingDistance(ch, mh);
+                  if (d < minDist) minDist = d;
+                }
+              }
+              if (minDist < 18 && (!best || minDist < best.distance)) {
+                const modelSurfaces = parseRoomModelSurfaces(model.surfaces);
+                if (modelSurfaces.length > 0) {
+                  best = { model, surfaces: modelSurfaces, distance: minDist };
+                }
+              }
+            }
+            if (best) {
+              modelBySceneKey.set(classId, best);
+              claimedModelIds.add(best.model.id);
+              console.log(`[RoomModel] Scene class ${classId} matched model #${best.model.id} via DRIFT RECOVERY (distance ${best.distance}, ${best.surfaces.length} surfaces)`);
+            }
+          }
+
+          // Drift visibility: only meaningful when a TAUGHT model is still
+          // unmatched after BOTH passes. A taught model matched by any class
+          // is having its surfaces confirmed this scan, so leftover unmatched
+          // classes (b-roll, intro cards, the partial-cut mega-shot tail) are
+          // expected junk, not a drift signal — warning on each of them
+          // produced four alarming-but-contentless lines per scan.
+          const unmatchedTaughtModels = roomModels.filter(m =>
+            !claimedModelIds.has(m.id) && parseRoomModelSurfaces(m.surfaces).some(s => s.taught));
+          if (unmatchedTaughtModels.length > 0) {
+            const ids = unmatchedTaughtModels.map(m => `#${m.id}`).join(", ");
+            for (const classId of Array.from(classExemplars.keys())) {
+              if (!modelBySceneKey.has(classId)) {
+                console.warn(`[RoomModel] Scene class ${classId} matched NO model while taught model(s) ${ids} remain UNMATCHED this scan — if this class is one of those sets, exemplar drift is hiding it and its taught surfaces cannot be confirmed this scan`);
+              }
+            }
+          }
+        }
+      } catch (rmErr: any) {
+        console.warn(`[RoomModel] Model lookup failed (non-fatal — scanning without set memory):`, rmErr?.message || rmErr);
+      }
+    }
+
+    // Every taught surface's cross-scan identity across the matched models —
+    // the exemption set the post-processing passes (phantom filter, dedupe)
+    // and the end-of-scan retirement sweep honor. Creator ground truth is
+    // never silently filtered, deduped away, or retired without replacement.
+    const taughtGroupIds = new Set<string>();
+    // Tier 3: model surfaces the creator previously validated via approval.
+    const validatedGroupIds = new Set<string>();
+    for (const match of Array.from(modelBySceneKey.values())) {
+      for (const s of match.surfaces) {
+        if (s.taught) taughtGroupIds.add(`rm${match.model.id}-s${s.idx}`);
+        if (s.validated) validatedGroupIds.add(`rm${match.model.id}-s${s.idx}`);
+      }
+    }
+
     // Frames uploaded to Object Storage instead of local disk
 
     // PROCESS FRAMES ONE BY ONE (with immediate cleanup)
     let totalSurfaces = 0;
-    const geminiKeyPresent = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY
-      && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key';
+    const geminiKeyPresent = (!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY
+      && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key') || !!aiDirect;
     console.log(`[Scanner V2] Detection method: ${CONFIG.DETECTION_METHOD.toUpperCase()}`);
-    console.log(`[Scanner V2] Gemini API key: ${geminiKeyPresent ? 'CONFIGURED (' + process.env.AI_INTEGRATIONS_GEMINI_API_KEY!.substring(0, 8) + '...)' : 'NOT SET — will use edge detection fallback (less accurate)'}`);
+    console.log(`[Scanner V2] Gemini: proxy=${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY} direct-fallback=${!!aiDirect}${geminiKeyPresent ? '' : ' — NO key at all, edge-detection fallback (inaccurate)'}`);
     if (!geminiKeyPresent) {
-      console.warn(`[Scanner V2] ⚠️  AI_INTEGRATIONS_GEMINI_API_KEY not set. Surface detection will be limited. Set this env var for accurate AI-powered scanning.`);
+      console.warn(`[Scanner V2] ⚠️  No Gemini key (AI_INTEGRATIONS_GEMINI_API_KEY or GEMINI_API_KEY). Surface detection will be limited.`);
     }
+
+    // ── Phase A: analyze every frame; buffer results per scene ────
+    // Detections are NOT inserted per-frame anymore. They buffer here and
+    // must survive the per-scene consensus vote (AUTH 1: >=2 frames agree)
+    // + position priors (AUTH 2) + a model verification pass (AUTH 2b)
+    // before any row is written. This is what makes detections consistent
+    // across a scene instead of one frame's hallucination becoming truth.
+    interface BufferedFrameAnalysis {
+      framePath: string;
+      timestamp: number;
+      frameUrl: string;
+      sceneKey: number;
+      surfaces: DetectedSurface[];
+      viaGemini: boolean;
+      // Frame was never actually analyzed (429 retries exhausted) — it
+      // abstains from the consensus vote instead of counting as an empty
+      // verdict in the denominator.
+      rateLimited: boolean;
+      // Person-box coverage of the frame (0-1), when the response carried
+      // people data — drives the clean-frame re-sampling pass below.
+      personCoverage?: number;
+      peopleSource?: "detector" | "gemini";
+      // Known-surface idx values the parse-time ghost filter vetoed in this
+      // frame. Taught surfaces are exempt there, so this should stay empty
+      // for taught idx values — the [Taught] fate line counts it as proof.
+      knownGhostVetoes?: number[];
+    }
+    const bufferedAnalyses: BufferedFrameAnalysis[] = [];
+
+    // Tier 2: per-scene-class grounded proposal cache. undefined = not yet
+    // attempted for this class; null = attempted/unavailable. Cap bounds
+    // fal spend per scan (phrases × classes calls worst case).
+    const groundedBySceneKey = new Map<number, import("./lib/groundedDetector").GroundedProposal[] | null>();
+    const GROUNDED_MAX_SCENES_PER_SCAN = 6;
+    // Frame-loop heartbeat: long loops (Gemini ladders, detector calls, 429
+    // storms) can run >120min with zero row writes — keep updated_at fresh
+    // so the stuck-scan sweep never reaps a live loop. CAS write, cheap.
+    let lastFrameHeartbeat = Date.now();
 
     for (let i = 0; i < frames.length; i++) {
       const framePath = frames[i];
-      const timestamp = i * CONFIG.FRAME_INTERVAL_SECONDS;
+      // Real timestamp at this frame — scene-first sets this to the
+      // representative shot midpoint per scene; uniform fallback uses
+      // i × intervalSeconds. sceneId lookup downstream needs the real t.
+      const timestamp = frameTimestamps[i] ?? i * scanPlan.intervalSeconds;
+      const tsKey = Math.round(timestamp);
 
-      try {
-        console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp}s)...`);
-
-        // Save ALL valid frames to permanent directory for thumbnail strip
-        const frameFilename = `frame_${timestamp}s.jpg`;
-
+      // Cooperative cancellation: the cancel-scan route flips status away
+      // from "Scanning"; honor it within a few frames instead of grinding
+      // through the whole Gemini budget. Checked every 3rd frame to keep
+      // the DB chatter negligible.
+      if (Date.now() - lastFrameHeartbeat > 4 * 60 * 1000) {
+        lastFrameHeartbeat = Date.now();
+        storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
+      }
+      if (i % 3 === 0) {
         try {
-          const frameSize = fs.statSync(framePath).size;
-          if (frameSize > 5000) {
-            const objectKey = `public/uploads/frames/${videoId}/${frameFilename}`;
-            await uploadFileToStorage(framePath, objectKey);
-          } else {
-            console.warn(`[Scanner V2] Skipping tiny frame ${frameFilename} (${frameSize} bytes)`);
+          const fresh = await storage.getVideoById(videoId);
+          if (fresh && fresh.status !== "Scanning") {
+            console.log(`[Scanner V2] Scan cancelled for video ${videoId} (status now "${fresh.status}") — aborting at frame ${i + 1}/${frames.length}`);
+            // temp dirs are cleaned by this function's finally block
+            return { success: false, videoId, surfacesDetected: 0, error: "Scan cancelled" };
           }
-        } catch (copyErr) {
-          console.error(`[Scanner V2] Failed to upload frame to storage:`, copyErr);
-        }
+        } catch { /* status check is best-effort */ }
+      }
 
-        // Use Gemini AI or edge detection based on config
-        // Falls back to edge detection if Gemini API key is missing
-        const useGemini = CONFIG.DETECTION_METHOD === 'gemini'
-          && process.env.AI_INTEGRATIONS_GEMINI_API_KEY
-          && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key';
+      console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp.toFixed(2)}s)...`);
 
-        let analysis: FrameAnalysisResult;
-        if (useGemini) {
-          analysis = await analyzeFrameWithGeminiRetry(framePath, timestamp, isVertical);
-          // Only fall back to edge if Gemini API actually failed (not if it just found no surfaces)
-          // If aiAnalyzed=true, Gemini worked fine — it just said "no surfaces here"
-          if (!analysis.aiAnalyzed && !analysis.hasSurface) {
-            console.warn(`[Scanner V2] ⚠️  Gemini API FAILED for frame ${timestamp}s (aiAnalyzed=false). This likely means the API request failed (wrong base URL, auth error, or timeout). Falling back to edge detection...`);
-            analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
-          }
+      // Save ALL valid frames to permanent directory for thumbnail strip
+      const frameFilename = `frame_${tsKey}s.jpg`;
+      try {
+        const frameSize = fs.statSync(framePath).size;
+        if (frameSize > 5000) {
+          const objectKey = `public/uploads/frames/${videoId}/${frameFilename}`;
+          await uploadFileToStorage(framePath, objectKey);
         } else {
-          if (i === 0) console.log(`[Scanner V2] Gemini API key not configured, using edge detection fallback`);
+          console.warn(`[Scanner V2] Skipping tiny frame ${frameFilename} (${frameSize} bytes)`);
+        }
+      } catch (copyErr) {
+        console.error(`[Scanner V2] Failed to upload frame to storage:`, copyErr);
+      }
+
+      // Use Gemini AI or edge detection based on config
+      // Falls back to edge detection if Gemini API key is missing
+      const useGemini = CONFIG.DETECTION_METHOD === 'gemini'
+        && ((process.env.AI_INTEGRATIONS_GEMINI_API_KEY
+              && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key')
+            || !!aiDirect);
+
+      // Consensus group: real scene cluster when a usable sceneIndex
+      // exists; dHash segment ids otherwise (streamed grid, local
+      // fallback, or a degenerate one-scene index whose single bucket
+      // would let cross-scene detections vote for each other). Resolved
+      // BEFORE detection so a matched room model can ride along.
+      const sceneKey = sceneIndex && !indexDegenerate
+        ? sceneIdForTimestamp(sceneIndex, timestamp)
+        : (streamSegmentIds?.[i] ?? 0);
+      const knownForFrame = modelBySceneKey.get(sceneKey)?.surfaces;
+
+      // Tier 2: grounded geometry proposals, ONCE per scene class on its
+      // first analyzed frame (scene classes are recurring camera setups, so
+      // one frame's geometry holds for the class). Cached — later frames of
+      // the class reuse the same proposals, which is itself a consistency
+      // win: every frame of a scene judges the SAME candidate geometry.
+      // Capped per scan for cost; null = detector unavailable, never fatal.
+      let proposalsForFrame = groundedBySceneKey.get(sceneKey);
+      if (proposalsForFrame === undefined && useGemini) {
+        if (groundedBySceneKey.size < GROUNDED_MAX_SCENES_PER_SCAN && groundedDetectorAvailable()) {
+          proposalsForFrame = await detectGroundedSurfaces(framePath);
+        } else {
+          proposalsForFrame = null;
+        }
+        groundedBySceneKey.set(sceneKey, proposalsForFrame);
+      }
+
+      let analysis: FrameAnalysisResult;
+      if (useGemini) {
+        analysis = await analyzeFrameWithGeminiRetry(framePath, timestamp, isVertical, knownForFrame, 5, proposalsForFrame ?? undefined);
+        // Only fall back to edge if Gemini API actually failed (not if it just found no surfaces)
+        // If aiAnalyzed=true, Gemini worked fine — it just said "no surfaces here"
+        if (!analysis.aiAnalyzed && !analysis.hasSurface) {
+          console.warn(`[Scanner V2] ⚠️  Gemini API FAILED for frame ${timestamp}s (aiAnalyzed=false). This likely means the API request failed (wrong base URL, auth error, or timeout). Falling back to edge detection...`);
           analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
         }
+      } else {
+        if (i === 0) console.log(`[Scanner V2] Gemini API key not configured, using edge detection fallback`);
+        analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
+      }
 
-        if (analysis.hasSurface && analysis.surfaces.length > 0) {
-          const frameUrl = `/storage/uploads/frames/${videoId}/${frameFilename}`;
+      // Buffer EVERY analyzed frame — including zero-detection ones. The
+      // consensus vote divides by framesAnalyzed; counting only detection-
+      // bearing frames let a lone hallucination in an otherwise-empty scene
+      // pass as 1/1 "full support".
+      bufferedAnalyses.push({
+        framePath,
+        timestamp,
+        frameUrl: `/storage/uploads/frames/${videoId}/${frameFilename}`,
+        sceneKey,
+        surfaces: analysis.hasSurface ? analysis.surfaces : [],
+        viaGemini: Boolean(useGemini) && analysis.aiAnalyzed === true,
+        rateLimited: analysis.rateLimited === true,
+        personCoverage: analysis.personCoverage,
+        peopleSource: analysis.peopleSource,
+        knownGhostVetoes: analysis.knownGhostVetoedIdx,
+      });
+      // NOTE: temp frames are intentionally KEPT here — the verification
+      // pass re-reads the best frame per scene. The outer finally removes
+      // the whole tempDir. (~36 frames ≈ a few MB.)
+    }
 
-          for (const surface of analysis.surfaces) {
-            const dbSurface: InsertDetectedSurface = {
-              videoId,
-              timestamp: timestamp.toString(),
-              surfaceType: surface.surfaceType,
-              confidence: surface.confidence.toString(),
-              boundingBoxX: surface.boundingBox.x.toString(),
-              boundingBoxY: surface.boundingBox.y.toString(),
-              boundingBoxWidth: surface.boundingBox.width.toString(),
-              boundingBoxHeight: surface.boundingBox.height.toString(),
-              frameUrl,
-              // Lighting & camera data from Gemini AI
-              lightingDirection: surface.lightingDirection || null,
-              lightingIntensity: surface.lightingIntensity != null ? surface.lightingIntensity.toString() : null,
-              cameraAngle: surface.cameraAngle || null,
-            };
+    // Cooperative cancellation, part 2: the in-loop check above only fires
+    // every 3rd frame and only while frames remain, but Phases B-D below
+    // (consensus, model verification with 429 backoff, insertion,
+    // enrichment) can grind for minutes on their own. Honor a cancel that
+    // landed near the loop's end before committing to that work.
+    try {
+      const fresh = await storage.getVideoById(videoId);
+      if (fresh && fresh.status !== "Scanning") {
+        console.log(`[Scanner V2] Scan cancelled for video ${videoId} (status now "${fresh.status}") — aborting before consensus/verification`);
+        return { success: false, videoId, surfacesDetected: 0, error: "Scan cancelled" };
+      }
+    } catch { /* status check is best-effort */ }
 
-            const inserted = await storage.insertDetectedSurface(dbSurface);
-            console.log(`[Scanner V2] *** SURFACE FOUND: ${surface.surfaceType} at ${timestamp}s (confidence: ${(surface.confidence * 100).toFixed(1)}%, id: ${inserted.id}) ***`);
-            totalSurfaces++;
-          }
+    // Heartbeat: consensus + model verification (with 429 backoff) can
+    // grind for minutes more — refresh updated_at so the sweep doesn't
+    // mistake a live verification phase for a stuck scan.
+    await storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
+
+    // Local fallback without a usable sceneIndex: segment frames by dHash
+    // jumps so consensus groups approximate scenes instead of collapsing the
+    // whole video into one bucket (which made cross-scene detections vote
+    // for each other and killed scene-unique surfaces as 'single_frame').
+    // Also covers the degenerate one-scene index — same single-bucket risk.
+    if ((!sceneIndex || indexDegenerate) && !streamSegmentIds && bufferedAnalyses.length > 1) {
+      try {
+        let seg = 0;
+        let prevHash: string | null = null;
+        for (const bf of bufferedAnalyses) {
+          const h = await computeDHash(bf.framePath).catch(() => null);
+          if (prevHash && h && hammingDistance(prevHash, h) >= 10) seg++;
+          if (prevHash && !h) seg++;
+          bf.sceneKey = seg;
+          prevHash = h;
         }
-
-      } finally {
-        // CRITICAL: Always delete the temp frame after processing
-        safeUnlink(framePath);
+        console.log(`[Scanner V2] Local dHash segmentation: ${seg + 1} consensus group(s) across ${bufferedAnalyses.length} frames`);
+      } catch (segErr: any) {
+        console.warn(`[Scanner V2] Local segmentation failed (single bucket):`, segErr?.message);
       }
     }
-    
-    // FALLBACK DETECTION - Add "Potential Surface" for videos with too few detections
-    if (totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK && frames.length > 0) {
-      console.log(`[Scanner V2] Low surface count (${totalSurfaces}), adding fallback surfaces...`);
-      
-      // Find frames that didn't get surfaces and add potential surfaces
-      const framesWithSurfaces = new Set<number>();
-      const existingSurfaces = await storage.getDetectedSurfaces(videoId);
-      existingSurfaces.forEach(s => framesWithSurfaces.add(parseInt(s.timestamp)));
-      
-      for (let i = 0; i < frames.length && totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK + 2; i++) {
-        const timestamp = i * CONFIG.FRAME_INTERVAL_SECONDS;
-        if (!framesWithSurfaces.has(timestamp)) {
-          const fallbackFrameFilename = `frame_${timestamp}s.jpg`;
 
-          const dbSurface = {
+    // ── Clean-frame re-sampling: people-saturated scene classes ───
+    // A talking-head class whose EVERY sampled frame is majority-covered by
+    // people gives detection almost nothing to work with — the sampling
+    // happened to land on shots where the hosts fill the frame. When the
+    // class has unsampled shots left, pull up to 2 extra frames from their
+    // midpoints and let them join the consensus vote. LOCAL path only:
+    // seek-based extraction needs the file on disk — the streamed grid
+    // already spread its budget across every occurrence and re-seeking the
+    // CDN for a couple of frames costs more than it recovers.
+    if (videoPath && !streamedFrames && sceneIndex && !indexDegenerate && geminiKeyPresent) {
+      const MAX_RESAMPLE_FRAMES = 8;
+      let resampleBudget = MAX_RESAMPLE_FRAMES;
+      try {
+        const byClass = new Map<number, BufferedFrameAnalysis[]>();
+        for (const bf of bufferedAnalyses) {
+          const arr = byClass.get(bf.sceneKey) ?? [];
+          arr.push(bf);
+          byClass.set(bf.sceneKey, arr);
+        }
+        for (const [classKey, classFrames] of Array.from(byClass.entries())) {
+          if (resampleBudget <= 0) break;
+          const effective = classFrames.filter((bf) => !bf.rateLimited);
+          if (effective.length === 0) continue;
+          // EVERY analyzed frame must be >50% person-covered. Frames without
+          // people data can't be measured and disqualify the class — the
+          // trigger fails closed rather than spending budget on a guess.
+          // 0.5 was calibrated against Gemini's generous person envelopes;
+          // tight detector boxes cover ~30-40% less area for the same crowd.
+          const allCrowded = effective.every((bf) =>
+            (bf.personCoverage ?? 0) > (bf.peopleSource === "detector" ? 0.35 : 0.5));
+          if (!allCrowded) continue;
+          const classShots = sceneIndex.shots.filter((s) => s.sceneId === classKey);
+          const unsampled = classShots.filter(
+            (shot) => !classFrames.some((bf) => bf.timestamp >= shot.tStart && bf.timestamp < shot.tEnd),
+          );
+          if (unsampled.length === 0) continue; // no shots left beyond the sampled ones
+          const meanCoverage = effective.reduce((s, bf) => s + (bf.personCoverage ?? 0), 0) / effective.length;
+          const picks = unsampled
+            .sort((a, b) => (b.tEnd - b.tStart) - (a.tEnd - a.tStart))
+            .slice(0, Math.min(2, resampleBudget));
+          console.log(`[Scanner V2] Clean-frame re-sampling: scene ${classKey} averages ${(meanCoverage * 100).toFixed(0)}% person coverage across all ${effective.length} analyzed frame(s) — extracting ${picks.length} unsampled shot midpoint(s)`);
+          // Per-class subdir: extractFramesAtTimestamps numbers its outputs
+          // from 0000, and earlier frames must survive for the verify pass.
+          const resampleDir = path.join(framesDir, `resample_${classKey}`);
+          const extra = await extractFramesAtTimestamps(videoPath, resampleDir, picks.map((shot) => shot.tStart + (shot.tEnd - shot.tStart) / 2));
+          resampleBudget -= extra.frames.length;
+          const knownForClass = modelBySceneKey.get(classKey)?.surfaces;
+          for (let e = 0; e < extra.frames.length; e++) {
+            const extraPath = extra.frames[e];
+            const extraT = extra.timestamps[e];
+            // _r suffix keeps re-sampled uploads out of the main loop's
+            // frame_{t}s.jpg namespace — a resample midpoint rounding to the
+            // same integer second as a sampled frame would otherwise
+            // overwrite that frame's stored image for every row citing it.
+            const extraFilename = `frame_${Math.round(extraT)}s_r.jpg`;
+            try {
+              await uploadFileToStorage(extraPath, `public/uploads/frames/${videoId}/${extraFilename}`);
+            } catch (upErr) {
+              console.error(`[Scanner V2] Failed to upload re-sampled frame to storage:`, upErr);
+            }
+            const extraAnalysis: FrameAnalysisResult = await analyzeFrameWithGeminiRetry(extraPath, extraT, isVertical, knownForClass, 5, groundedBySceneKey.get(classKey) ?? undefined);
+            bufferedAnalyses.push({
+              framePath: extraPath,
+              timestamp: extraT,
+              frameUrl: `/storage/uploads/frames/${videoId}/${extraFilename}`,
+              sceneKey: classKey,
+              surfaces: extraAnalysis.hasSurface ? extraAnalysis.surfaces : [],
+              viaGemini: extraAnalysis.aiAnalyzed === true,
+              rateLimited: extraAnalysis.rateLimited === true,
+              personCoverage: extraAnalysis.personCoverage,
+              peopleSource: extraAnalysis.peopleSource,
+              knownGhostVetoes: extraAnalysis.knownGhostVetoedIdx,
+            });
+          }
+        }
+      } catch (resampleErr: any) {
+        console.warn(`[Scanner V2] Clean-frame re-sampling failed (non-fatal):`, resampleErr?.message || resampleErr);
+      }
+    }
+
+    // Surface the abstention rate before consensus runs — a heavily
+    // rate-limited scan silently loses vote coverage, and that should be
+    // visible in the log next to the scenes it affected.
+    const abstainedCount = bufferedAnalyses.filter((bf) => bf.rateLimited).length;
+    if (abstainedCount > 0) {
+      const pct = ((abstainedCount / bufferedAnalyses.length) * 100).toFixed(0);
+      console.warn(`[Scanner V2] ${abstainedCount}/${bufferedAnalyses.length} frames (${pct}%) rate-limited (abstained from consensus)`);
+    }
+
+    // ── Phase B: per-scene consensus vote (AUTH 1 + AUTH 2) ───────
+    // ── Phase C: model verification per scene (AUTH 2b) ───────────
+    // ── Phase D: insert survivors only ────────────────────────────
+    const framesByScene = new Map<number, BufferedFrameAnalysis[]>();
+    for (const bf of bufferedAnalyses) {
+      const arr = framesByScene.get(bf.sceneKey) ?? [];
+      arr.push(bf);
+      framesByScene.set(bf.sceneKey, arr);
+    }
+
+    // groupId → its room-model identity, recorded as ids are minted. The
+    // finalize upsert uses this to tell a refreshed known surface from a
+    // fresh discovery without ever parsing the (opaque) groupId format.
+    const modelGroupInfo = new Map<string, { modelId: number; idx: number }>();
+
+    for (const [sceneKey, sceneFrames] of Array.from(framesByScene.entries())) {
+      // Rate-limited frames abstain: they leave both the vote pool AND the
+      // denominator. An abstention counted as an empty verdict meant one
+      // 429-exhausted frame in a 2-frame scene vetoed everything the other
+      // frame found. With one effective frame left, consensus clamps its
+      // vote floor to 1 internally.
+      const effectiveFrames = sceneFrames.filter((bf) => !bf.rateLimited);
+      const matchedModel = modelBySceneKey.get(sceneKey) ?? null;
+
+      // Known-surface confirmations bypass the IoU-chaining consensus
+      // entirely: identity is exact (the model's surface idx), so grouping
+      // is a lookup, not a spatial match. Only fresh detections vote below.
+      const knownConfirmations = new Map<number, Array<{ frameT: number; det: DetectedSurface }>>();
+      if (matchedModel) {
+        for (const bf of effectiveFrames) {
+          for (const s of bf.surfaces) {
+            if (s.knownIdx == null) continue;
+            const arr = knownConfirmations.get(s.knownIdx) ?? [];
+            arr.push({ frameT: bf.timestamp, det: s });
+            knownConfirmations.set(s.knownIdx, arr);
+          }
+        }
+      }
+
+      const consensusInput: FrameDetection[] = effectiveFrames.map((bf) => ({
+        frameT: bf.timestamp,
+        surfaces: bf.surfaces.filter((s) => s.knownIdx == null).map((s) => ({
+          surfaceType: s.surfaceType,
+          confidence: s.confidence,
+          bbox: s.boundingBox,
+          ref: s,
+        })),
+      }));
+
+      const { surfaces: consensusSurfaces, rejected } = buildSceneConsensus(consensusInput, {
+        normalizeType: canonicalSurfaceType,
+        framesAnalyzed: effectiveFrames.length,
+      });
+      if (rejected.length > 0) {
+        console.log(
+          `[Scanner V2] Scene ${sceneKey}: consensus rejected ${rejected.length} detection(s) — ` +
+          rejected.map((r) => `${r.surfaceType}@${r.frameT.toFixed(0)}s:${r.reason}`).join(", ")
+        );
+      }
+
+      // A known surface survives on >=1 confirming frame — the cross-frame
+      // vote already happened in the episodes that built the model; today's
+      // question is only "is it still there". bbox = per-dimension median of
+      // the adjusted boxes; surfaceType/orientation stay the model's
+      // canonical values; confidence blends this scan's mean 50/50 with the
+      // model's stored score.
+      const modelSurfaces: ConsensusSurface[] = [];
+      const modelKeyBySurface = new Map<ConsensusSurface, { modelId: number; idx: number }>();
+      if (matchedModel) {
+        const med = (vals: number[]) => {
+          const s = [...vals].sort((a, b) => a - b);
+          const m = Math.floor(s.length / 2);
+          return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+        };
+        for (const [knownIdx, confs] of Array.from(knownConfirmations.entries())) {
+          const ms = matchedModel.surfaces.find((s) => s.idx === knownIdx);
+          if (!ms || confs.length === 0) continue;
+          const distinct = Array.from(new Set(confs.map((c) => c.frameT))).sort((a, b) => a - b);
+          const freshMean = confs.reduce((s, c) => s + c.det.confidence, 0) / confs.length;
+          const cs: ConsensusSurface = {
+            surfaceType: ms.surfaceType,
+            bbox: {
+              x: med(confs.map((c) => c.det.boundingBox.x)),
+              y: med(confs.map((c) => c.det.boundingBox.y)),
+              width: med(confs.map((c) => c.det.boundingBox.width)),
+              height: med(confs.map((c) => c.det.boundingBox.height)),
+            },
+            confidence: Math.round(((freshMean + ms.confidence) / 2) * 100) / 100,
+            votes: distinct.length,
+            framesAnalyzed: effectiveFrames.length,
+            supportTimestamps: distinct,
+            members: confs.map((c) => ({ frameT: c.frameT, confidence: c.det.confidence, bbox: c.det.boundingBox, ref: c.det })),
+          };
+          modelSurfaces.push(cs);
+          modelKeyBySurface.set(cs, { modelId: matchedModel.model.id, idx: knownIdx });
+        }
+        if (matchedModel.surfaces.length > 0) {
+          console.log(`[RoomModel] Scene ${sceneKey}: ${modelSurfaces.length}/${matchedModel.surfaces.length} known surface(s) confirmed this scan`);
+        }
+      }
+
+      const allSceneSurfaces = [...modelSurfaces, ...consensusSurfaces];
+
+      // Taught-fate line: one per taught surface of the matched model, every
+      // scan. Each link of the confirm chain fails silently on its own
+      // (degraded frames can't confirm a known, present:false is a no-op,
+      // an omitted known_surfaces array logs nothing) — this line is the
+      // single place a vanished taught surface names the link that ate it.
+      const logTaughtFates = (verifyKeepSet: Set<number> | null, rowsByGroup?: Map<string, number>) => {
+        if (!matchedModel) return;
+        const promptedFrames = effectiveFrames.filter((f) => f.viaGemini).length;
+        for (const ms of matchedModel.surfaces) {
+          if (!ms.taught) continue;
+          const gid = `rm${matchedModel.model.id}-s${ms.idx}`;
+          const confirmed = knownConfirmations.get(ms.idx)?.length ?? 0;
+          const ghostVetoed = effectiveFrames.reduce(
+            (sum, f) => sum + (f.knownGhostVetoes?.filter((vIdx) => vIdx === ms.idx).length ?? 0), 0);
+          const taughtCs = modelSurfaces.find((m) => modelKeyBySurface.get(m)?.idx === ms.idx);
+          let verifyFate = "skipped";
+          if (taughtCs && verifyKeepSet) {
+            verifyFate = verifyKeepSet.has(allSceneSurfaces.indexOf(taughtCs)) ? "kept" : "rejected";
+          }
+          const rows = rowsByGroup?.get(gid) ?? 0;
+          console.log(`[Taught] ${gid}: prompted in ${promptedFrames} frames / confirmed ${confirmed} / ghost-vetoed ${ghostVetoed} / verify=${verifyFate} / rows=${rows}`);
+        }
+      };
+
+      if (allSceneSurfaces.length === 0) {
+        logTaughtFates(null);
+        continue;
+      }
+
+      // AUTH 2b: second model opinion on the scene's best-supported frame.
+      // Audits BOTH kinds — a known surface the verifier rejects is dropped
+      // for THIS scan but stays in the room model (removal-only, fail-open).
+      // EXCEPT taught surfaces: the verifier's "genuinely visible" / "does
+      // not primarily cover a person" criteria are the exact judgments
+      // teaching exists to override (mirrors the confirm-mode ghost-filter
+      // exemption), and it audits the scene's max-support frame — usually
+      // not the frame that confirmed the taught surface.
+      let approved = allSceneSurfaces;
+      let verifyKeep: Set<number> | null = null;
+      if (sceneFrames.some((f) => f.viaGemini)) {
+        const frameSupport = new Map<number, number>();
+        for (const cs of allSceneSurfaces) {
+          for (const t of cs.supportTimestamps) frameSupport.set(t, (frameSupport.get(t) ?? 0) + 1);
+        }
+        const bestT = Array.from(frameSupport.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+        const bestFrame = effectiveFrames.find((f) => f.timestamp === bestT) ?? effectiveFrames[0];
+        verifyKeep = await verifySceneSurfaces(
+          bestFrame.framePath,
+          allSceneSurfaces.map((cs) => ({ surfaceType: cs.surfaceType, bbox: cs.bbox })),
+        );
+        if (verifyKeep) {
+          const keep = verifyKeep;
+          const taughtIdx = new Set<number>();
+          allSceneSurfaces.forEach((cs, idx) => {
+            const mk = modelKeyBySurface.get(cs);
+            if (mk && matchedModel?.surfaces.find((s) => s.idx === mk.idx)?.taught) taughtIdx.add(idx);
+          });
+          const dropped = allSceneSurfaces.filter((_, idx) => !keep.has(idx) && !taughtIdx.has(idx));
+          if (dropped.length > 0) {
+            console.log(`[Scanner V2] Scene ${sceneKey}: verification rejected ${dropped.map((d) => d.surfaceType).join(", ")}`);
+          }
+          approved = allSceneSurfaces.filter((_, idx) => keep.has(idx) || taughtIdx.has(idx));
+        }
+      }
+
+      // Insert one row PER SUPPORTING FRAME with that frame's own bbox —
+      // keyframe density is a rendering contract downstream (videoExporter
+      // fades products across keyframe gaps; remix densifies sparse tracks).
+      // Every row of a consensus surface carries the same surfaceGroupId:
+      // ONE id per canonical physical surface, minted here where identity is
+      // established. Post-processing (normalize/dedupe/temporal/enrichment)
+      // operates on groups from this point on, so a surface never fragments
+      // back into per-frame "spots". Model-backed surfaces reuse the model's
+      // stable id — IDENTICAL across rescans and episodes by design, which
+      // is what lets group-keyed placements survive both.
+      let groupSeq = 0;
+      const insertedRowsByGroup = new Map<string, number>();
+      for (const cs of approved) {
+        const modelKey = modelKeyBySurface.get(cs);
+        const surfaceGroupId = modelKey
+          ? `rm${modelKey.modelId}-s${modelKey.idx}`
+          : `g${videoId}-${sceneKey}-${++groupSeq}`;
+        if (modelKey) modelGroupInfo.set(surfaceGroupId, modelKey);
+        for (const member of cs.members) {
+          const surface = member.ref as DetectedSurface;
+          const bf = sceneFrames.find((f) => f.timestamp === member.frameT);
+          if (!surface || !bf) continue;
+          const sceneIdForFrame = sceneIndex ? sceneIdForTimestamp(sceneIndex, member.frameT) : 0;
+          const dbSurface: InsertDetectedSurface = {
             videoId,
-            timestamp: String(timestamp),
-            surfaceType: "Potential Surface",
-            confidence: String(CONFIG.FALLBACK_CONFIDENCE),
-            boundingBoxX: "0.05",
-            boundingBoxY: "0.6", // Bottom 40%
-            boundingBoxWidth: "0.9",
-            boundingBoxHeight: "0.35",
-            frameUrl: `/storage/uploads/frames/${videoId}/${fallbackFrameFilename}`,
-            surroundings: null,
-            sceneContext: "Fallback detection - potential placement area",
+            timestamp: member.frameT.toString(),
+            surfaceType: surface.surfaceType,
+            orientation: surface.orientation || null,
+            // Vote-weighted consensus confidence — full-agreement surfaces
+            // keep their score, bare-majority ones are discounted.
+            confidence: cs.confidence.toString(),
+            boundingBoxX: member.bbox.x.toString(),
+            boundingBoxY: member.bbox.y.toString(),
+            boundingBoxWidth: member.bbox.width.toString(),
+            boundingBoxHeight: member.bbox.height.toString(),
+            frameUrl: bf.frameUrl,
+            // Lighting & camera data from Gemini AI
+            lightingDirection: surface.lightingDirection || null,
+            lightingIntensity: surface.lightingIntensity != null ? surface.lightingIntensity.toString() : null,
+            cameraAngle: surface.cameraAngle || null,
+            // Scene cluster — same physical set across cuts gets same ID,
+            // unlocks placement continuity in the frontend.
+            sceneId: sceneIdForFrame,
+            // Canonical-surface identity — shared by every supporting-frame
+            // row of this consensus surface.
+            surfaceGroupId,
+            // creatorApproved defaults to false in schema — surfaces hidden from
+            // brands until creator explicitly approves via UI toggle
           };
 
-          await storage.insertDetectedSurface(dbSurface);
-          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%) ***`);
+          const inserted = await storage.insertDetectedSurface(dbSurface);
+          console.log(`[Scanner V2] *** SURFACE CONFIRMED: ${surface.surfaceType} at ${member.frameT.toFixed(1)}s scene=${sceneKey} (votes ${cs.votes}/${cs.framesAnalyzed}, conf ${(cs.confidence * 100).toFixed(1)}%, id: ${inserted.id}) ***`);
+          insertedRowsByGroup.set(surfaceGroupId, (insertedRowsByGroup.get(surfaceGroupId) ?? 0) + 1);
           totalSurfaces++;
         }
       }
+
+      logTaughtFates(verifyKeep, insertedRowsByGroup);
     }
     
+    // NOTE: The "Potential Surface" fallback that used to pad low-detection
+    // scans with synthetic bottom-of-frame boxes (confidence 0.15) was REMOVED.
+    // It produced fake placement targets brands could browse and bid on — a
+    // scan that genuinely found nothing (or where Gemini was unavailable) would
+    // still show "Ready (N Spots)" of junk. Surfaces must be REAL detections
+    // now. A zero-detection scan honestly reports zero. If detection quality is
+    // the concern, the fix is denser real detection (see keyframe densification),
+    // not synthetic surfaces.
+
     // PHASE 2A: CAPTURE SURFACE KEYFRAMES — Save raw per-frame bboxes for motion tracking
     // Must happen BEFORE normalization overwrites bboxes with the median
     try {
@@ -1984,25 +5407,64 @@ export async function processVideoScan(
     }
 
     // POST-SCAN NORMALIZATION — Cluster similar surfaces and normalize bounding boxes
-    // This ensures consistent product placement across frames of the same camera angle
+    // This ensures consistent product placement across frames of the same camera angle.
+    // Prior-scan rows are excluded — they're retired at end-of-scan and must not
+    // compete with (or overwrite) this run's detections.
+    const priorIdExclusions = new Set(priorSurfaceIds);
     try {
-      await normalizeSurfaceBoundingBoxes(videoId);
+      await normalizeSurfaceBoundingBoxes(videoId, priorIdExclusions, taughtGroupIds);
     } catch (normErr) {
       console.error(`[Scanner V2] Bounding box normalization failed (non-fatal):`, normErr);
     }
 
-    // TEMPORAL SURFACE GROUPING — Group consecutive surfaces into tracks
-    // Keep only the best track (longest duration, highest confidence) and mark others as Filtered
+    // TEMPORAL SURFACE GROUPING — Group consecutive surfaces into tracks.
+    // Keep the best track per canonical surface and mark weaker sightings of
+    // the same surface as Filtered.
+    // The "consecutive" test needs the spacing frames were ACTUALLY sampled
+    // at, not the plan's nominal interval: scene-first uses shot midpoints
+    // and the streamed grid runs at 9s+, while scanPlan.intervalSeconds
+    // stays at its 2-5s default on those paths — every real gap failed the
+    // 1.5× test and all tracks collapsed to singletons. The median gap of
+    // the analyzed frames is the truth regardless of sampling mode.
+    const analyzedTs = bufferedAnalyses.map((bf) => bf.timestamp).sort((a, b) => a - b);
+    const frameGaps = analyzedTs.slice(1).map((t, i) => t - analyzedTs[i]).filter((g) => g > 0).sort((a, b) => a - b);
+    const medianFrameGap = frameGaps.length > 0
+      ? frameGaps[Math.floor(frameGaps.length / 2)]
+      : scanPlan.intervalSeconds;
     try {
-      await groupSurfacesTemporally(videoId);
+      await groupSurfacesTemporally(videoId, medianFrameGap, priorIdExclusions);
     } catch (temporalErr) {
       console.error(`[Scanner V2] Temporal grouping failed (non-fatal):`, temporalErr);
     }
 
-    // Remove filtered/phantom surfaces from count
+    // Recount as CANONICAL SURFACES, not rows. Every insert above is one
+    // supporting frame of a consensus surface, so row math ("Ready (153
+    // Spots)") counted keyframes, not physical surfaces. The number a
+    // creator or brand should see is the count of distinct surviving
+    // surfaceGroupIds from THIS run — prior runs' rows (including their old
+    // Filtered ones) stay out of it entirely.
+    const insertedRowCount = totalSurfaces;
     const postNormSurfaces = await storage.getDetectedSurfaces(videoId);
-    const filteredOut = postNormSurfaces.filter(s => s.surfaceType === "Filtered").length;
-    totalSurfaces = Math.max(0, totalSurfaces - filteredOut);
+    const priorIdSet = new Set(priorSurfaceIds);
+    const survivingRows = postNormSurfaces.filter(s => !priorIdSet.has(s.id) && s.surfaceType !== "Filtered");
+    const survivingGroupIds = new Set<string>();
+    let ungroupedSurvivors = 0;
+    for (const s of survivingRows) {
+      const gid = (s as any).surfaceGroupId as string | null | undefined;
+      if (gid) survivingGroupIds.add(gid);
+      else ungroupedSurvivors++; // defensive: every row this run inserts carries a groupId
+    }
+    totalSurfaces = survivingGroupIds.size + ungroupedSurvivors;
+    console.log(`[Scanner V2] Net new surfaces this run: ${totalSurfaces} canonical surface(s) across ${survivingRows.length} surviving rows (${insertedRowCount} rows inserted)`);
+
+    // Scan-end taught audit: a taught surface with ZERO surviving rows means
+    // some link of the confirm chain ate it — the [Taught] fate lines above
+    // name which one. The retirement sweep below spares its prior row(s).
+    for (const gid of Array.from(taughtGroupIds)) {
+      if (!survivingGroupIds.has(gid)) {
+        console.warn(`[Taught] ⚠️ ${gid}: taught surface produced ZERO surviving rows this scan — see the [Taught] fate lines above for the failing link`);
+      }
+    }
 
     // SCENE CONTEXT ENRICHMENT — FullScale Edge image analysis
     // Uses Sharp to analyze brightness, edges, and color to infer scene context
@@ -2010,15 +5472,37 @@ export async function processVideoScan(
       const enrichmentDir = path.join(tempDir, "enrichment_frames");
       fs.mkdirSync(enrichmentDir, { recursive: true });
       const enrichmentSurfaces = await storage.getDetectedSurfaces(videoId);
-      const enrichmentTimestamps = new Set(enrichmentSurfaces.map(s => Math.floor(Number(s.timestamp))));
-      for (const ts of enrichmentTimestamps) {
-        try {
-          const objKey = `public/uploads/frames/${videoId}/frame_${ts}s.jpg`;
-          const tempPath = await downloadToTempFile(objKey, enrichmentDir);
-          console.log(`[Scanner V2] Downloaded frame for enrichment: ${tempPath}`);
-        } catch { /* frame may not exist */ }
+
+      // Pre-download each surface's frame from GCS. Prefer surface.frameUrl
+      // (the EXACT path scanner saved — most reliable), with Math.round
+      // (current scanner) and Math.floor (legacy) fallbacks. Was Math.floor-
+      // only previously; that path lost all scene-first surfaces with
+      // non-integer timestamps because scanner uses Math.round naming.
+      const downloadedKeys = new Set<string>();
+      for (const s of enrichmentSurfaces) {
+        const tsFloat = Number(s.timestamp);
+        const candidateKeys: string[] = [];
+        if (s.frameUrl) {
+          candidateKeys.push(
+            s.frameUrl
+              .replace(/^\/storage\//, "public/")
+              .replace(/^\/uploads\//, "public/uploads/"),
+          );
+        }
+        candidateKeys.push(`public/uploads/frames/${videoId}/frame_${Math.round(tsFloat)}s.jpg`);
+        candidateKeys.push(`public/uploads/frames/${videoId}/frame_${Math.floor(tsFloat)}s.jpg`);
+
+        for (const objKey of candidateKeys) {
+          if (downloadedKeys.has(objKey)) break;
+          try {
+            const tempPath = await downloadToTempFile(objKey, enrichmentDir);
+            downloadedKeys.add(objKey);
+            console.log(`[Scanner V2] Downloaded frame for enrichment: ${tempPath}`);
+            break; // first key that resolves wins
+          } catch { /* try next candidate */ }
+        }
       }
-      await enrichSurfacesWithContext(videoId, enrichmentDir);
+      await enrichSurfacesWithContext(videoId, enrichmentDir, priorIdExclusions);
     } catch (enrichErr) {
       console.error(`[Scanner V2] Scene context enrichment failed (non-fatal):`, enrichErr);
     }
@@ -2152,55 +5636,637 @@ export async function processVideoScan(
       finalStatus = "Ready (0 Spots)";
       console.warn(`[Scanner V2] 0 surfaces found despite Gemini being available. The video may not contain clear flat surfaces, or ghost filters may be too aggressive.`);
     }
-    await storage.updateVideoStatus(videoId, finalStatus);
+
+    // Cancel compare-and-set: the cancel-scan route flips status away from
+    // "Scanning" and returns success immediately, while this function may
+    // still be minutes deep in post-processing. If the status changed under
+    // us, the creator cancelled — leave their prior surfaces untouched and
+    // do NOT stamp a terminal status over the cancel.
+    let cancelledMidScan = false;
+    try {
+      const freshAtFinalize = await storage.getVideoById(videoId);
+      cancelledMidScan = !!freshAtFinalize && freshAtFinalize.status !== "Scanning";
+    } catch { /* best-effort — the guarded write below re-checks */ }
+
+    if (cancelledMidScan) {
+      console.log(`[Scanner V2] Video ${videoId}: status changed during post-processing (cancelled) — keeping prior surfaces, skipping terminal status write`);
+    } else {
+      // Replace prior surfaces ONLY now — scan succeeded. If totalSurfaces > 0,
+      // delete the snapshotted prior IDs so the new surfaces stand alone. If
+      // totalSurfaces == 0, KEEP the prior data — a re-scan that finds nothing
+      // shouldn't wipe creator's earlier good results.
+      const sparedTaughtIds = new Set<number>();
+      if (totalSurfaces > 0 && priorSurfaceIds.length > 0) {
+        try {
+          for (const id of priorSurfaceIds) {
+            // Taught prior rows survive a scan that produced NO replacement
+            // rows for their group — the creator vouched for the surface,
+            // and a degraded scan failing to re-confirm it must not erase
+            // it. A CONFIRMED taught surface (surviving replacement rows
+            // exist) retires its prior rows normally, so old and new rows
+            // are never active together. Only rows still live at scan start
+            // qualify (priorGroupById skips Filtered) — a creator-rejected
+            // row stays retired.
+            const gid = priorGroupById.get(id);
+            if (gid && (taughtGroupIds.has(gid) || validatedGroupIds.has(gid) || priorApprovedIds.has(id)) && !survivingGroupIds.has(gid)) {
+              sparedTaughtIds.add(id);
+              continue;
+            }
+            await storage.updateDetectedSurface(id, { surfaceType: "Filtered", sceneContext: "Replaced by re-scan" });
+          }
+          if (sparedTaughtIds.size > 0) {
+            console.log(`[Taught] Spared ${sparedTaughtIds.size} prior taught/validated/approved row(s) from retirement — no replacement rows this scan`);
+          }
+          console.log(`[Scanner V2] Marked ${priorSurfaceIds.length - sparedTaughtIds.size} prior surfaces as Filtered (replaced by ${totalSurfaces} new surfaces)`);
+        } catch (err: any) {
+          console.warn(`[Scanner V2] Failed to filter prior surfaces:`, err?.message || err);
+        }
+      } else if (totalSurfaces === 0 && priorSurfaceIds.length > 0) {
+        console.log(`[Scanner V2] Re-scan found 0 surfaces — keeping ${priorSurfaceIds.length} prior surfaces intact (re-scan didn't find replacements)`);
+      }
+
+      // SCENE INVENTORY — the creator-facing model of the episode: a small
+      // set of recurring camera setups ("Scene A recurs 41 times, 23 min on
+      // screen, holds 3 surfaces"), each carrying its canonical physical
+      // surfaces with occurrence counts and screen time. Built from the
+      // scene index (cut detection or grid classes) plus this run's
+      // surviving groups. A re-scan that found nothing keeps the prior
+      // inventory, mirroring the keep-prior-surfaces rule above. A
+      // degenerate index is skipped outright: its single all-covering shot
+      // would report every surface as "Scene A · 1 shot · full-video
+      // screen time" — exactly the untrustworthy data the flag rejects —
+      // so the column stays null and the UIs fall back gracefully.
+      // Scan-quality signal, hoisted: a scan that mostly ran on the
+      // edge-detection fallback (dead Gemini, missing key, rate limits)
+      // must not overwrite good research data with fallback geometry — the
+      // same reasoning that already guards the room-model upsert below.
+      const scanGeminiFrames = bufferedAnalyses.filter(b => b.viaGemini).length;
+      const scanGeminiShare = bufferedAnalyses.length > 0 ? scanGeminiFrames / bufferedAnalyses.length : 0;
+      const scanQualityOk = scanGeminiShare >= 0.7;
+
+      let inventoryPersisted = false;
+      if (totalSurfaces > 0 && sceneIndex && !indexDegenerate && sceneIndex.shots.length > 0) {
+        try {
+          const invRows = await storage.getDetectedSurfaces(videoId);
+          // Spared taught prior rows count as survivors here: their row
+          // outlived the retirement sweep, and an inventory that omits them
+          // would hide the taught surface from the scene modal anyway —
+          // exactly the disappearance the sparing exists to prevent. They
+          // stay OUT of the room-model upsert below (not fresh evidence).
+          const invSurvivors = invRows.filter(s =>
+            (!priorIdSet.has(s.id) || sparedTaughtIds.has(s.id)) && s.surfaceType !== "Filtered" && (s as any).surfaceGroupId);
+
+          const rowsByGroup = new Map<string, typeof invSurvivors>();
+          for (const row of invSurvivors) {
+            const gid = (row as any).surfaceGroupId as string;
+            const arr = rowsByGroup.get(gid) ?? [];
+            arr.push(row);
+            rowsByGroup.set(gid, arr);
+          }
+
+          // Occurrence count + total screen time per scene class, straight
+          // from the index shots (grid source: shots are contiguous runs,
+          // so "occurrences" is the run count).
+          const sceneStats = new Map<number, { occurrences: number; totalSec: number }>();
+          for (const shot of sceneIndex.shots) {
+            const st = sceneStats.get(shot.sceneId) ?? { occurrences: 0, totalSec: 0 };
+            st.occurrences++;
+            st.totalSec += Math.max(0, shot.tEnd - shot.tStart);
+            sceneStats.set(shot.sceneId, st);
+          }
+
+          const medianOf = (vals: number[]) => {
+            const s = [...vals].sort((a, b) => a - b);
+            const m = Math.floor(s.length / 2);
+            return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+          };
+          const surfacesByScene = new Map<number, any[]>();
+          for (const [gid, rows] of Array.from(rowsByGroup.entries())) {
+            // Dominant sceneId across the group's rows — groups never
+            // straddle scenes by construction, but degenerate-index
+            // fallbacks can leave disagreeing stamps.
+            const sceneVotes = new Map<number, number>();
+            for (const r of rows) {
+              const sid = (r as any).sceneId ?? 0;
+              sceneVotes.set(sid, (sceneVotes.get(sid) ?? 0) + 1);
+            }
+            let groupSceneId = 0;
+            let bestVotes = -1;
+            sceneVotes.forEach((n, sid) => { if (n > bestVotes) { bestVotes = n; groupSceneId = sid; } });
+
+            const rep = rows.reduce((a, b) =>
+              parseFloat(String(a.confidence)) >= parseFloat(String(b.confidence)) ? a : b);
+            const stats = sceneStats.get(groupSceneId);
+            const arr = surfacesByScene.get(groupSceneId) ?? [];
+            arr.push({
+              groupId: gid,
+              surfaceType: rep.surfaceType,
+              bbox: {
+                x: medianOf(rows.map(r => parseFloat(String(r.boundingBoxX)))),
+                y: medianOf(rows.map(r => parseFloat(String(r.boundingBoxY)))),
+                w: medianOf(rows.map(r => parseFloat(String(r.boundingBoxWidth)))),
+                h: medianOf(rows.map(r => parseFloat(String(r.boundingBoxHeight)))),
+              },
+              confidence: parseFloat(String(rep.confidence)),
+              // Set-dressing model: the surface belongs to its camera setup,
+              // so it's on screen whenever the setup is.
+              screenTimeSec: Math.round((stats?.totalSec ?? 0) * 10) / 10,
+              rowCount: rows.length,
+              representativeRowId: rep.id,
+              frameUrl: rep.frameUrl ?? null,
+            });
+            surfacesByScene.set(groupSceneId, arr);
+          }
+
+          // NUMBERED FIXTURES — displayLabel gives every canonical surface a
+          // stable human name: per scene, per canonical type — "Wall 1",
+          // "Wall 2", "Nightstand 1". Ordinals derive from room-model idx
+          // (model-backed surfaces first, ordered by idx; fresh surfaces
+          // after, in insertion order), so a modeled surface keeps its number
+          // across rescans and episodes of the same set. Assigned BEFORE the
+          // per-scene confidence sort so "insertion order" means row order,
+          // not display order. jsonb-only — no schema change; clients fall
+          // back to surfaceType when the field is absent (legacy videos).
+          const modelIdxByGroup = new Map<string, number>();
+          for (const match of Array.from(modelBySceneKey.values())) {
+            for (const s of match.surfaces) modelIdxByGroup.set(`rm${match.model.id}-s${s.idx}`, s.idx);
+          }
+          for (const [gid, info] of Array.from(modelGroupInfo.entries())) modelIdxByGroup.set(gid, info.idx);
+          const humanTypeName = (canonical: string): string =>
+            canonical.replace(/_/g, " ").split(/\s+/).filter(Boolean)
+              .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+          for (const sceneSurfaceList of Array.from(surfacesByScene.values())) {
+            const byType = new Map<string, any[]>();
+            for (const surf of sceneSurfaceList) {
+              const typeKey = canonicalSurfaceType(String(surf.surfaceType));
+              const arr = byType.get(typeKey) ?? [];
+              arr.push(surf);
+              byType.set(typeKey, arr);
+            }
+            for (const [typeKey, surfs] of Array.from(byType.entries())) {
+              // Ordinals rank against the MODEL'S same-type roster, not this
+              // scan's survivors — a dense per-scan rank would renumber
+              // "Wall 2" to "Wall 1" the first scan its sibling goes
+              // unconfirmed, and a fixture's number is a name the creator
+              // remembers. The roster is keyed by full groupId (model id +
+              // idx), so it is unique by construction: ranking by idx alone
+              // collided whenever two models contributed the same-type
+              // surface to one scene, and surfaces MINTED into a model this
+              // scan (absent from the stored roster) all fell to the same
+              // fallback ordinal — the observed "Nightstand 1" twice.
+              const parseRm = (gid: string): { modelId: number; idx: number } | null => {
+                const m = /^rm(\d+)-s(\d+)$/.exec(gid);
+                return m ? { modelId: Number(m[1]), idx: Number(m[2]) } : null;
+              };
+              const rosterKeys: string[] = [];
+              for (const match of Array.from(modelBySceneKey.values())) {
+                for (const ms of match.surfaces) {
+                  if (canonicalSurfaceType(String(ms.surfaceType)) === typeKey) {
+                    rosterKeys.push(`rm${match.model.id}-s${ms.idx}`);
+                  }
+                }
+              }
+              // Surfaces minted into a model during THIS scan belong to the
+              // roster too — they're permanent from now on.
+              for (const surf of surfs) {
+                if (parseRm(String(surf.groupId))) rosterKeys.push(String(surf.groupId));
+              }
+              const rosterSorted = Array.from(new Set(rosterKeys)).sort((a, b) => {
+                const pa = parseRm(a)!, pb = parseRm(b)!;
+                return pa.modelId - pb.modelId || pa.idx - pb.idx;
+              });
+              let nextOrdinal = rosterSorted.length;
+              for (const surf of surfs) {
+                const pos = rosterSorted.indexOf(String(surf.groupId));
+                surf.displayLabel = `${humanTypeName(typeKey)} ${(pos >= 0 ? pos : nextOrdinal++) + 1}`;
+              }
+            }
+          }
+
+          // "Scene A" is the class with the most screen time, and so on down.
+          const sceneLabel = (i: number): string =>
+            i < 26 ? `Scene ${String.fromCharCode(65 + i)}` : `Scene ${i + 1}`;
+          const scenes = Array.from(sceneStats.entries())
+            .sort((a, b) => b[1].totalSec - a[1].totalSec)
+            .map(([classSceneId, st], i) => ({
+              sceneId: classSceneId,
+              label: sceneLabel(i),
+              occurrences: st.occurrences,
+              totalSec: Math.round(st.totalSec * 10) / 10,
+              surfaces: (surfacesByScene.get(classSceneId) ?? []).sort((a, b) => b.confidence - a.confidence),
+            }));
+          // Defensive: a group stamped with a sceneId the index doesn't know
+          // still shows up — an inventory must never drop a real surface.
+          for (const [orphanSceneId, arr] of Array.from(surfacesByScene.entries())) {
+            if (!sceneStats.has(orphanSceneId)) {
+              scenes.push({ sceneId: orphanSceneId, label: sceneLabel(scenes.length), occurrences: 0, totalSec: 0, surfaces: arr });
+            }
+          }
+
+          const sceneInventory = {
+            version: 1,
+            source: sceneIndexSource,
+            scenes,
+            generatedAt: new Date().toISOString(),
+          };
+          await storage.updateVideoIndex(videoId, { sceneInventory: sceneInventory as any });
+          console.log(`[Scanner V2] Persisted scene inventory: ${scenes.length} scene class(es), ${rowsByGroup.size} canonical surface(s) (source=${sceneIndexSource})`);
+          inventoryPersisted = true;
+
+          // MEASUREMENT SPINE: materialize per-fixture exposure supply. The
+          // numbers are already computed above — this lifts them out of jsonb
+          // so a fixture's cumulative screen time across every episode is one
+          // GROUP BY instead of a jsonb walk. It is the denominator of every
+          // CV-impact effect estimate (docs/DATA_DICTIONARY.md §1).
+          // Non-fatal: a scan must never fail over research instrumentation.
+          try {
+            if (!scanQualityOk) {
+              console.warn(`[Measurement] fixture_exposure: SKIPPED for video ${videoId} — degraded scan (${(scanGeminiShare * 100).toFixed(0)}% AI-analyzed frames, need 70%); prior exposure rows kept`);
+              throw new Error("__skip_exposure__");
+            }
+            const exposureRows = scenes.flatMap((sc: any) =>
+              (sc.surfaces ?? []).map((surf: any) => ({
+                userId: String(video.userId),
+                videoId,
+                surfaceGroupId: String(surf.groupId),
+                sceneId: Number(sc.sceneId) || 0,
+                sceneLabel: String(sc.label ?? "").slice(0, 32) || null,
+                displayLabel: surf.displayLabel ? String(surf.displayLabel).slice(0, 64) : null,
+                surfaceType: String(surf.surfaceType ?? "surface").slice(0, 64),
+                // rm-prefixed ids are the room-model fixtures that persist
+                // across rescans AND episodes — the cross-episode unit.
+                isModelBacked: /^rm\d+-s\d+$/.test(String(surf.groupId)),
+                sceneScreenTimeSec: String(surf.screenTimeSec ?? 0),
+                occurrences: Number(sc.occurrences) || 0,
+                rowCount: Number(surf.rowCount) || 0,
+                confidence: surf.confidence != null ? String(surf.confidence) : null,
+                videoDurationSec: (() => {
+                  // Function-scope duration sources (the local-path variable
+                  // isn't visible here): DB value, else the yt-dlp probe.
+                  const d = durationSec ?? ytProbedDurationSec;
+                  return d && d > 0 ? String(Math.round(d)) : null;
+                })(),
+              })),
+            );
+            const written = await storage.replaceFixtureExposure(videoId, exposureRows as any);
+            const modelBacked = exposureRows.filter((r: any) => r.isModelBacked).length;
+            console.log(`[Measurement] fixture_exposure: ${written} fixture-row(s) for video ${videoId} (${modelBacked} model-backed / cross-episode)`);
+
+            // Explicit CONTROL periods: a fixture observed with no treatment
+            // is untreated DATA, not missing data. openControlPeriod is
+            // idempotent (no-op when any window is already open), so this is
+            // safe to run on every rescan.
+            let controlsOpened = 0;
+            for (const row of exposureRows as any[]) {
+              const opened = await storage.openControlPeriod({
+                userId: String(video.userId),
+                surfaceGroupId: row.surfaceGroupId,
+                videoId,
+              }).catch(() => null);
+              if (opened) controlsOpened++;
+            }
+            if (controlsOpened > 0) {
+              console.log(`[Measurement] fixture_assignments: opened ${controlsOpened} control period(s) — fixtures observed with no treatment`);
+            }
+          } catch (fxErr: any) {
+            if (fxErr?.message === "__skip_exposure__") {
+              // Quality gate, already logged — not a failure.
+            } else {
+              // console.ERROR, not warn: this table is billed to the data
+              // team as the denominator of every effect estimate, so a
+              // silent write failure is a silent data gap.
+              console.error(`[Measurement] fixture_exposure WRITE FAILED for video ${videoId} (exposure supply not recorded):`, fxErr?.message || fxErr);
+            }
+          }
+        } catch (invErr: any) {
+          console.warn(`[Scanner V2] Scene inventory build failed (non-fatal):`, invErr?.message || invErr);
+        }
+      } else if (totalSurfaces > 0 && indexDegenerate) {
+        console.log(`[Scanner V2] Degenerate scene index — skipping scene inventory build`);
+      }
+      // A successful rescan retires every prior-generation row, so a stale
+      // inventory would reference only Filtered rows — scene blocks with no
+      // nested detections, badge counts that match nothing. When this run
+      // produced surfaces but could not build a fresh inventory (degenerate
+      // index, missing index, build failure), clear the column so the UIs
+      // fall back to the flat view instead of rendering ghosts. A 0-surface
+      // run keeps prior data, mirroring the keep-prior-surfaces rule.
+      if (totalSurfaces > 0 && !inventoryPersisted) {
+        try {
+          await storage.updateVideoIndex(videoId, { sceneInventory: null as any });
+        } catch {}
+      }
+
+      // ── Room-model upsert: persist the set memory ─────────────────
+      // Success path only — the cancel branch above never reaches here, and
+      // a 0-surface scan has nothing to teach the model. Matched classes
+      // refresh their confirmed surfaces (bbox/confidence/frameUrl, idx
+      // kept) and APPEND genuine discoveries with never-reused indices;
+      // unmatched classes with surviving surfaces become new models. Known
+      // surfaces absent from this scan stay in the model untouched — sets
+      // evolve, pruning is a future concern. Non-fatal throughout: the scan
+      // result stands even if set memory can't be written.
+      //
+      // AI-QUALITY GATE: set memory is persistent and feeds every future
+      // scan of this creator's sets, so a scan that mostly ran on the edge-
+      // detection fallback (dead Gemini proxy, missing key, rate limits)
+      // must not teach it. Garbage written here would be confirmed forever
+      // after. Require Gemini to have actually analyzed most frames.
+      const geminiFrames = bufferedAnalyses.filter(b => b.viaGemini).length;
+      const geminiShare = bufferedAnalyses.length > 0 ? geminiFrames / bufferedAnalyses.length : 0;
+      const aiQualityOk = geminiShare >= 0.7;
+      if (!aiQualityOk && totalSurfaces > 0) {
+        console.warn(
+          `[RoomModel] SKIPPING set-memory write — only ${geminiFrames}/${bufferedAnalyses.length} frames (${Math.round(geminiShare * 100)}%) were AI-analyzed; ` +
+          `the rest fell back to edge detection. Set memory must not learn from a degraded scan (check GEMINI_API_KEY / proxy health).`,
+        );
+      }
+      if (aiQualityOk && totalSurfaces > 0 && sceneIndex && !indexDegenerate && sceneIndex.shots.length > 0) {
+        try {
+          const rmRows = await storage.getDetectedSurfaces(videoId);
+          const rmSurvivors = rmRows.filter(s =>
+            !priorIdSet.has(s.id) && s.surfaceType !== "Filtered" && (s as any).surfaceGroupId);
+
+          const rmByGroup = new Map<string, typeof rmSurvivors>();
+          for (const row of rmSurvivors) {
+            const gid = (row as any).surfaceGroupId as string;
+            const arr = rmByGroup.get(gid) ?? [];
+            arr.push(row);
+            rmByGroup.set(gid, arr);
+          }
+
+          // Tier 3: creator-approved rows (this scan's rows can't be approved
+          // yet — the signal rides in from PRIOR scans' rows of the same
+          // fixture). Absence of approval is NOT rejection; only the explicit
+          // yes is harvested.
+          // ONLY rm-gids: g-prefixed ids are re-minted per scan with no
+          // cross-scan identity, so an approval recorded on scan N's g-id
+          // would validate whatever different surface drew that id in scan
+          // N+1. rm{model}-s{idx} is the one identity that survives rescans.
+          const approvedGroupIds = new Set(
+            rmRows
+              .filter(r => (r as any).creatorApproved === true &&
+                           /^rm\d+-s\d+$/.test(String((r as any).surfaceGroupId ?? "")))
+              .map(r => (r as any).surfaceGroupId as string));
+
+          const rmMedian = (vals: number[]) => {
+            const s = [...vals].sort((a, b) => a - b);
+            const m = Math.floor(s.length / 2);
+            return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+          };
+          // Distill a surviving group to the fields a model surface stores.
+          const summarizeGroup = (rows: typeof rmSurvivors) => {
+            const rep = rows.reduce((a, b) =>
+              parseFloat(String(a.confidence)) >= parseFloat(String(b.confidence)) ? a : b);
+            return {
+              surfaceType: rep.surfaceType,
+              orientation: (rep.orientation === "vertical" ? "vertical" : "horizontal") as "horizontal" | "vertical",
+              bbox: {
+                x: rmMedian(rows.map(r => parseFloat(String(r.boundingBoxX)))),
+                y: rmMedian(rows.map(r => parseFloat(String(r.boundingBoxY)))),
+                w: rmMedian(rows.map(r => parseFloat(String(r.boundingBoxWidth)))),
+                h: rmMedian(rows.map(r => parseFloat(String(r.boundingBoxHeight)))),
+              },
+              confidence: parseFloat(String(rep.confidence)),
+              frameUrl: rep.frameUrl ?? null,
+            };
+          };
+
+          // Group → scene class via the dominant sceneId of its rows (same
+          // vote the inventory uses — degenerate fallbacks can disagree).
+          const groupsByClass = new Map<number, Array<{ gid: string; rows: typeof rmSurvivors }>>();
+          for (const [gid, rows] of Array.from(rmByGroup.entries())) {
+            const sceneVotes = new Map<number, number>();
+            for (const r of rows) {
+              const sid = (r as any).sceneId ?? 0;
+              sceneVotes.set(sid, (sceneVotes.get(sid) ?? 0) + 1);
+            }
+            let classId = 0;
+            let bestVotes = -1;
+            sceneVotes.forEach((n, sid) => { if (n > bestVotes) { bestVotes = n; classId = sid; } });
+            const arr = groupsByClass.get(classId) ?? [];
+            arr.push({ gid, rows });
+            groupsByClass.set(classId, arr);
+          }
+
+          // 16 exemplars (was 8): more remembered looks of the same set
+          // shrink the cross-scan hamming distance the matcher must absorb —
+          // the drift that orphaned taught surfaces came from midpoint
+          // variance exceeding what 8 exemplars covered.
+          const upsertExemplars = collectClassExemplarHashes(sceneIndex, 16);
+
+          // Classes that matched the same model update it ONCE, merged — a
+          // close-up class and a wide class both within range of one model
+          // must not overwrite each other's refresh.
+          const updatesByModel = new Map<number, { match: SceneModelMatch; classIds: number[]; groups: Array<{ gid: string; rows: typeof rmSurvivors }> }>();
+          const newModelClasses: Array<{ classId: number; groups: Array<{ gid: string; rows: typeof rmSurvivors }> }> = [];
+          for (const [classId, groups] of Array.from(groupsByClass.entries())) {
+            const match = modelBySceneKey.get(classId);
+            if (match) {
+              const agg = updatesByModel.get(match.model.id) ?? { match, classIds: [], groups: [] };
+              agg.classIds.push(classId);
+              agg.groups.push(...groups);
+              updatesByModel.set(match.model.id, agg);
+            } else {
+              newModelClasses.push({ classId, groups });
+            }
+          }
+
+          let modelsUpdated = 0;
+          let modelsCreated = 0;
+
+          for (const [modelId, upd] of Array.from(updatesByModel.entries())) {
+            // Base the merge on a FRESH read, not the scan-start snapshot.
+            // Scans run for many minutes, and a surface taught mid-scan
+            // would otherwise be clobbered by a whole-jsonb replace — worse,
+            // nextIdx computed from the stale snapshot would re-issue the
+            // taught surface's idx to a different physical surface, aliasing
+            // its already-written rm{model}-s{idx} rows. Refresh targets are
+            // found by idx, so fresh-only entries simply persist untouched.
+            let surfaces = upd.match.surfaces.map(s => ({ ...s, bbox: { ...s.bbox } }));
+            try {
+              const freshModel = await storage.getRoomModelById(modelId);
+              if (freshModel) {
+                const freshSurfaces = parseRoomModelSurfaces(freshModel.surfaces);
+                if (freshSurfaces.length >= surfaces.length) {
+                  surfaces = freshSurfaces.map(s => ({ ...s, bbox: { ...s.bbox } }));
+                }
+              }
+            } catch { /* fall back to the scan-start snapshot */ }
+            let nextIdx = surfaces.reduce((mx, s) => Math.max(mx, s.idx), -1) + 1;
+            let refreshed = 0;
+            let appended = 0;
+            for (const { gid, rows } of upd.groups) {
+              const info = modelGroupInfo.get(gid);
+              // A model-backed group drifting into another model's class
+              // (post-processing merges can move a group's dominant scene)
+              // belongs to ITS model, not this one — appending it here would
+              // clone one physical surface into two models.
+              if (info && info.modelId !== modelId) continue;
+              const summary = summarizeGroup(rows);
+              if (info) {
+                const target = surfaces.find(s => s.idx === info.idx);
+                if (target) {
+                  target.bbox = summary.bbox;
+                  target.confidence = summary.confidence;
+                  target.frameUrl = summary.frameUrl;
+                  if (approvedGroupIds.has(gid)) {
+                    target.validated = true;
+                    target.confidence = Math.max(target.confidence, 0.75);
+                  }
+                  refreshed++;
+                  continue;
+                }
+              }
+              // Fresh discovery inside a known set — but first check it
+              // isn't the SAME physical surface re-minted under a fresh
+              // g-id (a drifted-bbox sighting that escaped the confirm-mode
+              // dedupe and outlived the rm-group in post-processing).
+              // Appending that would put one desk in the model twice, and
+              // both entries would get confirmed on every future scan with
+              // no pruning to self-correct. Same canonical type + IoU>0.5
+              // against an existing model surface ⇒ refresh that entry
+              // instead of appending.
+              const asWH = (b: { x: number; y: number; w: number; h: number }) =>
+                ({ x: b.x, y: b.y, width: b.w, height: b.h });
+              const dupOf = surfaces.find(s =>
+                canonicalSurfaceType(s.surfaceType) === canonicalSurfaceType(summary.surfaceType) &&
+                bboxIoU(asWH(s.bbox), asWH(summary.bbox)) > 0.5);
+              if (dupOf) {
+                dupOf.bbox = summary.bbox;
+                dupOf.confidence = summary.confidence;
+                dupOf.frameUrl = summary.frameUrl;
+                refreshed++;
+                continue;
+              }
+              // Append-only, idx never reused even if surfaces were deleted
+              // from the model.
+              surfaces.push({
+                idx: nextIdx++,
+                surfaceType: summary.surfaceType,
+                orientation: summary.orientation,
+                bbox: summary.bbox,
+                confidence: approvedGroupIds.has(gid) ? Math.max(summary.confidence, 0.75) : summary.confidence,
+                frameUrl: summary.frameUrl,
+                ...(approvedGroupIds.has(gid) ? { validated: true } : {}),
+              });
+              appended++;
+            }
+
+            // Exemplar merge: this scan's hashes lead (collected longest
+            // shot first), then the model's existing ones, deduped, cap 8 —
+            // the model tracks the set's newest look without forgetting the
+            // older episodes that still fit under the cap.
+            const scanHashes: string[] = [];
+            for (const cid of upd.classIds) {
+              for (const h of upsertExemplars.get(cid) ?? []) {
+                if (!scanHashes.includes(h)) scanHashes.push(h);
+              }
+            }
+            const mergedHashes: string[] = [];
+            for (const h of [...scanHashes, ...(upd.match.model.sceneExemplarHashes ?? [])]) {
+              if (mergedHashes.length >= 16) break;
+              if (h && !h.startsWith("fail") && !mergedHashes.includes(h)) mergedHashes.push(h);
+            }
+
+            const isNewEpisode = upd.match.model.lastVideoId !== videoId;
+            await storage.updateRoomModel(modelId, {
+              surfaces,
+              lastVideoId: videoId,
+              ...(mergedHashes.length > 0 ? { sceneExemplarHashes: mergedHashes } : {}),
+              ...(isNewEpisode ? { episodeCount: (upd.match.model.episodeCount ?? 1) + 1 } : {}),
+            });
+            modelsUpdated++;
+            console.log(`[RoomModel] Model #${modelId}: refreshed ${refreshed}, appended ${appended} surface(s)${isNewEpisode ? " (new episode)" : ""}`);
+          }
+
+          for (const { classId, groups } of newModelClasses) {
+            const exemplars = upsertExemplars.get(classId) ?? [];
+            // An unhashable class can never be matched again — storing it
+            // would only accumulate dead models.
+            if (exemplars.length === 0) continue;
+            // Model-backed groups already live in their model; a new model
+            // must only be born from genuinely fresh surfaces.
+            const freshGroups = groups.filter(({ gid }) => !modelGroupInfo.has(gid));
+            if (freshGroups.length === 0) continue;
+            const surfaces: RoomModelSurface[] = freshGroups.map(({ rows }, i) => {
+              const summary = summarizeGroup(rows);
+              return {
+                idx: i,
+                surfaceType: summary.surfaceType,
+                orientation: summary.orientation,
+                bbox: summary.bbox,
+                confidence: summary.confidence,
+                frameUrl: summary.frameUrl,
+              };
+            });
+            await storage.insertRoomModel({
+              userId: video.userId,
+              sceneExemplarHashes: exemplars,
+              surfaces,
+              sourceVideoId: videoId,
+              lastVideoId: videoId,
+            });
+            modelsCreated++;
+            console.log(`[RoomModel] New model for scene class ${classId}: ${surfaces.length} surface(s), ${exemplars.length} exemplar hash(es)`);
+          }
+
+          if (modelsUpdated > 0 || modelsCreated > 0) {
+            console.log(`[RoomModel] Set memory persisted: ${modelsUpdated} model(s) refreshed, ${modelsCreated} created`);
+          }
+        } catch (rmUpsertErr: any) {
+          console.warn(`[RoomModel] Set-memory upsert failed (non-fatal):`, rmUpsertErr?.message || rmUpsertErr);
+        }
+      }
+
+      await updateStatusIfStillScanning(videoId, finalStatus);
+    }
 
     console.log(`[Scanner V2] ========== SCAN COMPLETE ==========`);
     console.log(`[Scanner V2] Video ID: ${videoId}, Surfaces: ${totalSurfaces}, Gemini: ${geminiKeyPresent ? 'YES' : 'NO'}`);
 
-    // AUTO-TRIGGER TRANSCRIPTION — kick off transcript pipeline in background after scan
-    // This ensures editorial clips are ready when the creator opens the video
+    // AUTO-TRIGGER EDITORIAL PIPELINE — after every successful scan, run the
+    // full editorial auto-pipeline in the background. It ensures the
+    // transcript itself (ensureTranscript is idempotent and race-aware),
+    // then analyzes, ranks, and renders clips. Single choke point: manual
+    // scans, batch scans, sync scans, and uploads all get clips without a
+    // user click. Skips cleanly when clips are already rendered.
     try {
-      const existingTranscript = await storage.getVideoTranscript(videoId);
-      if (!existingTranscript && video.filePath) {
-        console.log(`[Scanner V2] Auto-triggering transcription for video ${videoId}...`);
-        // Dynamic import to avoid circular dependency — transcriptPipeline.ts is in remix module
-        const { runTranscriptPipeline } = await import("./lib/remix/transcriptPipeline");
+      const editorialState = (video as any).editorialStatus;
+      const editorialFresh = !editorialState || editorialState === "pending";
+      // Gate mirrors runEditorialAutoPipeline's own precondition (filePath
+      // OR youtubeId): light-cloud imports have no filePath and the
+      // pipeline resolves their source via the shared cache itself, so
+      // requiring a local file here would silently exclude exactly the
+      // platform-import videos the light-cloud model is built around.
+      if (cancelledMidScan) {
+        console.log(`[Scanner V2] Video ${videoId}: scan cancelled — skipping editorial auto-trigger`);
+      } else if ((video.filePath || video.youtubeId) && editorialFresh) {
+        console.log(`[Scanner V2] Auto-triggering editorial pipeline for video ${videoId}...`);
+        // Dynamic imports to avoid circular dependency with the remix module
+        const { runEditorialAutoPipeline } = await import("./lib/remix/editorialAutoPipeline");
+        const { stableUserIntId } = await import("./lib/stableUserId");
 
-        // Create initial transcript record
-        const transcript = await storage.createVideoTranscript({
-          videoId,
-          provider: "deepgram",
-          language: "en",
-          status: "processing",
-        });
-
-        // Run in background — don't block scan completion
-        runTranscriptPipeline({ videoId, filePath: video.filePath, language: "en" })
-          .then(async (result) => {
-            await storage.updateVideoTranscript(transcript.id, {
-              segments: result.segments,
-              fullText: result.fullText,
-              speakerMap: result.speakerMap ?? null,
-              wordCount: result.wordCount,
-              segmentCount: result.segmentCount,
-              audioDuration: result.audioDuration ?? null,
-              processingTimeMs: result.totalProcessingTimeMs ?? null,
-              provider: result.provider,
-              status: "completed",
-            });
-            console.log(`[Scanner V2] Auto-transcription completed for video ${videoId}: ${result.wordCount} words`);
+        runEditorialAutoPipeline(videoId, stableUserIntId(video.userId))
+          .then((r) => {
+            if (r.success) {
+              console.log(`[Scanner V2] Editorial auto-pipeline for ${videoId}: ${r.clipsRendered}/${r.clipsGenerated} rendered (${r.status})`);
+            } else {
+              console.warn(`[Scanner V2] Editorial auto-pipeline for ${videoId} failed (non-fatal): ${r.error}`);
+            }
           })
-          .catch(async (err) => {
-            console.warn(`[Scanner V2] Auto-transcription failed for video ${videoId} (non-fatal):`, err.message);
-            await storage.updateVideoTranscriptStatus(transcript.id, "failed", err.message);
-          });
-      } else if (!video.filePath) {
-        console.log(`[Scanner V2] No file path for video ${videoId}, skipping auto-transcription`);
+          .catch((err) => console.warn(`[Scanner V2] Editorial auto-pipeline error for ${videoId} (non-fatal):`, err?.message || err));
+      } else if (!video.filePath && !video.youtubeId) {
+        console.log(`[Scanner V2] No source for video ${videoId} (no file path and no platform id), skipping editorial auto-pipeline`);
       } else {
-        console.log(`[Scanner V2] Transcript already exists for video ${videoId}, skipping auto-transcription`);
+        // ready/failed/analyzing states never auto-rerun on rescans — a
+        // failed pipeline would otherwise burn a full Claude+Whisper+render
+        // cycle on EVERY scan. Retries go through the explicit
+        // editorial-auto force/resume endpoints.
+        console.log(`[Scanner V2] Editorial status '${editorialState}' for video ${videoId} — not auto-rerunning`);
       }
-    } catch (transcriptErr) {
-      console.warn(`[Scanner V2] Auto-transcription setup failed (non-fatal):`, transcriptErr);
+    } catch (editorialErr) {
+      console.warn(`[Scanner V2] Editorial auto-trigger setup failed (non-fatal):`, editorialErr);
     }
 
     return {
@@ -2212,13 +6278,45 @@ export async function processVideoScan(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[Scanner V2] SCAN FAILED: ${errorMessage}`);
-    
+
+    // Roll back any partial new surfaces inserted during this failed run, so
+    // the creator's prior data (snapshotted above) remains the source of truth.
+    // Anything currently in the DB whose ID is NOT in priorSurfaceIds was
+    // inserted by THIS scan attempt — mark Filtered so it doesn't render.
     try {
-      await storage.updateVideoStatus(videoId, "Scan Failed");
+      const priorIdSet = new Set(priorSurfaceIds);
+      const current = await storage.getDetectedSurfaces(videoId);
+      const partialNew = current.filter(s => !priorIdSet.has(s.id) && s.surfaceType !== "Filtered");
+      if (partialNew.length > 0) {
+        for (const s of partialNew) {
+          try {
+            await storage.updateDetectedSurface(s.id, { surfaceType: "Filtered", sceneContext: "Removed: scan failed mid-way" });
+          } catch { /* ignore */ }
+        }
+        console.log(`[Scanner V2] Rolled back ${partialNew.length} partial new surfaces; ${priorSurfaceIds.length} prior surfaces restored as the active set`);
+      }
+    } catch (rollbackErr: any) {
+      console.warn(`[Scanner V2] Rollback of partial surfaces failed (non-fatal):`, rollbackErr?.message || rollbackErr);
+    }
+
+    try {
+      // If we had prior ACTIVE surfaces, status reverts to whatever Ready
+      // tier matches their count — otherwise mark Scan Failed. Must be the
+      // active count, not the raw snapshot length: the snapshot includes
+      // every soft-deleted Filtered/"Potential Surface" row from prior
+      // rescans, and a failed rescan advertising "Ready (134 Spots)" over
+      // 4 real surfaces is fiction the library count would contradict.
+      // Guarded write: a cancel followed by a late throw must not be
+      // un-cancelled by this revert — only write while still "Scanning".
+      if (priorActiveCount > 0) {
+        await updateStatusIfStillScanning(videoId, `Ready (${priorActiveCount} Spots)`);
+      } else {
+        await updateStatusIfStillScanning(videoId, "Scan Failed");
+      }
     } catch {
       // Ignore DB errors during error handling
     }
-    
+
     return {
       success: false,
       videoId,
@@ -2245,19 +6343,23 @@ export async function processVideoScan(
  * @param endTime - Clip end time in seconds
  * @param surfaceIds - Which surfaces to track (only create keyframes for matching surfaces)
  * @param intervalSeconds - Frame interval (default 0.5s)
+ * @param sourcePath - Optional local source file to use directly. The remix
+ *   pipeline already holds a resolved+pinned copy of the source when it calls
+ *   this — passing it skips a redundant cache resolve.
  */
 export async function denseScanRange(
   videoId: number,
   startTime: number,
   endTime: number,
   surfaceIds: number[],
-  intervalSeconds: number = 0.5
+  intervalSeconds: number = 0.5,
+  sourcePath?: string
 ): Promise<{ keyframesCreated: number }> {
   console.log(`[DenseScan] Starting dense scan for video ${videoId}: ${startTime.toFixed(1)}s-${endTime.toFixed(1)}s @ ${intervalSeconds}s intervals`);
 
   const video = await storage.getVideoById(videoId);
-  if (!video || !(video as any).filePath) {
-    console.error(`[DenseScan] Video not found or no file path`);
+  if (!video || (!sourcePath && !(video as any).filePath && !video.youtubeId)) {
+    console.error(`[DenseScan] Video not found or no source (no file path or platform id)`);
     return { keyframesCreated: 0 };
   }
 
@@ -2267,13 +6369,29 @@ export async function denseScanRange(
 
   let videoPath: string | undefined;
   try {
-    // Resolve video path (Object Storage or local)
+    // Resolve video path: caller-supplied local file, Object Storage, local
+    // filePath, or — for light-cloud imports (YouTube/IG/FB) with no
+    // filePath at all — the shared source cache. Hard-requiring filePath
+    // here starved every light-cloud clip of dense motion-tracking
+    // keyframes: placements rendered static/jittery across camera motion
+    // while the identical flow on an uploaded video looked polished. The
+    // cache resolve is a hard-link cache hit when the remix pipeline
+    // already pulled this source; pinning into tempDir keeps the cache
+    // sweeper from unlinking it mid-scan, and the finally below releases
+    // the pin with the rest of tempDir.
     const filePath = (video as any).filePath;
-    if (filePath.startsWith("/storage/")) {
+    if (sourcePath) {
+      videoPath = sourcePath;
+    } else if (filePath?.startsWith("/storage/")) {
       const objectKey = filePath.replace(/^\/storage\//, "public/");
       videoPath = await downloadToTempFile(objectKey, tempDir);
-    } else {
+    } else if (filePath) {
       videoPath = path.resolve(process.cwd(), filePath);
+    } else {
+      // Dynamic import mirrors the remix pipeline's own usage and avoids a
+      // module cycle (sourceCache → lib/scanner ← this file).
+      const { getPinnedSourcePath } = await import("./lib/sourceCache");
+      videoPath = await getPinnedSourcePath(video as any, path.join(tempDir, "source-pin"));
     }
 
     if (!videoPath || !fs.existsSync(videoPath)) {

@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useRoute, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Play, Pause, Download, Layers, Save,
   CheckCircle, Package, Eye, EyeOff, ChevronRight,
   Move, RotateCw, Maximize2, Sun, Droplets, Blend, FlipHorizontal,
-  Film, Loader2, X as XIcon, Share2,
+  Film, Loader2, X as XIcon, Share2, Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -41,6 +42,12 @@ interface DetectedSurface {
   frameExists?: boolean;
   surroundings: string[] | null;
   sceneContext: string | null;
+  // Scene cluster ID — surfaces sharing a sceneId are in the same physical
+  // scene. Null/absent for videos scanned before scene clustering shipped.
+  sceneId?: number | null;
+  // Canonical physical-surface identity — one id spans every frame row of
+  // the same real-world surface. Opaque string; null/absent for legacy rows.
+  surfaceGroupId?: string | null;
 }
 
 interface CatalogProduct {
@@ -59,7 +66,15 @@ interface SurfaceKeyframe {
 }
 
 interface SurfaceTrack {
+  // Stable identity for this track: the canonical surfaceGroupId when the
+  // detection has one, else a legacy `${type}:${sceneId ?? "x"}` composite.
+  trackKey: string;
   surfaceType: string;
+  surfaceGroupId: string | null;
+  sceneId: number | null;
+  // Surface row ids feeding this track, sorted by timestamp (parallel to
+  // keyframes). surfaceIds[0] is the anchor surface for saves.
+  surfaceIds: number[];
   keyframes: SurfaceKeyframe[];
 }
 
@@ -189,13 +204,32 @@ function findKeyframes(keyframes: SurfaceKeyframe[], currentTime: number) {
   return { prev, next, progress: Math.min(Math.max(progress, 0), 1) };
 }
 
+// Tracks are keyed by canonical surface identity so keyframes never merge
+// across distinct physical surfaces or scenes. Legacy rows (no surfaceGroupId)
+// fall back to a type+scene composite; fully-legacy videos (no sceneId either)
+// collapse to `${type}:x` — the old by-type behavior.
+function getTrackKey(surface: DetectedSurface): string {
+  return surface.surfaceGroupId || `${surface.surfaceType}:${surface.sceneId ?? "x"}`;
+}
+
 function buildSurfaceTracks(surfaces: DetectedSurface[]): Map<string, SurfaceTrack> {
   const tracks = new Map<string, SurfaceTrack>();
 
   for (const surface of surfaces) {
-    const type = surface.surfaceType;
-    if (!tracks.has(type)) {
-      tracks.set(type, { surfaceType: type, keyframes: [] });
+    const key = getTrackKey(surface);
+    if (!tracks.has(key)) {
+      tracks.set(key, {
+        trackKey: key,
+        surfaceType: surface.surfaceType,
+        surfaceGroupId: surface.surfaceGroupId ?? null,
+        sceneId: surface.sceneId ?? null,
+        surfaceIds: [],
+        keyframes: [],
+      });
+    }
+    const track = tracks.get(key)!;
+    if (track.sceneId == null && surface.sceneId != null) {
+      track.sceneId = surface.sceneId;
     }
 
     // DB stores bounding box as 0-1 normalized; render code expects 0-100 percentage
@@ -207,7 +241,8 @@ function buildSurfaceTracks(surfaces: DetectedSurface[]): Map<string, SurfaceTra
     const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
     const scale = isNormalized ? 100 : 1;
 
-    tracks.get(type)!.keyframes.push({
+    track.surfaceIds.push(surface.id);
+    track.keyframes.push({
       timestamp: parseFloat(surface.timestamp),
       bbox: {
         x: rawX * scale,
@@ -219,8 +254,13 @@ function buildSurfaceTracks(surfaces: DetectedSurface[]): Map<string, SurfaceTra
     });
   }
 
-  for (const track of tracks.values()) {
-    track.keyframes.sort((a, b) => a.timestamp - b.timestamp);
+  for (const track of Array.from(tracks.values())) {
+    // Sort keyframes and surfaceIds together so they stay parallel
+    const order = track.keyframes
+      .map((_: unknown, i: number) => i)
+      .sort((a: number, b: number) => track.keyframes[a].timestamp - track.keyframes[b].timestamp);
+    track.keyframes = order.map((i: number) => track.keyframes[i]);
+    track.surfaceIds = order.map((i: number) => track.surfaceIds[i]);
   }
   return tracks;
 }
@@ -417,7 +457,7 @@ export default function RemixEngine() {
   const { data: userTypeData } = useQuery<{ userType?: "creator" | "brand" | null }>({
     queryKey: ["/api/auth/user-type"],
     queryFn: async () => {
-      const res = await fetch("/api/auth/user-type", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/auth/user-type", { credentials: "include" });
       if (!res.ok) return { userType: null };
       return res.json();
     },
@@ -428,10 +468,61 @@ export default function RemixEngine() {
   const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const bidId = urlParams?.get("bidId") ? parseInt(urlParams.get("bidId")!) : undefined;
 
+  // ── Clip context (creator framing a brand's product INSIDE one editorial
+  // clip, rather than at the video level).
+  //
+  // Geometry is authored in SOURCE-video space either way — the clip renderer
+  // composites overlays on the source frame and applies the 9:16 crop
+  // afterwards — so this changes WHICH surfaces are offered and what the
+  // saved row is tagged with, not the coordinate system.
+  const clipId = urlParams?.get("clip") ? parseInt(urlParams.get("clip")!) : undefined;
+
+  // Where "back" goes. This page lives outside the app shell, so this control
+  // is the only way out — and it said "Library" for everyone: brands (whom
+  // /library bounces to the marketplace) and creators who arrived from an
+  // Inbox request, a saved placement, or an Opportunity and lost their place.
+  // Every entry point now says where it came from (?from=), and the label and
+  // the destination are computed from that ONE value, so the button never
+  // promises a page it does not go to. (history.back() was tried and
+  // rejected: its destination is uncorrelated with any label we could show.)
+  const BACK_TARGETS: Record<string, { label: string; path: string }> = {
+    inbox: { label: "Inbox", path: "/inbox" },
+    saved: { label: "Saved Placements", path: "/saved-placements" },
+    clips: { label: "Clips & Reels", path: "/clips" },
+    library: { label: "Library", path: "/library" },
+    opportunities: { label: "Opportunities", path: "/opportunities" },
+    marketplace: { label: "Marketplace", path: "/marketplace" },
+  };
+  const fromParam = urlParams?.get("from") ?? "";
+  const backTarget = BACK_TARGETS[fromParam]
+    ?? (isBrand ? BACK_TARGETS.marketplace : bidId ? BACK_TARGETS.opportunities : BACK_TARGETS.library);
+  const backLabel = backTarget.label;
+  const goBack = useCallback(() => { setLocation(backTarget.path); }, [backTarget.path, setLocation]);
+  const requestedSurfaceId = urlParams?.get("surface") ? parseInt(urlParams.get("surface")!) : undefined;
+  const requestedProductId = urlParams?.get("product") ? parseInt(urlParams.get("product")!) : undefined;
+
+  const { data: clipContext } = useQuery<{
+    clip: any;
+    surfaces: any[];
+  } | null>({
+    queryKey: ["/api/editorial-clips", clipId, "placement-context"],
+    queryFn: async () => {
+      const [clipRes, surfRes] = await Promise.all([
+        fetchWithTimeout(`/api/editorial-clips/${clipId}`, { credentials: "include" }),
+        fetchWithTimeout(`/api/editorial-clips/${clipId}/surfaces`, { credentials: "include" }),
+      ]);
+      if (!clipRes.ok || !surfRes.ok) return null;
+      const clipJson = await clipRes.json();
+      const surfJson = await surfRes.json();
+      return { clip: clipJson.clip ?? clipJson, surfaces: surfJson.surfaces ?? [] };
+    },
+    enabled: !!clipId,
+  });
+
   const { data: bidData } = useQuery<any>({
     queryKey: ["/api/bids", bidId],
     queryFn: async () => {
-      const res = await fetch(`/api/bids/${bidId}`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/bids/${bidId}`, { credentials: "include" });
       if (!res.ok) return null;
       return res.json();
     },
@@ -474,7 +565,7 @@ export default function RemixEngine() {
   const { data: video, isLoading: videoLoading } = useQuery<VideoDetails>({
     queryKey: ["/api/video", videoId, "details"],
     queryFn: async () => {
-      const res = await fetch(`/api/video/${videoId}/details`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/video/${videoId}/details`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch video");
       return res.json();
     },
@@ -489,7 +580,7 @@ export default function RemixEngine() {
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
     queryKey: ["/api/brand-products/catalog"],
     queryFn: async () => {
-      const res = await fetch("/api/brand-products/catalog", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/brand-products/catalog", { credentials: "include" });
       if (!res.ok) return [];
       return res.json();
     },
@@ -499,7 +590,7 @@ export default function RemixEngine() {
   const { data: savedPlacements } = useQuery<any[]>({
     queryKey: ["/api/video", videoId, "placements"],
     queryFn: async () => {
-      const res = await fetch(`/api/video/${videoId}/placements`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/video/${videoId}/placements`, { credentials: "include" });
       if (!res.ok) return [];
       const data = await res.json();
       return data.placements || [];
@@ -511,21 +602,84 @@ export default function RemixEngine() {
   // DERIVED DATA
   // ============================================================================
 
-  const surfaces = surfacesData?.surfaces || [];
+  // In clip mode only the fixtures visible inside the clip are offerable —
+  // framing a product on a surface the cut never shows produces a placement
+  // that renders nowhere.
+  const surfaces = useMemo(() => {
+    const all = surfacesData?.surfaces || [];
+    if (!clipId || !clipContext?.surfaces?.length) return all;
+    const allowed = new Set(clipContext.surfaces.map((s: any) => s.id));
+    const scoped = all.filter((s: any) => allowed.has(s.id));
+    return scoped.length > 0 ? scoped : all;
+  }, [surfacesData?.surfaces, clipId, clipContext?.surfaces]);
   const surfaceTracks = useMemo(() => buildSurfaceTracks(surfaces), [surfaces]);
   const sceneTimestamps = useMemo(() => getUniqueTimestamps(surfaces), [surfaces]);
   const videoSrc = useMemo(() => resolveVideoSrc(video?.filePath), [video?.filePath]);
   const [videoError, setVideoError] = useState<string | null>(null);
-  const trackNames = useMemo(() => Array.from(surfaceTracks.keys()).sort(), [surfaceTracks]);
+  // Track keys ordered by type then first appearance, so a video with one
+  // surface per type keeps the familiar alphabetical order
+  const trackKeys = useMemo(
+    () =>
+      Array.from(surfaceTracks.values())
+        .sort(
+          (a, b) =>
+            a.surfaceType.localeCompare(b.surfaceType) ||
+            (a.keyframes[0]?.timestamp ?? 0) - (b.keyframes[0]?.timestamp ?? 0) ||
+            a.trackKey.localeCompare(b.trackKey)
+        )
+        .map(t => t.trackKey),
+    [surfaceTracks]
+  );
+
+  // Land the creator on the fixture the brand actually requested, rather than
+  // making them find it among every surface in the video.
+  const clipModeRef = useRef(false);
+  useEffect(() => {
+    if (!requestedSurfaceId || clipModeRef.current) return;
+    for (const track of Array.from(surfaceTracks.values())) {
+      if (track.surfaceIds.includes(requestedSurfaceId)) {
+        setSelectedTrack(track.trackKey);
+        clipModeRef.current = true;
+        break;
+      }
+    }
+  }, [requestedSurfaceId, surfaceTracks]);
+
+  // Display labels: bare type when unique, scene-qualified when the same type
+  // appears on multiple tracks
+  const trackLabels = useMemo(() => {
+    const typeCounts = new Map<string, number>();
+    for (const track of Array.from(surfaceTracks.values())) {
+      typeCounts.set(track.surfaceType, (typeCounts.get(track.surfaceType) || 0) + 1);
+    }
+    const labels = new Map<string, string>();
+    const used = new Map<string, number>();
+    for (const key of trackKeys) {
+      const track = surfaceTracks.get(key)!;
+      let label = track.surfaceType;
+      if ((typeCounts.get(track.surfaceType) || 0) > 1) {
+        label = track.sceneId != null
+          ? `${track.surfaceType} · scene ${track.sceneId}`
+          : track.surfaceType;
+        const n = (used.get(label) || 0) + 1;
+        used.set(label, n);
+        if (n > 1 || (track.sceneId == null && (typeCounts.get(track.surfaceType) || 0) > 1)) {
+          label = `${label} (${n})`;
+        }
+      }
+      labels.set(key, label);
+    }
+    return labels;
+  }, [surfaceTracks, trackKeys]);
 
   const selectedAssignment = selectedTrack ? assignments.get(selectedTrack) : undefined;
 
   // Auto-select first track
   useEffect(() => {
-    if (trackNames.length > 0 && !selectedTrack) {
-      setSelectedTrack(trackNames[0]);
+    if (trackKeys.length > 0 && !selectedTrack) {
+      setSelectedTrack(trackKeys[0]);
     }
-  }, [trackNames, selectedTrack]);
+  }, [trackKeys, selectedTrack]);
 
   // Auto-load saved placements into assignments when data arrives
   useEffect(() => {
@@ -538,15 +692,15 @@ export default function RemixEngine() {
       surfaceMap.set(s.id, s);
     }
 
-    // Group placements by surface type (one per track, newest wins)
+    // Group placements by track (one per track, newest wins)
     const byTrack = new Map<string, any>();
     for (const p of savedPlacements) {
       const surface = surfaceMap.get(p.surfaceId);
       if (!surface) continue;
-      const trackName = surface.surfaceType;
+      const trackKey = getTrackKey(surface);
       // Keep the newest placement per track
-      if (!byTrack.has(trackName) || new Date(p.createdAt) > new Date(byTrack.get(trackName).createdAt)) {
-        byTrack.set(trackName, p);
+      if (!byTrack.has(trackKey) || new Date(p.createdAt) > new Date(byTrack.get(trackKey).createdAt)) {
+        byTrack.set(trackKey, p);
       }
     }
 
@@ -555,7 +709,7 @@ export default function RemixEngine() {
     // Preload product images and populate assignments
     const loadAll = async () => {
       const newAssignments = new Map<string, ProductAssignment>();
-      for (const [trackName, placement] of byTrack) {
+      for (const [trackKey, placement] of Array.from(byTrack.entries())) {
         try {
           const img = new Image();
           img.crossOrigin = "anonymous";
@@ -565,7 +719,7 @@ export default function RemixEngine() {
             img.src = placement.productImageUrl;
           });
           productImagesRef.current.set(placement.productId || -1, img);
-          newAssignments.set(trackName, {
+          newAssignments.set(trackKey, {
             productId: placement.productId || -1,
             imageUrl: placement.productImageUrl,
             name: `Saved Placement`,
@@ -585,7 +739,7 @@ export default function RemixEngine() {
             } : { ...DEFAULT_BLEND },
           });
         } catch (err) {
-          console.warn(`[RemixEngine] Failed to load saved placement for ${trackName}:`, err);
+          console.warn(`[RemixEngine] Failed to load saved placement for ${trackKey}:`, err);
         }
       }
       if (newAssignments.size > 0) {
@@ -638,7 +792,7 @@ export default function RemixEngine() {
     // interpolate/render during the gap (prevents products appearing in close-ups).
     const MAX_INTERPOLATION_GAP = 4; // seconds
 
-    for (const [surfaceType, track] of surfaceTracks) {
+    for (const [surfaceType, track] of Array.from(surfaceTracks.entries())) {
       const { prev, next, progress } = findKeyframes(track.keyframes, t);
       if (!prev) continue;
 
@@ -960,7 +1114,7 @@ export default function RemixEngine() {
 
     try {
       // Save each assignment as a placement linked to the bid
-      for (const [surfaceType, assignment] of assignments) {
+      for (const [surfaceType, assignment] of Array.from(assignments.entries())) {
         const track = surfaceTracks.get(surfaceType);
         if (!track) continue;
 
@@ -969,7 +1123,7 @@ export default function RemixEngine() {
         );
         if (!anchorSurface) continue;
 
-        const res = await fetch("/api/placements", {
+        const res = await fetchWithTimeout("/api/placements", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -982,6 +1136,7 @@ export default function RemixEngine() {
             blend: assignment.blend,
             role: "creator",
             bidId: bidId || undefined,
+            ...(clipId ? { editorialClipId: clipId } : {}),
           }),
         });
 
@@ -1025,7 +1180,7 @@ export default function RemixEngine() {
     const scaleX = exportCanvas.width / canvas.width;
     const scaleY = exportCanvas.height / canvas.height;
 
-    for (const [surfaceType, assignment] of assignments) {
+    for (const [surfaceType, assignment] of Array.from(assignments.entries())) {
       const track = surfaceTracks.get(surfaceType);
       if (!track || !assignment.imageElement) continue;
 
@@ -1042,7 +1197,7 @@ export default function RemixEngine() {
     }
 
     const link = document.createElement("a");
-    link.download = `remix-${video?.title || "export"}-${formatTime(videoEl.currentTime).replace(":", "m")}s.jpg`;
+    link.download = `placement-${video?.title || "export"}-${formatTime(videoEl.currentTime).replace(":", "m")}s.jpg`;
     link.href = exportCanvas.toDataURL("image/jpeg", 0.92);
     link.click();
     toast({ title: "Screenshot exported" });
@@ -1059,7 +1214,7 @@ export default function RemixEngine() {
     const canvasDisplayHeight = canvas?.height || 360;
 
     const placementData = [];
-    for (const [surfaceType, assignment] of assignments) {
+    for (const [surfaceType, assignment] of Array.from(assignments.entries())) {
       const track = surfaceTracks.get(surfaceType);
       if (!track || !assignment.imageElement) continue;
 
@@ -1087,7 +1242,7 @@ export default function RemixEngine() {
       setExportProgress(0);
       setExportOutputUrl(null);
 
-      const res = await fetch(`/api/video/${videoId}/export`, {
+      const res = await fetchWithTimeout(`/api/video/${videoId}/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1120,7 +1275,7 @@ export default function RemixEngine() {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/exports/${exportJobId}`, { credentials: "include" });
+        const res = await fetchWithTimeout(`/api/exports/${exportJobId}`, { credentials: "include" });
         if (!res.ok) return;
 
         const data = await res.json();
@@ -1129,7 +1284,7 @@ export default function RemixEngine() {
 
         if (data.status === "complete") {
           setExportOutputUrl(data.outputUrl);
-          toast({ title: "Video export complete!", description: "Your remixed video is ready to download." });
+          toast({ title: "Video export complete!", description: "Your placement video is ready to download." });
           clearInterval(interval);
         } else if (data.status === "failed") {
           toast({ title: "Export failed", description: data.error || "Unknown error", variant: "destructive" });
@@ -1157,7 +1312,7 @@ export default function RemixEngine() {
     let totalPropagated = 0;
 
     try {
-      for (const [surfaceType, assignment] of assignments) {
+      for (const [surfaceType, assignment] of Array.from(assignments.entries())) {
         const track = surfaceTracks.get(surfaceType);
         if (!track || track.keyframes.length === 0) continue;
 
@@ -1165,7 +1320,7 @@ export default function RemixEngine() {
         const matchingSurface = surfaces.find(s => s.surfaceType === surfaceType);
         if (!matchingSurface) continue;
 
-        const res = await fetch("/api/placements", {
+        const res = await fetchWithTimeout("/api/placements", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -1176,6 +1331,7 @@ export default function RemixEngine() {
             productImageUrl: assignment.imageUrl,
             transform: assignment.transform,
             blend: assignment.blend,
+            ...(clipId ? { editorialClipId: clipId } : {}),
           }),
         });
 
@@ -1193,7 +1349,7 @@ export default function RemixEngine() {
           title: `Saved ${saved} placement${saved > 1 ? 's' : ''}`,
           description: totalPropagated > 0
             ? `Auto-applied to ${totalPropagated} matching scene(s) for scene persistence.`
-            : "Placements persisted. They'll auto-load next time you open Remix Engine.",
+            : "Placements persisted. They'll auto-load next time you open the Placement Engine.",
         });
       } else {
         toast({ title: "No placements saved", description: "Could not match any assignments to surfaces.", variant: "destructive" });
@@ -1220,7 +1376,7 @@ export default function RemixEngine() {
   if (videoLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Loading Remix Engine...</div>
+        <div className="animate-pulse text-muted-foreground">Loading Placement Engine...</div>
       </div>
     );
   }
@@ -1229,8 +1385,8 @@ export default function RemixEngine() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center flex-col gap-4">
         <p className="text-muted-foreground">Video not found</p>
-        <button onClick={() => setLocation("/library")} className="text-primary hover:underline">
-          ← Back to Library
+        <button onClick={goBack} className="text-primary hover:underline">
+          ← Back to {backLabel}
         </button>
       </div>
     );
@@ -1242,21 +1398,53 @@ export default function RemixEngine() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      {/* Clip-scoped framing banner.
+          The creator got here from a brand's request on ONE editorial clip.
+          Only the fixtures that clip actually shows are offered, and the saved
+          placement is tagged with the clip so the re-render uses this exact
+          framing instead of guessing which saved row was meant. */}
+      {clipId && clipContext?.clip && (
+        <div className="bg-primary/10 border-b border-primary/25 px-6 py-2.5 flex items-center gap-3 flex-wrap">
+          <Sparkles className="w-4 h-4 text-primary shrink-0" />
+          <p className="text-xs">
+            <span className="font-medium">Placing into a clip.</span>{" "}
+            {clipContext.clip.suggestedTitle
+              ? <>“{clipContext.clip.suggestedTitle}” — </>
+              : null}
+            {Number(clipContext.clip.clipStart ?? 0).toFixed(1)}s–
+            {Number(clipContext.clip.clipEnd ?? 0).toFixed(1)}s
+            {clipContext.clip.aspectRatio ? ` · ${clipContext.clip.aspectRatio}` : ""}.
+            Only the {clipContext.surfaces.length} surface
+            {clipContext.surfaces.length === 1 ? "" : "s"} visible in this cut can be used.
+          </p>
+          <span className="text-[11px] text-muted-foreground">
+            Position it where you want it, then Save — the clip re-renders with your framing.
+          </span>
+        </div>
+      )}
+
       {/* Header */}
       <div className="sticky top-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <button
-            onClick={() => setLocation("/library")}
+            onClick={goBack}
             className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+            data-testid="button-placement-back"
           >
             <ArrowLeft className="w-4 h-4" />
-            Library
+            {backLabel}
           </button>
           <div className="h-5 w-px bg-border" />
           <div>
             <h1 className="text-sm font-semibold">{video.title}</h1>
             <p className="text-xs text-muted-foreground">
-              Remix Engine · {surfaces.length} surfaces · {assignments.size} placement{assignments.size !== 1 ? "s" : ""}
+              {/* "Placement Engine", not "Remix": the story-clips studio is the
+                  Remix product; this page places products on surfaces. Two
+                  different tools were both called Remix. */}
+              Placement Engine · {surfaces.length} surfaces · {assignments.size} placement{assignments.size !== 1 ? "s" : ""}
+              {clipId && clipContext?.clip && (
+                <> · framing for clip #{clipId}</>
+              )}
             </p>
           </div>
         </div>
@@ -1413,11 +1601,11 @@ export default function RemixEngine() {
             {/* Surface hotkeys + Scene markers */}
             <div className="flex items-center gap-6 flex-wrap">
               {/* Surface-type hotkey buttons — jump to first frame with that surface */}
-              {trackNames.length > 0 && (
+              {trackKeys.length > 0 && (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted-foreground shrink-0">Jump to:</span>
                   <div className="flex flex-wrap gap-1">
-                    {trackNames.map((name) => {
+                    {trackKeys.map((name) => {
                       const track = surfaceTracks.get(name);
                       const firstTs = track?.keyframes[0]?.timestamp ?? 0;
                       const hasAssignment = assignments.has(name);
@@ -1463,11 +1651,11 @@ export default function RemixEngine() {
                 </div>
               )}
 
-              {trackNames.length > 0 && (
+              {trackKeys.length > 0 && (
                 <div className="flex items-center gap-2">
                   <Layers className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                   <div className="flex flex-wrap gap-1">
-                    {trackNames.map((name) => {
+                    {trackKeys.map((name) => {
                       const isSelected = name === selectedTrack;
                       const hasAssignment = assignments.has(name);
                       return (
@@ -1544,7 +1732,13 @@ export default function RemixEngine() {
                 {(!catalogProducts || catalogProducts.length === 0) ? (
                   <div className="text-center py-8">
                     <Package className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-                    <p className="text-xs text-muted-foreground">No products in catalog</p>
+                    <div className="text-xs text-muted-foreground space-y-1">
+                                  <p className="font-medium text-foreground">No brands available yet</p>
+                                  <p className="leading-snug">
+                                    You'll see brands that selected you, brands open to any creator,
+                                    and any partnership you upload yourself.
+                                  </p>
+                                </div>
                     <p className="text-[10px] text-muted-foreground/60 mt-1">Upload at /brand-products</p>
                   </div>
                 ) : (
@@ -1914,7 +2108,7 @@ export default function RemixEngine() {
               <div className="space-y-3">
                 <p className="text-sm text-green-500 font-medium">
                   <CheckCircle className="w-4 h-4 inline mr-1.5" />
-                  Your remixed video is ready!
+                  Your placement video is ready!
                 </p>
                 <div className="flex gap-2">
                   <a
@@ -1927,14 +2121,14 @@ export default function RemixEngine() {
                   <button
                     onClick={async () => {
                       try {
-                        const res = await fetch("/api/share", {
+                        const res = await fetchWithTimeout("/api/share", {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           credentials: "include",
                           body: JSON.stringify({
                             exportId: exportJobId,
-                            videoId: videoDetails?.id,
-                            title: videoDetails?.title || "Remixed Video",
+                            videoId: video?.id,
+                            title: video?.title || "Placement Video",
                           }),
                         });
                         if (!res.ok) throw new Error("Failed to create share link");

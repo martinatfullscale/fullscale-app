@@ -1,5 +1,6 @@
 import { db } from "./db";
-import { eq, desc, and, or, sql } from "drizzle-orm";
+import { eq, desc, and, or, sql, inArray, notInArray, ne, isNull, isNotNull, lte, gt, gte, asc } from "drizzle-orm";
+import { ADMIN_EMAILS } from "./lib/adminEmails";
 import {
   monetizationItems,
   youtubeConnections,
@@ -7,6 +8,8 @@ import {
   videoIndex,
   detectedSurfaces,
   brandProducts,
+  brandPlacementAssignments,
+  notifications,
   savedPlacements,
   videoExports,
   sharedLinks,
@@ -28,6 +31,8 @@ import {
   type InsertDetectedSurface,
   type BrandProduct,
   type InsertBrandProduct,
+  type BrandPlacementAssignment,
+  type InsertBrandPlacementAssignment,
   type SavedPlacement,
   type InsertSavedPlacement,
   type VideoExport,
@@ -91,11 +96,51 @@ import {
   brandBriefs,
   type BrandBrief,
   type InsertBrandBrief,
+  socialAccounts,
+  type SocialAccount,
+  type InsertSocialAccount,
+  dataDeletionRequests,
+  type DataDeletionRequest,
+  type InsertDataDeletionRequest,
+  socialInsightSnapshots,
+  type InsertSocialInsightSnapshot,
+  socialPostSnapshots,
+  type InsertSocialPostSnapshot,
+  mediaAssets,
+  type MediaAsset,
+  type InsertMediaAsset,
+  aiGenerations,
+  type AiGeneration,
+  type InsertAiGeneration,
+  creatorCredits,
+  creditGrants,
+  creditPurchases,
+  type CreditPurchase,
+  roomModels,
+  type RoomModel,
+  type InsertRoomModel,
+  fixtureExposure, fixtureAssignments, placementExposures, videoStatSnapshots,
+  videoRetentionCurves, videoDemographics, creatorEvents, videoDailyMetrics, contentComments,
+  placementRenders, type PlacementRender, type InsertPlacementRender,
+  placementLinks, linkClicks, placementConversions,
+  type PlacementLink, type InsertPlacementLink, type PlacementConversion,
+  type InsertCreatorEvent, type CreatorEvent,
+  type InsertVideoDailyMetric, type InsertContentComment, type ContentComment,
+  type VideoStatSnapshot, type InsertVideoStatSnapshot,
+  type VideoRetentionCurve, type InsertVideoRetentionCurve,
+  type VideoDemographics, type InsertVideoDemographics,
+  type InsertFixtureExposure, type InsertFixtureAssignment, type InsertPlacementExposure,
+  type FixtureExposure, type FixtureAssignment, type PlacementExposure,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
 
-export interface VideoWithOpportunities extends VideoIndex {
+export type VideoSummaryRow = Pick<VideoIndex,
+  'id' | 'title' | 'thumbnailUrl' | 'youtubeId' | 'userId' | 'viewCount' | 'platform' | 'filePath' | 'duration' | 'status'>;
+
+export type VideoListRow = Omit<VideoIndex, 'sceneIndex' | 'sceneInventory' | 'sceneBoundaries'>;
+
+export interface VideoWithOpportunities extends VideoListRow {
   surfaces: DetectedSurface[];
   surfaceCount: number;
   contexts: string[];
@@ -105,6 +150,10 @@ export interface IStorage {
   // User authentication methods
   getUserByEmail(email: string): Promise<User | undefined>;
   getUserById(id: string): Promise<User | undefined>;
+  /** Flip users.isApproved for an existing user. Returns false if no
+   *  user row matches the email (caller should treat as "allowlisted
+   *  but not signed in yet" — fine, OAuth will flip approval on signin). */
+  setUserApproved(email: string, approved: boolean): Promise<boolean>;
   createUser(user: UpsertUser): Promise<User>;
   upsertUserByEmail(user: UpsertUser): Promise<User>;
   
@@ -119,9 +168,14 @@ export interface IStorage {
   getAllowedUsers(): Promise<AllowedUser[]>;
   getAllowedUser(email: string): Promise<AllowedUser | undefined>;
   updateAllowedUserRole(email: string, userType: string): Promise<void>;
-  getVideoIndex(userId: string, authEmail?: string): Promise<VideoIndex[]>;
-  getAllVideos(): Promise<VideoIndex[]>;
-  upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
+  /** Lean: excludes the three scene jsonb blobs. See VIDEO_LIST_COLUMNS. */
+  getVideoIndex(userId: string, authEmail?: string, opts?: { dedupe?: boolean }): Promise<VideoListRow[]>;
+  getAllVideos(): Promise<VideoListRow[]>;
+  upsertVideoIndex(video: InsertVideoIndex): Promise<VideoListRow>;
+  scrubUserPassword(userId: string): Promise<void>;
+  setOnboardingDismissed(userId: string): Promise<void>;
+  setProfileSubmitted(userId: string): Promise<void>;
+  findVideoIndexRow(userId: string, youtubeId: string): Promise<VideoListRow | undefined>;
   insertVideo(video: InsertVideoIndex): Promise<VideoIndex>;
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
   deleteVideoIndex(userId: string, userEmail?: string): Promise<void>;
@@ -132,15 +186,19 @@ export interface IStorage {
   permanentlyDeleteVideo(videoId: number): Promise<VideoIndex | undefined>;
   getVideoById(id: number): Promise<VideoIndex | undefined>;
   getVideosByYoutubeIds(youtubeIds: string[]): Promise<VideoIndex[]>;
-  getPendingVideos(userId: string, limit?: number): Promise<VideoIndex[]>;
+  getPendingVideos(userId: string, limit?: number): Promise<VideoListRow[]>;
   updateVideoStatus(videoId: number, status: string): Promise<void>;
+  updateVideoStatusIfScanning(videoId: number, status: string): Promise<boolean>;
   updateVideoThumbnail(videoId: number, thumbnailUrl: string): Promise<void>;
   updateVideoIndex(videoId: number, updates: Partial<InsertVideoIndex>): Promise<void>;
   updateVideoMetadata(videoId: number, metadata: { sentiment?: string; culturalContext?: string }): Promise<void>;
+  getSceneInventory(videoId: number): Promise<unknown>;
   insertDetectedSurface(surface: InsertDetectedSurface): Promise<DetectedSurface>;
-  updateDetectedSurface(surfaceId: number, updates: { surfaceType?: string; sceneContext?: string; surroundings?: string[]; boundingBoxX?: string; boundingBoxY?: string; boundingBoxWidth?: string; boundingBoxHeight?: string }): Promise<void>;
+  updateDetectedSurface(surfaceId: number, updates: { surfaceType?: string; sceneContext?: string; surroundings?: string[]; boundingBoxX?: string; boundingBoxY?: string; boundingBoxWidth?: string; boundingBoxHeight?: string; surfaceGroupId?: string }): Promise<void>;
   getDetectedSurfaces(videoId: number): Promise<DetectedSurface[]>;
+  getDetectedSurfaceById(surfaceId: number): Promise<DetectedSurface | undefined>;
   getSurfaceCountByVideo(videoId: number): Promise<number>;
+  getSurfaceCountsForVideos(videoIds: number[]): Promise<Map<number, number>>;
   clearDetectedSurfaces(videoId: number): Promise<void>;
   getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]>;
   getAllVideosWithOpportunities(): Promise<VideoWithOpportunities[]>;
@@ -164,6 +222,63 @@ export interface IStorage {
   // Saved placement methods
   savePlacement(placement: InsertSavedPlacement): Promise<SavedPlacement>;
   getAllActivePlacements(): Promise<SavedPlacement[]>;
+  updatePlacementReview(placementId: number, patch: { reviewStatus: string; reviewNote?: string | null }): Promise<SavedPlacement | undefined>;
+  setPlacementLive(placementId: number): Promise<void>;
+  replaceFixtureExposure(videoId: number, rows: InsertFixtureExposure[]): Promise<number>;
+  getFixtureExposureForVideo(videoId: number): Promise<FixtureExposure[]>;
+  getFixtureExposureByGroup(surfaceGroupId: string): Promise<FixtureExposure[]>;
+  openFixtureAssignment(row: InsertFixtureAssignment): Promise<FixtureAssignment>;
+  closeFixtureAssignment(match: { placementId?: number; assignmentId?: number }, endReason: string): Promise<number>;
+  getFixtureAssignments(surfaceGroupId: string): Promise<FixtureAssignment[]>;
+  getFixtureExposureAsOf(surfaceGroupId: string, at: Date): Promise<FixtureExposure[]>;
+  getFixtureDoseForWindow(surfaceGroupId: string, from: Date, to: Date | null): Promise<Array<{ videoId: number; sceneScreenTimeSec: number; scanVersion: number }>>;
+  openControlPeriod(args: { userId: string; surfaceGroupId: string; videoId: number }): Promise<FixtureAssignment | null>;
+  getFixtureTimeline(surfaceGroupId: string): Promise<FixtureAssignment[]>;
+  insertVideoStatSnapshot(row: InsertVideoStatSnapshot): Promise<void>;
+  getExpiredOpenAssignments(): Promise<Array<{ assignmentId: number | null; userId: string; surfaceGroupId: string; videoId: number }>>;
+  createPlacementLink(row: InsertPlacementLink): Promise<PlacementLink>;
+  getPlacementLinkBySlug(slug: string): Promise<PlacementLink | undefined>;
+  getPlacementLinkForPlacement(placementId: number): Promise<PlacementLink | undefined>;
+  recordLinkClick(row: { linkId: number; placementId: number; referrerHost?: string | null; deviceClass?: string | null; country?: string | null }): Promise<void>;
+  getAttributionTotals(): Promise<Array<{ placementId: number; clicks: number; conversions: number; valueCents: number }>>;
+  recordConversion(row: { linkId: number; placementId: number; externalRef?: string | null; eventType?: string; valueCents?: number | null; currency?: string | null; occurredAt?: Date }): Promise<boolean>;
+  getFixtureTreatmentDays(surfaceGroupId: string): Promise<{ windows: any[]; days: any[] }>;
+  deliverPlacementRender(row: Omit<InsertPlacementRender, "version">): Promise<PlacementRender>;
+  getDeliveredRendersForCreator(creatorUserId: string): Promise<PlacementRender[]>;
+  getPlacementRenderById(id: number): Promise<PlacementRender | undefined>;
+  getRendersForPlacement(placementId: number): Promise<PlacementRender[]>;
+  markRenderDownloaded(id: number): Promise<void>;
+  insertCreatorEvent(row: InsertCreatorEvent): Promise<void>;
+  getCreatorEvents(creatorUserId: string, sinceDays?: number): Promise<CreatorEvent[]>;
+  getCreatorEventCounts(sinceDays?: number): Promise<Array<{ creatorUserId: string; eventType: string; n: number; lastAt: Date | null }>>;
+  upsertVideoDailyMetric(row: InsertVideoDailyMetric): Promise<void>;
+  getVideoDailyMetrics(videoId: number): Promise<Array<{ day: string; views: number | null; likes: number | null; comments: number | null }>>;
+  insertContentComments(rows: InsertContentComment[]): Promise<number>;
+  getUnclassifiedComments(limit?: number): Promise<ContentComment[]>;
+  applyCommentClassification(id: number, patch: { sentiment: string; mentionsBrand: boolean }): Promise<void>;
+  getCommentsForVideo(videoId: number): Promise<ContentComment[]>;
+  getAudienceResponseSummary(videoId: number): Promise<{
+    total: number;
+    classified: number;
+    sentiment: { positive: number; neutral: number; negative: number; mixed: number };
+    brandMentions: number;
+    afterPlacement: number;
+    samples: Array<{ text: string; sentiment: string | null; likeCount: number | null; publishedAt: Date | null }>;
+  }>;
+  getPlacementExposureForVideo(videoId: number): Promise<PlacementExposure | undefined>;
+  insertRetentionCurve(row: InsertVideoRetentionCurve): Promise<void>;
+  getLatestRetentionCurve(videoId: number): Promise<VideoRetentionCurve | undefined>;
+  insertVideoDemographics(row: InsertVideoDemographics): Promise<void>;
+  getLatestVideoDemographics(videoId: number): Promise<VideoDemographics | undefined>;
+  getVideoStatSeries(videoId: number, sinceDays?: number): Promise<VideoStatSnapshot[]>;
+  getVideoIdsUnderMeasurement(): Promise<number[]>;
+  createPlacementExposure(row: InsertPlacementExposure): Promise<PlacementExposure>;
+  getActiveSurfaceLocksForVideo(videoId: number): Promise<Array<{ surfaceId: number; status: string; brandUserId: string }>>;
+  getPlacementExposuresForUser(userId: string): Promise<PlacementExposure[]>;
+  getPlacementExposuresForPlacements(placementIds: number[]): Promise<PlacementExposure[]>;
+  getPlacementExposureForAssignment(assignmentId: number): Promise<PlacementExposure | undefined>;
+  getPlacementExposuresForAssignments(assignmentIds: number[]): Promise<PlacementExposure[]>;
+  getPlacementExposureForPlacement(placementId: number): Promise<PlacementExposure | undefined>;
   getPlacementsByCreator(email: string): Promise<SavedPlacement[]>;
   getPlacementsForVideo(videoId: number): Promise<SavedPlacement[]>;
   getPlacementById(placementId: number): Promise<SavedPlacement | undefined>;
@@ -179,6 +294,8 @@ export interface IStorage {
   // Shared link methods
   createSharedLink(data: InsertSharedLink): Promise<SharedLink>;
   getSharedLinkBySlug(slug: string): Promise<SharedLink | undefined>;
+  getSharedLinkByBrandPlacement(brandPlacementId: number): Promise<SharedLink | undefined>;
+  getSharedLinkById(id: number): Promise<SharedLink | undefined>;
   incrementSharedLinkViews(slug: string): Promise<void>;
   getSharedLinksByUser(email: string): Promise<SharedLink[]>;
   deactivateSharedLink(id: number): Promise<void>;
@@ -195,6 +312,20 @@ export interface IStorage {
   createRemixJob(data: InsertRemixJob): Promise<RemixJob>;
   getRemixJob(jobId: number): Promise<RemixJob | undefined>;
   getRemixJobsByUser(userId: number): Promise<RemixJob[]>;
+  getActiveRemixJobForVideo(videoId: number): Promise<RemixJob | undefined>;
+  failInterruptedRemixJobs(): Promise<number>;
+  failInterruptedStitchPlans(): Promise<number>;
+  failStalePublishingPosts(staleMinutes?: number): Promise<number>;
+  failStaleClipRenders(staleMinutes?: number): Promise<number>;
+  createNotification(data: { userId: string; type: string; title: string; body?: string | null; linkPath?: string | null; metadata?: Record<string, any> | null }): Promise<void>;
+  getNotificationsForUser(userId: string, limit?: number): Promise<any[]>;
+  getUnreadNotificationCount(userId: string): Promise<number>;
+  markNotificationRead(id: number, userId: string): Promise<boolean>;
+  markAllNotificationsRead(userId: string): Promise<number>;
+  markPlacementNotificationsRead(placementId: number): Promise<void>;
+  claimSchedule(scheduleId: number): Promise<boolean>;
+  cancelOrphanedLegacySchedules(): Promise<number>;
+  normalizeLegacyIdentityKeys(): Promise<Record<string, number>>;
   updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined>;
   // Generated clip methods
   createGeneratedClip(data: InsertGeneratedClip): Promise<GeneratedClip>;
@@ -207,6 +338,7 @@ export interface IStorage {
   createStitchPlan(data: InsertStitchPlan): Promise<StitchPlan>;
   getStitchPlan(planId: number): Promise<StitchPlan | undefined>;
   getStitchPlansByVideo(videoId: number): Promise<StitchPlan[]>;
+  getStitchPlansByVideoIds(videoIds: number[]): Promise<StitchPlan[]>;
   updateStitchPlanStatus(planId: number, status: string, updates?: { outputPath?: string; thumbnailPath?: string; qualityScore?: number; generatedClipId?: number; errorMessage?: string }): Promise<StitchPlan | undefined>;
   deleteStitchPlan(planId: number): Promise<void>;
   // Editorial clips methods
@@ -221,6 +353,7 @@ export interface IStorage {
       aspectRatio?: string | null;
       renderStatus?: "pending" | "rendering" | "rendered" | "failed";
       renderError?: string | null;
+      qualityScore?: number | null;
     }
   ): Promise<EditorialClip | undefined>;
   // Editorial pipeline status (videoIndex)
@@ -229,6 +362,7 @@ export interface IStorage {
     status: "pending" | "transcribing" | "analyzing" | "rendering" | "ready" | "failed",
     updates?: { error?: string | null; clipCount?: number; completedAt?: Date | null }
   ): Promise<void>;
+  touchVideoEditorialHeartbeat(videoId: number): Promise<void>;
   // Generated asset methods
   createGeneratedAsset(data: InsertGeneratedAsset): Promise<GeneratedAsset>;
   getAssetsByVideo(videoId: number): Promise<GeneratedAsset[]>;
@@ -250,14 +384,21 @@ export interface IStorage {
   createPublishedPost(data: InsertPublishedPost): Promise<PublishedPost>;
   getPublishedPost(id: number): Promise<PublishedPost | undefined>;
   getPublishedPostsByClip(clipId: number): Promise<PublishedPost[]>;
+  findPublishedPostForClip(clipId: number, source: "remix" | "editorial", profileId: number): Promise<PublishedPost | undefined>;
   getPublishedPostsByVideo(videoId: number): Promise<PublishedPost[]>;
+  getPublishedPostsByVideoIds(videoIds: number[]): Promise<PublishedPost[]>;
   getPublishedPostsByUser(userId: number): Promise<PublishedPost[]>;
+  findInFlightPublishForClip(clipId: number, source: "remix" | "editorial", profileId: number, maxAgeMs: number): Promise<PublishedPost | undefined>;
   updatePublishedPostStatus(postId: number, status: string, platformPostId?: string, postUrl?: string, errorMessage?: string): Promise<PublishedPost | undefined>;
+  updatePublishedPostFields(postId: number, patch: { caption?: string | null; hashtags?: string[] }): Promise<void>;
 
   // Clip analytics methods
   upsertClipAnalytics(data: InsertClipAnalytics): Promise<ClipAnalytics>;
   getAnalyticsByPost(postId: number): Promise<ClipAnalytics[]>;
-  getAnalyticsByClip(clipId: number): Promise<ClipAnalytics[]>;
+  getAnalyticsByPostIds(postIds: number[]): Promise<ClipAnalytics[]>;
+  getCollectablePublishedPosts(sinceDays?: number, limit?: number): Promise<PublishedPost[]>;
+  getLinkClickCountsForPlacements(placementIds: number[]): Promise<Map<number, number>>;
+  getAnalyticsByClip(clipId: number, source?: "remix" | "editorial"): Promise<ClipAnalytics[]>;
   getAnalyticsSummaryByVideo(videoId: number): Promise<ClipAnalytics[]>;
 
   // Publishing schedule methods
@@ -265,7 +406,7 @@ export interface IStorage {
   getSchedulesByUser(userId: number): Promise<PublishingSchedule[]>;
   getPendingSchedules(): Promise<PublishingSchedule[]>;
   updateScheduleStatus(scheduleId: number, status: string, postId?: number, errorMessage?: string): Promise<PublishingSchedule | undefined>;
-  cancelSchedule(scheduleId: number): Promise<void>;
+  cancelSchedule(scheduleId: number, userId?: number): Promise<boolean>;
 
   // Video transcript methods
   createVideoTranscript(data: InsertVideoTranscript): Promise<VideoTranscript>;
@@ -287,10 +428,20 @@ export interface IStorage {
   deleteKeyframesBySurface(surfaceId: number): Promise<void>;
   deleteSurfaceKeyframesInRange(surfaceId: number, startTime: number, endTime: number): Promise<void>;
 
+  // Room model methods (persistent set memory for the scanner)
+  getRoomModelsForUsers(userIds: string[]): Promise<RoomModel[]>;
+  getRoomModelById(id: number): Promise<RoomModel | undefined>;
+  getAllRoomModels(): Promise<RoomModel[]>;
+  insertRoomModel(model: InsertRoomModel): Promise<RoomModel>;
+  updateRoomModel(id: number, patch: { sceneExemplarHashes?: string[]; surfaces?: unknown; lastVideoId?: number; episodeCount?: number }): Promise<void>;
+  appendRoomModelSurface(modelId: number, surface: { surfaceType: string; orientation: "horizontal" | "vertical"; bbox: { x: number; y: number; w: number; h: number }; confidence: number; frameUrl: string | null; taught?: boolean }): Promise<number>;
+  deleteRoomModel(id: number): Promise<boolean>;
+  deleteAllRoomModels(): Promise<number>;
+
   // Creator profile methods
   getFeaturedCreators(): Promise<AllowedUser[]>;
   getCreatorBySlug(slug: string): Promise<AllowedUser | undefined>;
-  updateCreatorProfile(email: string, updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string }): Promise<void>;
+  updateCreatorProfile(email: string, updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string; cardImageUrl?: string | null }): Promise<void>;
   updateVideoSubcategory(videoId: number, subcategory: string): Promise<void>;
 
   // ── Studio Subscription Methods ──
@@ -320,7 +471,104 @@ export interface IStorage {
   // ── Studio Waitlist Methods ──
   createStudioWaitlistEntry(data: InsertStudioWaitlistEntry): Promise<StudioWaitlistEntry>;
   getStudioWaitlistByEmail(email: string): Promise<StudioWaitlistEntry | undefined>;
+  getStudioWaitlistEntries(): Promise<StudioWaitlistEntry[]>;
+  setStudioWaitlistStatus(id: number, status: "approved" | "rejected" | "pending", reviewedBy: string): Promise<StudioWaitlistEntry | undefined>;
   hasApprovedStudioAccess(email: string): Promise<boolean>;
+}
+
+/**
+ * Every video column EXCEPT scene_boundaries, scene_index and scene_inventory.
+ *
+ * Those three hold per-shot perceptual hashes and per-scene surface
+ * inventories and run to megabytes on a scanned video. node-postgres parses
+ * jsonb with a SYNCHRONOUS JSON.parse on the main thread, so pulling them for
+ * a list view stalls every other request in the process — that is what took
+ * the site down when the placement queue fetched one row per placement.
+ *
+ * Drizzle's db.select() with no argument emits an explicit SELECT of EVERY
+ * column, so "we only read .title" is not a defence: the bytes still cross
+ * the wire and still get parsed. Anything that renders a LIST of videos
+ * selects this instead. Code that genuinely needs a scene blob fetches that
+ * one video by id.
+ */
+export const VIDEO_LIST_COLUMNS = {
+  id: videoIndex.id,
+  userId: videoIndex.userId,
+  youtubeId: videoIndex.youtubeId,
+  title: videoIndex.title,
+  // NOT truncated here, despite the payload cost (podcast show notes run to
+  // thousands of characters and the library ships 81 of them on a 15s poll).
+  // This map is also passed to .returning() on the upsert write paths below,
+  // so a SQL expression here lands in INSERT/UPDATE ... RETURNING too. Trimming
+  // belongs in the list ROUTE, where the blast radius is one response shape,
+  // not every write that returns a video.
+  description: videoIndex.description,
+  viewCount: videoIndex.viewCount,
+  thumbnailUrl: videoIndex.thumbnailUrl,
+  status: videoIndex.status,
+  priorityScore: videoIndex.priorityScore,
+  publishedAt: videoIndex.publishedAt,
+  category: videoIndex.category,
+  isEvergreen: videoIndex.isEvergreen,
+  duration: videoIndex.duration,
+  platform: videoIndex.platform,
+  sentiment: videoIndex.sentiment,
+  culturalContext: videoIndex.culturalContext,
+  filePath: videoIndex.filePath,
+  sourceUrl: videoIndex.sourceUrl,
+  subcategory: videoIndex.subcategory,
+  tags: videoIndex.tags,
+  deletedAt: videoIndex.deletedAt,
+  editorialStatus: videoIndex.editorialStatus,
+  editorialError: videoIndex.editorialError,
+  editorialClipCount: videoIndex.editorialClipCount,
+  editorialCompletedAt: videoIndex.editorialCompletedAt,
+  createdAt: videoIndex.createdAt,
+  updatedAt: videoIndex.updatedAt,
+} as const;
+
+/**
+ * OAuth token encryption for distribution_profiles, mirroring the
+ * youtube_connections helpers (upsert/getYoutubeConnection).
+ *
+ * These rows hold live posting credentials — the Facebook Page token, the
+ * ~60-day Instagram token, TikTok/Twitter refresh tokens — and
+ * resolvePublishAccessToken reads several of them straight off the profile at
+ * publish time. They were being written in plaintext while youtube_connections
+ * next to them encrypted the same class of secret, which also made the privacy
+ * policy's "encrypted at rest" claim untrue for this table.
+ *
+ * decrypt is tolerant of legacy plaintext: rows written before this change do
+ * not have the iv:tag:ciphertext shape, so decrypt throws and we return the
+ * value as-is. That lets existing profiles keep publishing and quietly upgrade
+ * to ciphertext the next time their token is rewritten (every token refresh),
+ * with no migration step and no window where a live profile stops working.
+ */
+function encryptProfileTokens<T extends { accessToken?: string | null; refreshToken?: string | null }>(data: T): T {
+  const out: any = { ...data };
+  if (typeof data.accessToken === "string" && data.accessToken) out.accessToken = encrypt(data.accessToken);
+  if (typeof data.refreshToken === "string" && data.refreshToken) out.refreshToken = encrypt(data.refreshToken);
+  return out;
+}
+
+function safeDecrypt(v: string | null | undefined): string | null {
+  if (!v) return v ?? null;
+  try {
+    return decrypt(v);
+  } catch {
+    // Not in encrypted form — a legacy plaintext token written before this
+    // table was encrypted. Return it unchanged so the profile still publishes.
+    return v;
+  }
+}
+
+function decryptProfileTokens<T extends { accessToken?: string | null; refreshToken?: string | null } | undefined>(row: T): T {
+  if (!row) return row;
+  return {
+    ...row,
+    accessToken: safeDecrypt(row.accessToken),
+    refreshToken: safeDecrypt(row.refreshToken),
+  };
 }
 
 export class DatabaseStorage implements IStorage {
@@ -334,6 +582,16 @@ export class DatabaseStorage implements IStorage {
   async getUserById(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
+  }
+
+  async setUserApproved(email: string, approved: boolean): Promise<boolean> {
+    const normalizedEmail = email.toLowerCase().trim();
+    const result = await db
+      .update(users)
+      .set({ isApproved: approved })
+      .where(eq(users.email, normalizedEmail))
+      .returning({ id: users.id });
+    return result.length > 0;
   }
 
   async createUser(userData: UpsertUser): Promise<User> {
@@ -366,6 +624,30 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return user;
+  }
+
+  async setProfileSubmitted(userId: string): Promise<void> {
+    await db
+      .update(users)
+      .set({ profileSubmittedAt: new Date(), updatedAt: new Date() })
+      .where(eq(users.id, userId));
+  }
+
+  async setOnboardingDismissed(userId: string): Promise<void> {
+    await db
+      .update(users)
+      .set({ onboardingDismissedAt: new Date(), updatedAt: new Date() })
+      .where(eq(users.id, userId));
+  }
+
+  async scrubUserPassword(userId: string): Promise<void> {
+    // Google login proved ownership of the email; any password set earlier
+    // (possibly by a pre-registration squatter — register has no email
+    // verification) must stop working.
+    await db
+      .update(users)
+      .set({ password: null, authProvider: "google", updatedAt: new Date() })
+      .where(eq(users.id, userId));
   }
 
   async getMonetizationItems(): Promise<MonetizationItem[]> {
@@ -434,6 +716,556 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  // ─── Social Accounts (multi-account creator identity) ────────────────────
+  // Reads decrypt access_token/refresh_token on the way out; writes encrypt
+  // them on the way in. Matches the pattern used for youtube_connections.
+
+  private decryptSocialAccount(account: SocialAccount): SocialAccount {
+    try {
+      return {
+        ...account,
+        accessToken: account.accessToken ? decrypt(account.accessToken) : null,
+        refreshToken: account.refreshToken ? decrypt(account.refreshToken) : null,
+      };
+    } catch {
+      // If decryption fails (e.g. legacy plaintext or key change), return raw
+      return account;
+    }
+  }
+
+  /**
+   * Social accounts INCLUDING YouTube channels that only exist as a
+   * youtube_connections row.
+   *
+   * YouTube is connected through its own table and mirrored into
+   * social_accounts by POST /api/social-accounts/backfill-from-legacy — an
+   * endpoint nothing calls automatically, and which acts on the CALLER, so an
+   * admin could never have run it for someone else. Every creator who
+   * connected YouTube before that mirror existed therefore has a live channel,
+   * visible subscriber counts elsewhere in the product, and NO social_accounts
+   * row — which is why Creator Intelligence said "No connected platform data
+   * for this creator yet" about creators whose data we plainly hold.
+   *
+   * Reading the connection directly makes the analytics surfaces correct
+   * regardless of whether the backfill was ever run. The synthesized row is
+   * marked isSynthetic so writers can tell it apart from a real row and never
+   * try to update it in place.
+   */
+  async getSocialAccountsWithYouTube(userId: string, userEmail?: string): Promise<Array<SocialAccount & { isSynthetic?: boolean }>> {
+    const accounts = await this.getSocialAccountsByUser(userId, userEmail);
+    if (accounts.some((a) => a.platform === "youtube")) return accounts;
+
+    // Try EVERY identity form this person is known by, because
+    // youtube_connections.user_id is a mixed-key column — users.id on newer
+    // rows, the email on older ones, and occasionally a raw auth subject.
+    // identityMatchValues is the same resolution the rest of storage uses, so
+    // this cannot drift from it the way a hand-written pair of lookups did.
+    const candidates = await this.identityMatchValues(userId).catch(() => [userId]);
+    if (userEmail) {
+      candidates.push(userEmail, userEmail.toLowerCase().trim());
+    }
+
+    let conn: any = null;
+    for (const key of Array.from(new Set(candidates.filter(Boolean)))) {
+      conn = await this.getYoutubeConnection(key).catch(() => null);
+      if (conn?.channelId) break;
+    }
+    if (!conn?.channelId) return accounts;
+
+    const synthetic: any = {
+      // Negative id so it can never collide with a real social_accounts row,
+      // and so anything that tries to write by id fails loudly rather than
+      // corrupting an unrelated record.
+      id: `yt:${conn.channelId}`,
+      userId: (conn as any).userId ?? userId,
+      platform: "youtube",
+      accountType: "business",
+      platformAccountId: conn.channelId,
+      handle: conn.channelTitle ?? null,
+      displayName: conn.channelTitle ?? null,
+      avatarUrl: null,
+      followers: conn.subscriberCount ?? 0,
+      totalViews: conn.totalViewCount ?? 0,
+      accessToken: (conn as any).accessToken ?? null,
+      // The daily cron writes demographics against the CHANNEL id, so a
+      // snapshot may exist even with no social_accounts row.
+      audienceData: null,
+      audienceSyncedAt: null,
+      isSynthetic: true,
+    };
+    return [...accounts, synthetic];
+  }
+
+  async getSocialAccountsByUser(userId: string, userEmail?: string): Promise<SocialAccount[]> {
+    // Match either userId — same dual-id problem as videoIndex (some records
+    // keyed by UUID, others by email). Pass both when available.
+    const candidates = new Set([userId]);
+    if (userEmail && userEmail !== userId) candidates.add(userEmail);
+    const matchArray = Array.from(candidates);
+
+    const rows = await db
+      .select()
+      .from(socialAccounts)
+      .where(matchArray.length === 1
+        ? eq(socialAccounts.userId, matchArray[0])
+        : inArray(socialAccounts.userId, matchArray));
+
+    return rows.map(r => this.decryptSocialAccount(r));
+  }
+
+  async getSocialAccount(id: string): Promise<SocialAccount | undefined> {
+    const [row] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, id));
+    return row ? this.decryptSocialAccount(row) : undefined;
+  }
+
+  /** Remove a user's facebook/instagram social_accounts (+ their snapshots)
+   *  — called before writing a freshly-confirmed Page so switching Pages
+   *  doesn't leave stale rows the snapshot cron keeps polling. */
+  async replaceMetaSocialAccounts(userId: string): Promise<void> {
+    const rows = await db
+      .select({ id: socialAccounts.id })
+      .from(socialAccounts)
+      .where(and(
+        eq(socialAccounts.userId, userId),
+        inArray(socialAccounts.platform, ["instagram", "facebook"]),
+      ));
+    for (const r of rows) {
+      await db.delete(socialInsightSnapshots).where(eq(socialInsightSnapshots.socialAccountId, r.id));
+      await db.delete(socialPostSnapshots).where(eq(socialPostSnapshots.socialAccountId, r.id));
+    }
+    await db.delete(socialAccounts).where(and(
+      eq(socialAccounts.userId, userId),
+      inArray(socialAccounts.platform, ["instagram", "facebook"]),
+    ));
+  }
+
+  /** All Meta accounts with a stored token — the snapshot job's work list. */
+  async getAllMetaSocialAccounts(): Promise<SocialAccount[]> {
+    // Name predates YouTube joining the snapshot cycle: this is "every
+    // account the insight snapshotter covers", and excluding YouTube here is
+    // WHY the analytics tab's trend charts had nothing to draw for it — no
+    // rows were ever captured.
+    const rows = await db
+      .select()
+      .from(socialAccounts)
+      .where(and(
+        inArray(socialAccounts.platform, ["instagram", "facebook", "youtube"]),
+        sql`${socialAccounts.accessToken} IS NOT NULL`
+      ));
+    return rows.map(r => this.decryptSocialAccount(r));
+  }
+
+  async insertSocialInsightSnapshot(snapshot: InsertSocialInsightSnapshot): Promise<void> {
+    await db.insert(socialInsightSnapshots).values(snapshot);
+  }
+
+  /** Snapshot history for one account, newest first — the trend-chart feed. */
+  async getSocialInsightSnapshotsForAccount(socialAccountId: string, limit: number = 60): Promise<any[]> {
+    return await db
+      .select()
+      .from(socialInsightSnapshots)
+      .where(eq(socialInsightSnapshots.socialAccountId, socialAccountId))
+      .orderBy(desc(socialInsightSnapshots.capturedAt))
+      .limit(limit);
+  }
+
+  /** Channel-level history for a platform account that has no social_accounts
+   *  row — YouTube channels and Twitch broadcasters key on platformAccountId. */
+  async getSocialInsightSnapshotsForPlatformAccount(
+    platform: string,
+    platformAccountId: string,
+    limit: number = 60,
+  ): Promise<any[]> {
+    return await db
+      .select()
+      .from(socialInsightSnapshots)
+      .where(and(
+        eq(socialInsightSnapshots.platform, platform),
+        eq(socialInsightSnapshots.platformAccountId, platformAccountId),
+      ))
+      .orderBy(desc(socialInsightSnapshots.capturedAt))
+      .limit(limit);
+  }
+
+  // ── Media assets (b-roll + music beds for the clip editor) ──
+
+  // ── AI generation ledger + credits ──
+
+  async createAiGeneration(row: InsertAiGeneration): Promise<AiGeneration> {
+    const [r] = await db.insert(aiGenerations).values(row).returning();
+    return r;
+  }
+
+  async completeAiGeneration(
+    id: number,
+    updates: { status: string; mediaAssetId?: number; errorMessage?: string; latencyMs?: number },
+  ): Promise<void> {
+    await db.update(aiGenerations)
+      .set({ ...updates, completedAt: new Date() })
+      .where(eq(aiGenerations.id, id));
+  }
+
+  async getAiGenerationsForUser(userId: string, limit = 50): Promise<AiGeneration[]> {
+    return db.select().from(aiGenerations)
+      .where(eq(aiGenerations.userId, userId))
+      .orderBy(desc(aiGenerations.createdAt))
+      .limit(limit);
+  }
+
+  /**
+   * Image generations this creator has used against today's free allowance.
+   *
+   * Counted from ai_generations rather than a separate counter table: the
+   * rows already exist, so there is no second source of truth to drift.
+   *
+   * FAILED generations are excluded. They were refunded, and charging a
+   * creator's daily allowance for our provider erroring is the kind of small
+   * unfairness that generates support tickets and distrust of the whole
+   * meter. Queued/running DO count, so a burst of concurrent requests cannot
+   * all read "0 used" before any completes.
+   *
+   * Day boundary is UTC — chosen so it matches how the rest of the platform
+   * buckets days (video_daily_metrics), not the creator's local midnight.
+   */
+  async countFreeImagesUsedToday(userId: string): Promise<number> {
+    const startOfDayUtc = new Date();
+    startOfDayUtc.setUTCHours(0, 0, 0, 0);
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(aiGenerations)
+      .where(and(
+        eq(aiGenerations.userId, userId),
+        eq(aiGenerations.kind, "image"),
+        eq(aiGenerations.creditsCharged, 0),
+        gte(aiGenerations.createdAt, startOfDayUtc),
+        ne(aiGenerations.status, "failed"),
+      ));
+    return Number(row?.n ?? 0);
+  }
+
+  async createCreditPurchase(row: any): Promise<void> {
+    // onConflictDoNothing: the pre-redirect insert and a fast webhook can
+    // race on the same session id, and neither should error.
+    await db.insert(creditPurchases).values(row).onConflictDoNothing();
+  }
+
+  /**
+   * Claim a session for fulfilment — the idempotency gate.
+   *
+   * ONE statement: flip pending → fulfilled, guarded on it still being
+   * pending. Concurrent webhook redeliveries both run this; exactly one
+   * matches a row and gets to grant. A read-then-write "have I fulfilled
+   * this?" check would let both pass before either wrote.
+   *
+   * Upserts first so a webhook arriving before (or instead of) the
+   * pre-redirect insert still fulfils — the pending row is a convenience,
+   * not a prerequisite.
+   */
+  async claimCreditPurchase(
+    sessionId: string,
+    data: { userId: string; packId: string; credits: number; stripePaymentIntentId?: string | null; amountPaidCents?: number; currency?: string },
+  ): Promise<boolean> {
+    await db.insert(creditPurchases).values({
+      userId: data.userId,
+      stripeSessionId: sessionId,
+      packId: data.packId,
+      credits: data.credits,
+      amountPaidCents: data.amountPaidCents ?? 0,
+      currency: data.currency ?? "usd",
+      status: "pending",
+    } as any).onConflictDoNothing();
+
+    const [row] = await db.update(creditPurchases)
+      .set({
+        status: "fulfilled",
+        fulfilledAt: new Date(),
+        stripePaymentIntentId: data.stripePaymentIntentId ?? null,
+        ...(data.amountPaidCents !== undefined ? { amountPaidCents: data.amountPaidCents } : {}),
+        ...(data.currency ? { currency: data.currency } : {}),
+      })
+      .where(and(
+        eq(creditPurchases.stripeSessionId, sessionId),
+        eq(creditPurchases.status, "pending"),
+      ))
+      .returning({ id: creditPurchases.id });
+    return !!row;
+  }
+
+  async getCreditPurchases(userId: string, limit = 25): Promise<CreditPurchase[]> {
+    return db.select().from(creditPurchases)
+      .where(eq(creditPurchases.userId, userId))
+      .orderBy(desc(creditPurchases.createdAt))
+      .limit(limit);
+  }
+
+  async getCreditBalance(userId: string): Promise<number> {
+    const [row] = await db.select().from(creatorCredits).where(eq(creatorCredits.userId, userId));
+    return row?.balance ?? 0;
+  }
+
+  /**
+   * Debit credits atomically.
+   *
+   * The balance check and the decrement are ONE statement with a guard in the
+   * WHERE clause, so two concurrent generations cannot both read the same
+   * balance and both proceed. Read-then-write here would let a creator with 1
+   * credit fire ten generations, all of which we pay the provider for.
+   */
+  async spendCredits(userId: string, amount: number): Promise<{ ok: boolean; balance: number }> {
+    if (amount <= 0) return { ok: true, balance: await this.getCreditBalance(userId) };
+    const [row] = await db.update(creatorCredits)
+      .set({
+        balance: sql`${creatorCredits.balance} - ${amount}`,
+        lifetimeSpent: sql`${creatorCredits.lifetimeSpent} + ${amount}`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(creatorCredits.userId, userId), gte(creatorCredits.balance, amount)))
+      .returning({ balance: creatorCredits.balance });
+    if (row) return { ok: true, balance: row.balance };
+    return { ok: false, balance: await this.getCreditBalance(userId) };
+  }
+
+  async grantCredits(userId: string, amount: number, reason: string, note?: string, grantedBy?: string): Promise<number> {
+    if (amount <= 0) return this.getCreditBalance(userId);
+    await db.insert(creatorCredits)
+      .values({ userId, balance: amount, lifetimeGranted: amount })
+      .onConflictDoUpdate({
+        target: creatorCredits.userId,
+        set: {
+          balance: sql`${creatorCredits.balance} + ${amount}`,
+          lifetimeGranted: sql`${creatorCredits.lifetimeGranted} + ${amount}`,
+          updatedAt: new Date(),
+        },
+      });
+    await db.insert(creditGrants).values({ userId, amount, reason, note, grantedByUserId: grantedBy });
+    return this.getCreditBalance(userId);
+  }
+
+  /** Margin readout: cost vs revenue over a window, from the same rows. */
+  async getGenerationEconomics(sinceDays = 30): Promise<{
+    total: number; succeeded: number; failed: number;
+    costMicros: number; creditsCharged: number; byModel: Array<{ model: string; n: number; costMicros: number; credits: number }>;
+  }> {
+    const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+    const rows = await db.select().from(aiGenerations).where(gte(aiGenerations.createdAt, since));
+    const byModel = new Map<string, { model: string; n: number; costMicros: number; credits: number }>();
+    let costMicros = 0, creditsCharged = 0, succeeded = 0, failed = 0;
+    for (const r of rows) {
+      // Failed generations that were refunded contribute cost but not revenue —
+      // which is exactly the number that quietly destroys margin.
+      const c = Number(r.costMicros ?? 0);
+      const cr = r.status === "succeeded" ? Number(r.creditsCharged ?? 0) : 0;
+      if (r.status === "succeeded") succeeded++; else if (r.status === "failed") failed++;
+      costMicros += c; creditsCharged += cr;
+      const key = String(r.model);
+      const agg = byModel.get(key) ?? { model: key, n: 0, costMicros: 0, credits: 0 };
+      agg.n++; agg.costMicros += c; agg.credits += cr;
+      byModel.set(key, agg);
+    }
+    return {
+      total: rows.length, succeeded, failed, costMicros, creditsCharged,
+      byModel: Array.from(byModel.values()).sort((a, b) => b.costMicros - a.costMicros),
+    };
+  }
+
+  async createMediaAsset(row: InsertMediaAsset): Promise<MediaAsset> {
+    const [result] = await db.insert(mediaAssets).values(row).returning();
+    return result;
+  }
+
+  async getMediaAsset(id: number): Promise<MediaAsset | undefined> {
+    const [row] = await db.select().from(mediaAssets).where(eq(mediaAssets.id, id));
+    return row;
+  }
+
+  async getMediaAssetsForUser(userId: string, kind?: string): Promise<MediaAsset[]> {
+    const conds = [eq(mediaAssets.userId, userId), sql`${mediaAssets.deletedAt} IS NULL`];
+    if (kind) conds.push(eq(mediaAssets.kind, kind));
+    return db.select().from(mediaAssets).where(and(...conds)).orderBy(desc(mediaAssets.createdAt));
+  }
+
+  /** Soft delete — edit stacks may still reference the row; the render
+   *  reports "media missing" instead of failing on a dangling id. */
+  async softDeleteMediaAsset(id: number, userId: string): Promise<boolean> {
+    const [row] = await db.update(mediaAssets)
+      .set({ deletedAt: new Date() })
+      .where(and(eq(mediaAssets.id, id), eq(mediaAssets.userId, userId)))
+      .returning({ id: mediaAssets.id });
+    return !!row;
+  }
+
+  async insertSocialPostSnapshot(row: InsertSocialPostSnapshot): Promise<void> {
+    await db.insert(socialPostSnapshots).values(row);
+  }
+
+  /** One post's series, oldest first — deltas only make sense in order. */
+  async getSocialPostSnapshots(platformPostId: string, limit: number = 120): Promise<any[]> {
+    return await db
+      .select()
+      .from(socialPostSnapshots)
+      .where(eq(socialPostSnapshots.platformPostId, platformPostId))
+      .orderBy(socialPostSnapshots.capturedAt)
+      .limit(limit);
+  }
+
+  /**
+   * Distinct Twitch content per user, for channel-snapshot broadcaster
+   * resolution. Returns stored ids (`twitch:videos/123`), capped per user so
+   * one creator with a 400-VOD back-catalogue can't consume the Helix budget.
+   */
+  async getTwitchContentSamples(perUserCap: number = 5): Promise<Array<{ userId: string; storedId: string }>> {
+    const rows = await db
+      .select({ userId: videoIndex.userId, storedId: videoIndex.youtubeId })
+      .from(videoIndex)
+      .where(and(
+        eq(videoIndex.platform, "twitch"),
+        sql`${videoIndex.deletedAt} IS NULL`,
+      ))
+      .orderBy(desc(videoIndex.id))
+      .limit(500);
+    const seen = new Map<string, number>();
+    const out: Array<{ userId: string; storedId: string }> = [];
+    for (const r of rows) {
+      const n = seen.get(r.userId) ?? 0;
+      if (n >= perUserCap) continue;
+      seen.set(r.userId, n + 1);
+      out.push({ userId: r.userId, storedId: String(r.storedId) });
+    }
+    return out;
+  }
+
+  // ── Meta data deletion (App Review compliance) ──
+
+  async createDataDeletionRequest(req: InsertDataDeletionRequest): Promise<DataDeletionRequest> {
+    const [row] = await db.insert(dataDeletionRequests).values(req).returning();
+    return row;
+  }
+
+  async getDataDeletionRequestByCode(code: string): Promise<DataDeletionRequest | undefined> {
+    const [row] = await db
+      .select()
+      .from(dataDeletionRequests)
+      .where(eq(dataDeletionRequests.confirmationCode, code));
+    return row;
+  }
+
+  /**
+   * Delete everything we hold that came from a Meta user's grant: their
+   * facebook/instagram social_accounts rows (+ insight snapshots for those
+   * accounts) and the Meta fields cached on the users row. The app-scoped
+   * FB user id arrives in Meta's signed deletion request and matches
+   * users.facebookId (stored at OAuth time).
+   */
+  async deleteMetaDataForFacebookUser(fbUserId: string): Promise<{ deleted: Record<string, number>; matchedUser: boolean }> {
+    const deleted: Record<string, number> = {};
+    const [user] = await db.select().from(users).where(eq(users.facebookId, fbUserId));
+
+    const ownerKeys = new Set<string>();
+    if (user?.id) ownerKeys.add(user.id);
+    if (user?.email) ownerKeys.add(user.email);
+
+    // Account rows for this user (or, absent a users row, any account keyed
+    // directly by the app-scoped id — defensive; normally page/ig ids differ).
+    const accountRows = ownerKeys.size > 0
+      ? await db.select().from(socialAccounts).where(and(
+          inArray(socialAccounts.userId, Array.from(ownerKeys)),
+          inArray(socialAccounts.platform, ["instagram", "facebook"]),
+        ))
+      : await db.select().from(socialAccounts).where(eq(socialAccounts.platformAccountId, fbUserId));
+
+    for (const acct of accountRows) {
+      const snaps: any = await db.delete(socialInsightSnapshots)
+        .where(eq(socialInsightSnapshots.socialAccountId, acct.id))
+        .returning({ id: socialInsightSnapshots.id });
+      deleted["social_insight_snapshots"] = (deleted["social_insight_snapshots"] || 0) + (snaps?.length || 0);
+      // Per-post history is Meta data too — a deletion request that left it
+      // behind would be a false confirmation to Meta and to the user.
+      const postSnaps: any = await db.delete(socialPostSnapshots)
+        .where(eq(socialPostSnapshots.socialAccountId, acct.id))
+        .returning({ id: socialPostSnapshots.id });
+      deleted["social_post_snapshots"] = (deleted["social_post_snapshots"] || 0) + (postSnaps?.length || 0);
+      await db.delete(socialAccounts).where(eq(socialAccounts.id, acct.id));
+      deleted["social_accounts"] = (deleted["social_accounts"] || 0) + 1;
+    }
+
+    if (user) {
+      await db.update(users).set({
+        facebookId: null,
+        instagramId: null,
+        facebookPageId: null,
+        facebookPageName: null,
+        facebookFollowers: null,
+        facebookAccessToken: null,
+        instagramBusinessId: null,
+        instagramHandle: null,
+        instagramFollowers: null,
+        updatedAt: new Date(),
+      }).where(eq(users.id, user.id));
+      deleted["users.meta_fields"] = 1;
+    }
+
+    return { deleted, matchedUser: !!user };
+  }
+
+  async upsertSocialAccount(account: InsertSocialAccount): Promise<SocialAccount> {
+    const encryptedValues = {
+      ...account,
+      accessToken: account.accessToken ? encrypt(account.accessToken) : null,
+      refreshToken: account.refreshToken ? encrypt(account.refreshToken) : null,
+    };
+
+    // Conflict target is the unique index (user_id, platform, account_type, platform_account_id).
+    // On conflict, refresh tokens, audience data, and metadata; preserve created_at.
+    const [result] = await db
+      .insert(socialAccounts)
+      .values(encryptedValues)
+      .onConflictDoUpdate({
+        target: [
+          socialAccounts.userId,
+          socialAccounts.platform,
+          socialAccounts.accountType,
+          socialAccounts.platformAccountId,
+        ],
+        set: {
+          handle: account.handle,
+          displayName: account.displayName,
+          avatarUrl: account.avatarUrl,
+          bio: account.bio,
+          followers: account.followers,
+          totalViews: account.totalViews,
+          accessToken: encryptedValues.accessToken,
+          refreshToken: encryptedValues.refreshToken,
+          tokenExpiresAt: account.tokenExpiresAt,
+          scopes: account.scopes,
+          audienceData: account.audienceData,
+          audienceSyncedAt: account.audienceSyncedAt,
+          metadata: account.metadata,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    return this.decryptSocialAccount(result);
+  }
+
+  async updateSocialAccountAudience(id: string, audienceData: any): Promise<void> {
+    await db.update(socialAccounts)
+      .set({ audienceData, audienceSyncedAt: new Date(), updatedAt: new Date() })
+      .where(eq(socialAccounts.id, id));
+  }
+
+  async deleteSocialAccount(id: string): Promise<void> {
+    await db.delete(socialAccounts).where(eq(socialAccounts.id, id));
+  }
+
+  // Used by the daily audience-refresh cron. Returns every connected social
+  // account across all users so the cron can iterate without needing to
+  // enumerate users separately.
+  async getAllSocialAccounts(): Promise<SocialAccount[]> {
+    const rows = await db.select().from(socialAccounts);
+    return rows.map(r => this.decryptSocialAccount(r));
+  }
+
   async isEmailAllowed(email: string): Promise<boolean> {
     const normalizedEmail = email.toLowerCase().trim();
     const [user] = await db
@@ -480,12 +1312,30 @@ export class DatabaseStorage implements IStorage {
     return newBid;
   }
 
+  /**
+   * Resolve every identifier form (users.id + email) for a mixed-key identity
+   * column match. Mirrors getVideoIndex's dual-form lookup: the boot sweep
+   * (normalizeLegacyIdentityKeys) rewrites email-keyed rows to users.id, so
+   * exact-email readers would silently return nothing post-sweep without this.
+   */
+  private async identityMatchValues(userId: string): Promise<string[]> {
+    const matchValues = new Set<string>([userId]);
+    try {
+      let user = await this.getUserById(userId);
+      if (!user && userId.includes("@")) user = await this.getUserByEmail(userId);
+      if (user?.id) matchValues.add(user.id);
+      if (user?.email) matchValues.add(user.email);
+    } catch { /* fall back to the raw value */ }
+    return Array.from(matchValues);
+  }
+
   async getActiveBidsForCreator(creatorUserId: string): Promise<MonetizationItem[]> {
+    const ids = await this.identityMatchValues(creatorUserId);
     return await db
       .select()
       .from(monetizationItems)
       .where(and(
-        eq(monetizationItems.creatorUserId, creatorUserId),
+        inArray(monetizationItems.creatorUserId, ids),
         eq(monetizationItems.status, "pending")
       ));
   }
@@ -531,15 +1381,24 @@ export class DatabaseStorage implements IStorage {
       .orderBy(savedPlacements.createdAt);
   }
 
-  async getVideoIndex(userId: string, authEmail?: string): Promise<VideoIndex[]> {
+  async getVideoIndex(userId: string, authEmail?: string, opts?: { dedupe?: boolean }): Promise<VideoListRow[]> {
     console.log(`[Storage.getVideoIndex] Looking up user by ID: ${userId}, authEmail: ${authEmail}`);
-    // First, try to get user by ID to also check by email
-    const user = await this.getUserById(userId);
+    // videoIndex.userId is a mixed-key column: newer rows store users.id, legacy
+    // rows store the creator's email. Resolve the user from either form so the
+    // match set always carries both identifiers.
+    // NOTE: this returns VIDEO_LIST_COLUMNS, not the whole row — the three
+    // scene jsonb blobs are excluded. Every caller here renders a LIST; a
+    // caller that needs a scene blob fetches that one video by id instead.
+    let user = await this.getUserById(userId);
+    if (!user && userId.includes("@")) {
+      user = await this.getUserByEmail(userId);
+    }
     const userEmail = user?.email;
     console.log(`[Storage.getVideoIndex] User found: ${!!user}, email: ${userEmail}`);
 
     // Collect all possible userId values to match against
     const matchValues = new Set<string>([userId]);
+    if (user?.id) matchValues.add(user.id);
     if (userEmail) matchValues.add(userEmail);
     if (authEmail) matchValues.add(authEmail);
 
@@ -547,7 +1406,7 @@ export class DatabaseStorage implements IStorage {
     console.log(`[Storage.getVideoIndex] Querying by userId IN [${matchArray.join(', ')}]`);
 
     const videos = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(
         and(
@@ -559,17 +1418,17 @@ export class DatabaseStorage implements IStorage {
       )
       .orderBy(desc(videoIndex.priorityScore));
     console.log(`[Storage.getVideoIndex] Found ${videos.length} videos`);
+    // Owner allowlists (Clips & Reels feed) need every owned video, including
+    // the same-title duplicates the grid folds away.
+    if (opts?.dedupe === false) return videos;
 
     // Deduplicate by normalized title — keeps the entry with the most surfaces (best scan)
     // This handles duplicate uploads, re-imports, and mixed youtubeId formats
-    const seen = new Map<string, VideoIndex>();
-    const surfaceCounts = new Map<number, number>();
+    const seen = new Map<string, VideoListRow>();
 
-    // Pre-fetch surface counts for smarter dedup (keep the best-scanned version)
-    for (const video of videos) {
-      const count = await this.getSurfaceCountByVideo(video.id);
-      surfaceCounts.set(video.id, count);
-    }
+    // Pre-fetch surface counts for smarter dedup (keep the best-scanned
+    // version) — one batched GROUP BY, not a query per video.
+    const surfaceCounts = await this.getSurfaceCountsForVideos(videos.map((v) => v.id));
 
     for (const video of videos) {
       const dedupeKey = video.title.toLowerCase().replace(/[_\s-]+/g, ' ').trim();
@@ -593,9 +1452,11 @@ export class DatabaseStorage implements IStorage {
     return dedupedVideos;
   }
 
-  async getAllVideos(): Promise<VideoIndex[]> {
+  async getAllVideos(): Promise<VideoListRow[]> {
+    // Platform-wide and unbounded, so the scene jsonb absolutely cannot ride
+    // along — this would otherwise be the single heaviest query on the server.
     return await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .orderBy(desc(videoIndex.createdAt));
   }
@@ -608,12 +1469,30 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex> {
+  async findVideoIndexRow(userId: string, youtubeId: string): Promise<VideoListRow | undefined> {
+    const ids = await this.identityMatchValues(userId);
     const [existing] = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(and(
-        eq(videoIndex.userId, video.userId),
+        inArray(videoIndex.userId, ids),
+        eq(videoIndex.youtubeId, youtubeId)
+      ));
+    return existing;
+  }
+
+  async upsertVideoIndex(video: InsertVideoIndex): Promise<VideoListRow> {
+    // Alias-aware existence check: the indexer still writes email keys while
+    // the boot sweep converges rows to users.id — an exact-email match would
+    // miss the normalized row and INSERT a duplicate on every refresh.
+    const ids = await this.identityMatchValues(video.userId);
+    // Only existing.id is read below, so do not drag the scene blobs back for
+    // every video on a 50-video YouTube sync.
+    const [existing] = await db
+      .select({ id: videoIndex.id })
+      .from(videoIndex)
+      .where(and(
+        inArray(videoIndex.userId, ids),
         eq(videoIndex.youtubeId, video.youtubeId)
       ));
     
@@ -634,14 +1513,17 @@ export class DatabaseStorage implements IStorage {
           updatedAt: new Date(),
         })
         .where(eq(videoIndex.id, existing.id))
-        .returning();
+        // Projected: a YouTube sync upserts up to 50 videos in a loop, and an
+        // unprojected RETURNING would hand back the scene blobs 50 times for a
+        // value most callers (bulkUpsertVideoIndex) discard outright.
+        .returning(VIDEO_LIST_COLUMNS);
       return updated;
     }
     
     const [result] = await db
       .insert(videoIndex)
       .values(video)
-      .returning();
+      .returning(VIDEO_LIST_COLUMNS);
     return result;
   }
 
@@ -723,15 +1605,16 @@ export class DatabaseStorage implements IStorage {
   async getVideosByYoutubeIds(youtubeIds: string[]): Promise<VideoIndex[]> {
     if (youtubeIds.length === 0) return [];
     return db.select().from(videoIndex)
-      .where(sql`${videoIndex.youtubeId} = ANY(${youtubeIds})`);
+      .where(inArray(videoIndex.youtubeId, youtubeIds));
   }
 
-  async getPendingVideos(userId: string, limit: number = 10): Promise<VideoIndex[]> {
+  async getPendingVideos(userId: string, limit: number = 10): Promise<VideoListRow[]> {
+    const ids = await this.identityMatchValues(userId);
     return await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(and(
-        eq(videoIndex.userId, userId),
+        inArray(videoIndex.userId, ids),
         eq(videoIndex.status, "Pending Scan")
       ))
       .orderBy(desc(videoIndex.priorityScore))
@@ -743,6 +1626,23 @@ export class DatabaseStorage implements IStorage {
       .update(videoIndex)
       .set({ status, updatedAt: new Date() })
       .where(eq(videoIndex.id, videoId));
+  }
+
+  // Atomic compare-and-set: write the status (and bump updatedAt) only if
+  // the row still says "Scanning". A cancel or stuck-scan sweep that landed
+  // first wins — the conditional UPDATE can never clobber it. Returns
+  // whether a row was updated. Calling with status "Scanning" is a pure
+  // heartbeat: it refreshes updatedAt without changing anything else.
+  async updateVideoStatusIfScanning(videoId: number, status: string): Promise<boolean> {
+    const result = await db
+      .update(videoIndex)
+      .set({ status, updatedAt: new Date() })
+      .where(and(
+        eq(videoIndex.id, videoId),
+        eq(videoIndex.status, "Scanning"),
+      ))
+      .returning({ id: videoIndex.id });
+    return result.length > 0;
   }
 
   async updateVideoThumbnail(videoId: number, thumbnailUrl: string): Promise<void> {
@@ -766,6 +1666,18 @@ export class DatabaseStorage implements IStorage {
       .where(eq(videoIndex.id, videoId));
   }
 
+  // Fetch just the scene-block inventory without dragging the full video row
+  // (sceneIndex + sceneBoundaries blobs) across the wire. Null for videos
+  // scanned before surface grouping shipped, or not yet scanned at all —
+  // callers must fall back to the flat surface list in that case.
+  async getSceneInventory(videoId: number): Promise<unknown> {
+    const [row] = await db
+      .select({ sceneInventory: videoIndex.sceneInventory })
+      .from(videoIndex)
+      .where(eq(videoIndex.id, videoId));
+    return row?.sceneInventory ?? null;
+  }
+
   async insertDetectedSurface(surface: InsertDetectedSurface): Promise<DetectedSurface> {
     const [result] = await db
       .insert(detectedSurfaces)
@@ -782,10 +1694,20 @@ export class DatabaseStorage implements IStorage {
     boundingBoxY?: string;
     boundingBoxWidth?: string;
     boundingBoxHeight?: string;
+    surfaceGroupId?: string;
   }): Promise<void> {
     await db
       .update(detectedSurfaces)
       .set(updates)
+      .where(eq(detectedSurfaces.id, surfaceId));
+  }
+
+  // Toggle the creator-approved flag for a single surface. Used by the
+  // creator's per-surface review toggle in the scene modal.
+  async updateSurfaceApproval(surfaceId: number, approved: boolean): Promise<void> {
+    await db
+      .update(detectedSurfaces)
+      .set({ creatorApproved: approved })
       .where(eq(detectedSurfaces.id, surfaceId));
   }
 
@@ -797,46 +1719,166 @@ export class DatabaseStorage implements IStorage {
       .orderBy(detectedSurfaces.timestamp);
   }
 
-  async getSurfaceCountByVideo(videoId: number): Promise<number> {
-    const surfaces = await db
+  /**
+   * ONE surface, by primary key.
+   *
+   * Callers that need a single surface were reaching for getDetectedSurfaces
+   * and `.find(s => s.id === ...)` — loading every supporting-frame row for
+   * the entire video (hundreds on a scanned one) to keep one of them. The
+   * admin review detail route did exactly that on every open, which is a
+   * primary-key lookup dressed up as a full-video scan.
+   */
+  async getDetectedSurfaceById(surfaceId: number): Promise<DetectedSurface | undefined> {
+    const [row] = await db
       .select()
       .from(detectedSurfaces)
-      .where(eq(detectedSurfaces.videoId, videoId));
-    return surfaces.length;
+      .where(eq(detectedSurfaces.id, surfaceId))
+      .limit(1);
+    return row;
+  }
+
+  async getSurfaceCountsForVideos(videoIds: number[]): Promise<Map<number, number>> {
+    // Batched form of getSurfaceCountByVideo (same Filtered exclusion, same
+    // group-distinct semantics): ONE GROUP BY instead of a query per video.
+    // The per-video version called in a loop over ~80 videos exhausted the
+    // 10-connection pool whenever a render had the CPU — observed in prod as
+    // "timeout exceeded when trying to connect" unhandled rejections and 17s
+    // library responses.
+    const counts = new Map<number, number>();
+    if (videoIds.length === 0) return counts;
+    const rows = await db
+      .select({
+        videoId: detectedSurfaces.videoId,
+        // Count canonical surfaces, not per-frame rows — the scanner writes
+        // one row per supporting frame, so count(*) reports "12 Spots" for
+        // one desk seen in 12 frames. Rows from before grouping shipped have
+        // null surface_group_id; fall back to a (type, scene) composite so
+        // legacy scans keep a sane count instead of the inflated row count.
+        count: sql<number>`count(DISTINCT COALESCE(${detectedSurfaces.surfaceGroupId}, ${detectedSurfaces.surfaceType} || ':' || COALESCE(${detectedSurfaces.sceneId}, 0)::text))::int`,
+      })
+      .from(detectedSurfaces)
+      .where(
+        and(
+          inArray(detectedSurfaces.videoId, videoIds),
+          ne(detectedSurfaces.surfaceType, "Filtered"),
+        ),
+      )
+      .groupBy(detectedSurfaces.videoId);
+    for (const r of rows) counts.set(r.videoId, Number(r.count));
+    return counts;
+  }
+
+  async getSurfaceCountByVideo(videoId: number): Promise<number> {
+    // Filter out "Filtered" surfaceType — those are soft-deleted by the
+    // scanner's snapshot/swap on rescan (preserves prior IDs in case of
+    // a failed rescan, but they shouldn't count as ad opportunities).
+    // Without this filter, every rescan accumulates the count: 4 → 8 →
+    // 12 → 56 even though only 4 are actually active. User feedback:
+    // "I think that each time I'm running a scan - it's just aggregating
+    // the surfaces found".
+    // Counts DISTINCT canonical surfaces (surface_group_id), not rows — the
+    // scanner writes one row per supporting frame, so a raw row count turns
+    // one desk seen in 12 frames into "12 Spots". Legacy rows predate group
+    // ids (null) and fall back to a (type, scene) composite.
+    const [row] = await db
+      .select({
+        count: sql<number>`count(DISTINCT COALESCE(${detectedSurfaces.surfaceGroupId}, ${detectedSurfaces.surfaceType} || ':' || COALESCE(${detectedSurfaces.sceneId}, 0)::text))::int`,
+      })
+      .from(detectedSurfaces)
+      .where(
+        and(
+          eq(detectedSurfaces.videoId, videoId),
+          ne(detectedSurfaces.surfaceType, "Filtered"),
+        ),
+      );
+    return Number(row?.count ?? 0);
   }
 
   async clearDetectedSurfaces(videoId: number): Promise<void> {
     await db.delete(detectedSurfaces).where(eq(detectedSurfaces.videoId, videoId));
   }
 
+  // Non-Filtered surfaces for a video. "Filtered" rows are the scanner's
+  // soft-deletes (rescan snapshot/swap, temporal-grouping losers) — they must
+  // never appear in brand-facing surface lists or counts. Same exclusion the
+  // count methods apply; without it the library said "4 Spots" while the
+  // marketplace listed 56.
+  private async getActiveSurfaces(videoId: number): Promise<DetectedSurface[]> {
+    const surfaces = await this.getDetectedSurfaces(videoId);
+    return surfaces.filter((s) => s.surfaceType !== "Filtered");
+  }
+
+  /**
+   * Marketplace headline counts, in ONE round trip.
+   *
+   * getVideosWithOpportunities ran a getActiveSurfaces query PER VIDEO, and
+   * /api/marketplace/stats then threw the rows away and kept three integers.
+   * With 25 videos that is 25 sequential round trips to a remote Postgres:
+   * ~4.1s measured, on an endpoint the app shell loads on EVERY page. It never
+   * tripped the event-loop or pool alarms because it is neither — each query
+   * completes and releases its connection before the next begins, so the pool
+   * reads idle throughout while the request wall-clock grows linearly.
+   *
+   * Latency x N is its own failure mode, distinct from CPU and from pool
+   * contention, and it is the one that was actually happening.
+   */
+  async getMarketplaceStats(userId: string): Promise<{ videosWithOpportunities: number; totalSurfaces: number }> {
+    const ids = await this.identityMatchValues(userId);
+    const res: any = await db.execute(sql`
+      SELECT
+        COUNT(DISTINCT v.id)::int AS videos,
+        COUNT(s.id)::int          AS surfaces
+      FROM ${videoIndex} v
+      JOIN ${detectedSurfaces} s
+        ON s.video_id = v.id AND s.surface_type <> 'Filtered'
+      WHERE v.user_id IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})
+    `);
+    const row = (res.rows ?? res)[0] ?? {};
+    return {
+      videosWithOpportunities: Number(row.videos ?? 0),
+      totalSurfaces: Number(row.surfaces ?? 0),
+    };
+  }
+
+  /**
+   * "Has any video?" and "has any completed scan?" as one aggregate.
+   *
+   * The onboarding checklist called getVideoIndex — which resolves the user,
+   * then SELECTs the creator's entire library — purely to read .length and
+   * test .status on the rows. Two booleans out of a whole library fetch, on
+   * every page load.
+   */
+  async getVideoScanFlags(userId: string, authEmail?: string): Promise<{ hasVideo: boolean; hasScan: boolean }> {
+    const ids = await this.identityMatchValues(userId);
+    if (authEmail) ids.push(authEmail);
+    const res: any = await db.execute(sql`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE status LIKE 'Ready%' OR status = 'Scan Complete')::int AS scanned
+      FROM ${videoIndex}
+      WHERE user_id IN (${sql.join(Array.from(new Set(ids)).map((i) => sql`${i}`), sql`, `)})
+    `);
+    const row = (res.rows ?? res)[0] ?? {};
+    return { hasVideo: Number(row.total ?? 0) > 0, hasScan: Number(row.scanned ?? 0) > 0 };
+  }
+
   async getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]> {
-    // First, try to get user by ID to also check by email
-    const user = await this.getUserById(userId);
-    const userEmail = user?.email;
-    
-    // Query videos matching either the user ID or the user's email
-    let videos;
-    if (userEmail && userEmail !== userId) {
-      videos = await db
-        .select()
-        .from(videoIndex)
-        .where(or(
-          eq(videoIndex.userId, userId),
-          eq(videoIndex.userId, userEmail)
-        ))
-        .orderBy(desc(videoIndex.priorityScore));
-    } else {
-      videos = await db
-        .select()
-        .from(videoIndex)
-        .where(eq(videoIndex.userId, userId))
-        .orderBy(desc(videoIndex.priorityScore));
-    }
+    // Dual-form match: callers pass either users.id or an email, and rows may
+    // hold either form (the boot sweep converges them to users.id over time).
+    const ids = await this.identityMatchValues(userId);
+    // Lean projection: this fans out one getActiveSurfaces call per video
+    // below, so pulling the scene jsonb for the whole library here made the
+    // marketplace pages one of the heaviest requests on the server.
+    const videos = await db
+      .select(VIDEO_LIST_COLUMNS)
+      .from(videoIndex)
+      .where(inArray(videoIndex.userId, ids))
+      .orderBy(desc(videoIndex.priorityScore));
     
     const results: VideoWithOpportunities[] = [];
     
     for (const video of videos) {
-      const surfaces = await this.getDetectedSurfaces(video.id);
+      const surfaces = await this.getActiveSurfaces(video.id);
       if (surfaces.length > 0) {
         const contexts = this.deriveContexts(surfaces);
         results.push({
@@ -853,14 +1895,14 @@ export class DatabaseStorage implements IStorage {
 
   async getAllVideosWithOpportunities(): Promise<VideoWithOpportunities[]> {
     const videos = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .orderBy(desc(videoIndex.priorityScore));
     
     const results: VideoWithOpportunities[] = [];
     
     for (const video of videos) {
-      const surfaces = await this.getDetectedSurfaces(video.id);
+      const surfaces = await this.getActiveSurfaces(video.id);
       if (surfaces.length > 0) {
         const contexts = this.deriveContexts(surfaces);
         results.push({
@@ -883,7 +1925,7 @@ export class DatabaseStorage implements IStorage {
       .from(detectedSurfaces);
 
     const videos = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(
         or(
@@ -898,9 +1940,16 @@ export class DatabaseStorage implements IStorage {
     const results: VideoWithOpportunities[] = [];
 
     for (const video of videos) {
-      const surfaces = await this.getDetectedSurfaces(video.id);
+      // Creator-consent gate: a video reaches the brand marketplace only
+      // when the creator has APPROVED at least one surface on it, and never
+      // after they trashed it. Without these two checks a stranger's video
+      // appeared to every brand the moment its first scan found a surface.
+      if ((video as any).deletedAt) continue;
+      const surfaces = await this.getActiveSurfaces(video.id);
       // Only include videos that actually have surfaces
       if (surfaces.length === 0) continue;
+      const approvedSurfaces = surfaces.filter((sf: any) => sf.creatorApproved === true);
+      if (approvedSurfaces.length === 0) continue;
       const contexts = this.deriveContexts(surfaces);
       results.push({
         ...video,
@@ -915,12 +1964,13 @@ export class DatabaseStorage implements IStorage {
 
   async getVideosWithSurfacesPublic(userEmail: string): Promise<any[]> {
     // Get ready videos for a creator by email (for public profile page)
+    const ids = await this.identityMatchValues(userEmail);
     const videos = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(
         and(
-          eq(videoIndex.userId, userEmail),
+          inArray(videoIndex.userId, ids),
           or(
             eq(videoIndex.status, "Ready"),
             eq(videoIndex.status, "Scan Complete"),
@@ -933,7 +1983,7 @@ export class DatabaseStorage implements IStorage {
     const results: any[] = [];
     
     for (const video of videos) {
-      const surfaces = await this.getDetectedSurfaces(video.id);
+      const surfaces = await this.getActiveSurfaces(video.id);
       if (surfaces.length > 0) {
         results.push({
           ...video,
@@ -949,10 +1999,27 @@ export class DatabaseStorage implements IStorage {
   // YouTube stats methods
   async getYoutubeConnectionByEmail(email: string): Promise<YoutubeConnection | undefined> {
     const normalizedEmail = email.toLowerCase().trim();
-    // Find the user by email, then get their YouTube connection
+    // Find the user by email, then get their YouTube connection.
     const user = await this.getUserByEmail(normalizedEmail);
-    if (!user) return undefined;
-    return this.getYoutubeConnection(user.id);
+    if (user) {
+      const byId = await this.getYoutubeConnection(user.id);
+      if (byId) return byId;
+    }
+    // ...and if that misses, try the EMAIL as the connection key directly.
+    //
+    // youtube_connections.user_id is the same mixed-key column as everything
+    // else here: some rows hold users.id, older ones hold the email. Resolving
+    // email -> user -> id and stopping there cannot see an email-keyed row, so
+    // a creator with a live channel read as having no connection at all.
+    //
+    // The roster already handled this — it builds an alias map from BOTH
+    // users.id and users.email and resolves connection keys through it, which
+    // is why Creator Intelligence could show "8.6k" on the list and "no
+    // connected platform data" on the drill-down for the same person, in the
+    // same view. Two code paths, two different notions of identity.
+    const direct = await this.getYoutubeConnection(normalizedEmail);
+    if (direct) return direct;
+    return email !== normalizedEmail ? this.getYoutubeConnection(email) : undefined;
   }
 
   async updateYoutubeStats(connectionId: number, stats: { subscriberCount: number; totalViewCount: number }): Promise<void> {
@@ -999,11 +2066,325 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  /**
+   * The catalog a CREATOR is allowed to place from.
+   *
+   * getAllBrandProducts returns every product on the platform, and
+   * /api/brand-products/catalog served it to anyone logged in. So any creator
+   * could pull any brand into their content — observed in production as a
+   * placement test for a brand by a creator that brand had never engaged.
+   * That inverts the whole mechanic: brands choose creators, then creators
+   * place. A creator browsing the full catalog is choosing the brand.
+   *
+   * Access derives from a real relationship, not a role:
+   *   - the brand REQUESTED a placement with this creator
+   *     (brand_placement_assignments), or
+   *   - the brand BID on one of this creator's videos (monetization_items)
+   *
+   * Both are acts of selection by the brand. Nothing else grants a catalog.
+   */
+  /**
+   * Everything a creator may place, labelled by WHY they may place it.
+   *
+   * Three tiers, resolved in one pass so the picker can group them and the
+   * write gate can reuse the exact same answer:
+   *
+   *   open      the brand listed itself as open to any creator. The brand's
+   *             approval of the finished render is the checkpoint, so this is
+   *             an invitation to pitch rather than a blank cheque.
+   *   selected  the brand engaged THIS creator — requested a placement or bid
+   *             on their inventory.
+   *   own       the creator's own partnership, uploaded by them. Never
+   *             browsable by anyone else, never shown to other brands.
+   *
+   * The `source` label travels with each product because the UI must not
+   * present these as equivalent: "a brand chose you" and "you may pitch this"
+   * are different invitations, and the creator's own partner is neither.
+   */
+  async getPlaceableProductsForCreator(
+    creatorUserId: string,
+    creatorEmail?: string,
+  ): Promise<Array<BrandProduct & { source: "open" | "selected" | "own" }>> {
+    const aliases = await this.identityMatchValues(creatorUserId);
+    if (creatorEmail) aliases.push(creatorEmail);
+    const keys = Array.from(new Set(aliases.filter(Boolean)));
+
+    const [openRows, selectedRows, ownRows] = await Promise.all([
+      db.select().from(brandProducts).where(eq(brandProducts.visibility, "open")),
+      this.getBrandProductsForCreator(creatorUserId, creatorEmail),
+      keys.length
+        ? db.select().from(brandProducts).where(
+            and(
+              inArray(brandProducts.userId, keys),
+              eq(brandProducts.uploadedByCreator, true),
+            ),
+          )
+        : Promise.resolve([] as BrandProduct[]),
+    ]);
+
+    // A brand that both listed openly AND engaged this creator should read as
+    // SELECTED — the stronger relationship — so dedupe with selected winning.
+    const out = new Map<number, BrandProduct & { source: "open" | "selected" | "own" }>();
+    for (const r of openRows) out.set(r.id, { ...(r as any), source: "open" });
+    for (const r of selectedRows) out.set(r.id, { ...(r as any), source: "selected" });
+    for (const r of ownRows) out.set(r.id, { ...(r as any), source: "own" });
+    return Array.from(out.values());
+  }
+
+  /** A creator's own uploaded partnerships. Never leaves their account. */
+  async setProductVisibility(id: number, visibility: "open" | "selected" | "private"): Promise<void> {
+    await db.update(brandProducts)
+      .set({ visibility, updatedAt: new Date() })
+      .where(eq(brandProducts.id, id));
+  }
+
+  async getBrandProductsForCreator(creatorUserId: string, creatorEmail?: string): Promise<BrandProduct[]> {
+    const aliases = await this.identityMatchValues(creatorUserId);
+    if (creatorEmail) aliases.push(creatorEmail);
+    const keys = Array.from(new Set(aliases.filter(Boolean)));
+    if (keys.length === 0) return [];
+
+    // Brands that requested a placement with this creator.
+    const assigned = await db
+      .selectDistinct({ brandUserId: brandPlacementAssignments.brandUserId })
+      .from(brandPlacementAssignments)
+      .where(inArray(brandPlacementAssignments.creatorUserId, keys));
+
+    // Brands that bid on this creator's inventory. Bids carry an email, so
+    // these resolve to user ids below.
+    const bid = await db
+      .selectDistinct({ brandEmail: monetizationItems.brandEmail })
+      .from(monetizationItems)
+      .where(inArray(monetizationItems.creatorUserId, keys));
+
+    const brandIds = new Set<string>(assigned.map((a) => a.brandUserId).filter(Boolean) as string[]);
+    const brandEmails = bid.map((b) => b.brandEmail).filter(Boolean) as string[];
+    if (brandEmails.length > 0) {
+      const rows = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(inArray(users.email, brandEmails));
+      for (const r of rows) if (r.id) brandIds.add(r.id);
+      // brand_products.userId is the same mixed-key column shape as elsewhere,
+      // so an email-keyed product row still resolves.
+      for (const e of brandEmails) brandIds.add(e);
+    }
+
+    if (brandIds.size === 0) return [];
+    // A brand's PRIVATE rows are not theirs to hand out — a creator's own
+    // uploaded partnership lives under that creator's key and must never
+    // surface through a brand relationship.
+    return await db
+      .select()
+      .from(brandProducts)
+      .where(and(
+        inArray(brandProducts.userId, Array.from(brandIds)),
+        ne(brandProducts.visibility, "private"),
+      ));
+  }
+
   async getAllBrandProducts(): Promise<BrandProduct[]> {
     return await db
       .select()
       .from(brandProducts)
       .orderBy(desc(brandProducts.createdAt));
+  }
+
+  // ── Brand Placement Assignment Methods ────────────────────────────────────
+
+  /**
+   * Statuses considered "active" — they hold a surface lock and prevent other
+   * brands from requesting the same surface.
+   */
+  private readonly ACTIVE_PLACEMENT_STATUSES = ["pending_creator_review", "creator_approved", "pending_brand_review", "brand_approved"] as const;
+
+  /**
+   * Which surfaces on this video currently hold a lock, for the brand-side
+   * picker. Uses ACTIVE_PLACEMENT_STATUSES — the SAME list createBrandPlacement
+   * blocks on — so the picker and the server can never disagree about what is
+   * available. getApprovedPlacementsForVideo is deliberately not reused: it
+   * omits pending_creator_review (which is the status every new request starts
+   * in) and it feeds the render pipeline, whose "approved onward" contract
+   * must not change.
+   */
+  async getActiveSurfaceLocksForVideo(videoId: number): Promise<Array<{ surfaceId: number; status: string; brandUserId: string }>> {
+    return await db
+      .select({
+        surfaceId: brandPlacementAssignments.surfaceId,
+        status: brandPlacementAssignments.status,
+        brandUserId: brandPlacementAssignments.brandUserId,
+      })
+      .from(brandPlacementAssignments)
+      .where(and(
+        eq(brandPlacementAssignments.videoId, videoId),
+        inArray(brandPlacementAssignments.status, [...this.ACTIVE_PLACEMENT_STATUSES]),
+      ));
+  }
+
+  /**
+   * Returns the active assignment for a surface, if any.
+   * Used to enforce one-brand-per-surface.
+   */
+  async getActivePlacementForSurface(surfaceId: number): Promise<BrandPlacementAssignment | undefined> {
+    const rows = await db
+      .select()
+      .from(brandPlacementAssignments)
+      .where(
+        and(
+          eq(brandPlacementAssignments.surfaceId, surfaceId),
+          inArray(brandPlacementAssignments.status, [...this.ACTIVE_PLACEMENT_STATUSES]),
+        ),
+      )
+      .limit(1);
+    return rows[0];
+  }
+
+  /**
+   * Create a placement assignment. Throws if the surface is already taken
+   * by another active assignment (one-brand-per-surface invariant).
+   */
+  async createBrandPlacement(
+    data: InsertBrandPlacementAssignment,
+  ): Promise<BrandPlacementAssignment> {
+    const existing = await this.getActivePlacementForSurface(data.surfaceId);
+    if (existing) {
+      const err = new Error(
+        `Surface ${data.surfaceId} already has an active placement (assignment ${existing.id}, status=${existing.status})`,
+      );
+      (err as any).code = "SURFACE_TAKEN";
+      (err as any).existingAssignmentId = existing.id;
+      throw err;
+    }
+    const [row] = await db.insert(brandPlacementAssignments).values(data).returning();
+    return row;
+  }
+
+  /**
+   * List a brand's own assignments (optionally filtered by status).
+   */
+  async getBrandPlacements(
+    brandUserId: string,
+    status?: string,
+  ): Promise<BrandPlacementAssignment[]> {
+    const conditions = [eq(brandPlacementAssignments.brandUserId, brandUserId)];
+    if (status) conditions.push(eq(brandPlacementAssignments.status, status));
+    return await db
+      .select()
+      .from(brandPlacementAssignments)
+      .where(and(...conditions))
+      .orderBy(desc(brandPlacementAssignments.createdAt));
+  }
+
+  /**
+   * Creator's inbox — assignments pending their review (or filter by any status).
+   */
+  async getCreatorPlacements(
+    creatorUserId: string,
+    status: string = "pending_creator_review",
+  ): Promise<BrandPlacementAssignment[]> {
+    // Dual-id resolution. video.userId is sometimes email (file uploads),
+    // sometimes UUID (IG/FB imports). The placement creator_user_id is set
+    // from video.userId, but the inbox query passes req.authUserId which
+    // is always the UUID. Without the OR, an email-keyed video's
+    // placements never reach the UUID-authenticated user's inbox.
+    // User-facing symptom: "I've clicked on request placement a few times
+    // already and I have yet to receive a notification in my inbox."
+    const user = await this.getUserById(creatorUserId);
+    const aliases = [creatorUserId];
+    if (user?.email && user.email !== creatorUserId) aliases.push(user.email);
+
+    // status accepts a comma-separated list — "active" placements span
+    // creator_approved, pending_brand_review, and brand_approved.
+    const statuses = status.split(",").map((s) => s.trim()).filter(Boolean);
+    return await db
+      .select()
+      .from(brandPlacementAssignments)
+      .where(
+        and(
+          inArray(brandPlacementAssignments.creatorUserId, aliases),
+          inArray(brandPlacementAssignments.status, statuses),
+        ),
+      )
+      .orderBy(desc(brandPlacementAssignments.createdAt));
+  }
+
+  /**
+   * All approved placements for a video — used by the render pipeline to know
+   * which brand products to composite onto which surfaces.
+   */
+  async getApprovedPlacementsForVideo(videoId: number): Promise<BrandPlacementAssignment[]> {
+    return await db
+      .select()
+      .from(brandPlacementAssignments)
+      .where(
+        and(
+          eq(brandPlacementAssignments.videoId, videoId),
+          // Overlays render from creator approval onward — through brand
+          // review and after final brand approval.
+          inArray(brandPlacementAssignments.status, ["creator_approved", "pending_brand_review", "brand_approved"]),
+        ),
+      );
+  }
+
+  async getBrandPlacementById(id: number): Promise<BrandPlacementAssignment | undefined> {
+    const rows = await db
+      .select()
+      .from(brandPlacementAssignments)
+      .where(eq(brandPlacementAssignments.id, id))
+      .limit(1);
+    return rows[0];
+  }
+
+  /**
+   * Update placement status. Sets reviewedAt when transitioning to a terminal state.
+   */
+  async updateBrandPlacementStatus(
+    id: number,
+    status: "creator_approved" | "creator_rejected" | "brand_withdrawn" | "expired" | "pending_brand_review" | "brand_approved",
+    opts: { rejectionReason?: string; brandProductId?: number; expectedCurrentStatus?: string } = {},
+  ): Promise<BrandPlacementAssignment | undefined> {
+    const patch: Record<string, any> = {
+      status,
+      updatedAt: new Date(),
+    };
+    // Delegated-choice placements: the creator's pick lands together with
+    // their approval.
+    if (opts.brandProductId !== undefined) patch.brandProductId = opts.brandProductId;
+    if (status === "creator_approved" || status === "creator_rejected") {
+      patch.reviewedAt = new Date();
+    }
+    if (opts.rejectionReason !== undefined) {
+      patch.rejectionReason = opts.rejectionReason;
+    }
+    const [row] = await db
+      .update(brandPlacementAssignments)
+      .set(patch)
+      .where(opts.expectedCurrentStatus
+          ? and(eq(brandPlacementAssignments.id, id), eq(brandPlacementAssignments.status, opts.expectedCurrentStatus))
+          : eq(brandPlacementAssignments.id, id))
+      .returning();
+    return row;
+  }
+
+  /**
+   * Count of pending placements for a creator — used for inbox badge.
+   */
+  async countPendingPlacementsForCreator(creatorUserId: string): Promise<number> {
+    // Same dual-id alias as getCreatorPlacements — see comment above.
+    const user = await this.getUserById(creatorUserId);
+    const aliases = [creatorUserId];
+    if (user?.email && user.email !== creatorUserId) aliases.push(user.email);
+
+    const result = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(brandPlacementAssignments)
+      .where(
+        and(
+          inArray(brandPlacementAssignments.creatorUserId, aliases),
+          eq(brandPlacementAssignments.status, "pending_creator_review"),
+        ),
+      );
+    return result[0]?.count ?? 0;
   }
 
   // Saved placement methods
@@ -1013,6 +2394,1028 @@ export class DatabaseStorage implements IStorage {
       .values(placement)
       .returning();
     return result;
+  }
+
+  // ── Measurement spine (CV-impact research) ──────────────────────────
+
+  /** Replace this video's fixture-exposure rows in one transaction-ish sweep.
+   *  Idempotent per (videoId, surfaceGroupId) so a rescan overwrites rather
+   *  than accumulating duplicate exposure supply. */
+  /** Record a new exposure measurement for a video, SUPERSEDING the previous
+   *  one rather than deleting it. History is the point: a treatment window
+   *  that closed last month must still resolve the dose that applied while it
+   *  was open, so rows are never destroyed — only marked superseded. */
+  async replaceFixtureExposure(videoId: number, rows: InsertFixtureExposure[]): Promise<number> {
+    // Never supersede on an empty result. A scan that produced no grouped
+    // fixtures (all-ungrouped survivors, degenerate index) must leave the
+    // current measurement standing — mirroring the keep-prior-surfaces rule.
+    if (rows.length === 0) {
+      console.warn(`[Measurement] fixture_exposure: 0 rows computed for video ${videoId} — keeping current measurement`);
+      return 0;
+    }
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      // Version each fixture's new row from its current one.
+      const current = await tx
+        .select({ gid: fixtureExposure.surfaceGroupId, v: fixtureExposure.scanVersion })
+        .from(fixtureExposure)
+        .where(and(eq(fixtureExposure.videoId, videoId), isNull(fixtureExposure.supersededAt)));
+      const versionByGid = new Map(current.map((r) => [r.gid, r.v ?? 1]));
+
+      // Close the validity interval of the outgoing measurement.
+      await tx
+        .update(fixtureExposure)
+        .set({ supersededAt: now })
+        .where(and(eq(fixtureExposure.videoId, videoId), isNull(fixtureExposure.supersededAt)));
+
+      const versioned = rows.map((r) => ({
+        ...r,
+        scanAt: now,
+        supersededAt: null,
+        scanVersion: (versionByGid.get(String((r as any).surfaceGroupId)) ?? 0) + 1,
+      }));
+      for (let i = 0; i < versioned.length; i += 100) {
+        await tx.insert(fixtureExposure).values(versioned.slice(i, i + 100) as any);
+      }
+    });
+    return rows.length;
+  }
+
+  /** The exposure measurement that was VALID AT a point in time — the dose
+   *  that actually applied during a past treatment window. */
+  async getFixtureExposureAsOf(surfaceGroupId: string, at: Date): Promise<FixtureExposure[]> {
+    return await db
+      .select()
+      .from(fixtureExposure)
+      .where(and(
+        eq(fixtureExposure.surfaceGroupId, surfaceGroupId),
+        lte(fixtureExposure.scanAt, at),
+        or(isNull(fixtureExposure.supersededAt), gt(fixtureExposure.supersededAt, at)),
+      ));
+  }
+
+  /** Dose that applied over a treatment window, per video. Sums the exposure
+   *  measurements valid during the window rather than today's numbers. */
+  async getFixtureDoseForWindow(
+    surfaceGroupId: string,
+    from: Date,
+    to: Date | null,
+  ): Promise<Array<{ videoId: number; sceneScreenTimeSec: number; scanVersion: number }>> {
+    const end = to ?? new Date();
+    const rows = await db
+      .select()
+      .from(fixtureExposure)
+      .where(and(
+        eq(fixtureExposure.surfaceGroupId, surfaceGroupId),
+        lte(fixtureExposure.scanAt, end),
+        or(isNull(fixtureExposure.supersededAt), gt(fixtureExposure.supersededAt, from)),
+      ));
+    // One row per video: the measurement in force for the longest part of the
+    // window is a v2 refinement; today the latest overlapping row wins.
+    const byVideo = new Map<number, any>();
+    for (const r of rows) {
+      const prev = byVideo.get(r.videoId);
+      if (!prev || (r.scanVersion ?? 1) > (prev.scanVersion ?? 1)) byVideo.set(r.videoId, r);
+    }
+    return Array.from(byVideo.values()).map((r) => ({
+      videoId: r.videoId,
+      sceneScreenTimeSec: parseFloat(String(r.sceneScreenTimeSec)) || 0,
+      scanVersion: r.scanVersion ?? 1,
+    }));
+  }
+
+  /** CURRENT measurement only (superseded history excluded). */
+  async getFixtureExposureForVideo(videoId: number): Promise<FixtureExposure[]> {
+    return await db
+      .select()
+      .from(fixtureExposure)
+      .where(and(eq(fixtureExposure.videoId, videoId), isNull(fixtureExposure.supersededAt)));
+  }
+
+  /** Cumulative exposure supply for a fixture across every episode — the
+   *  denominator of an effect estimate. */
+  async getFixtureExposureByGroup(surfaceGroupId: string, opts: { includeHistory?: boolean } = {}): Promise<FixtureExposure[]> {
+    const clauses = [eq(fixtureExposure.surfaceGroupId, surfaceGroupId)];
+    if (!opts.includeHistory) clauses.push(isNull(fixtureExposure.supersededAt));
+    return await db
+      .select()
+      .from(fixtureExposure)
+      .where(and(...clauses))
+      .orderBy(desc(fixtureExposure.scanAt));
+  }
+
+  /** Open a treatment window on a fixture. Closes any window still open for
+   *  the same fixture first — a fixture holds one product at a time, and the
+   *  gap between windows is the control period. */
+  async openFixtureAssignment(row: InsertFixtureAssignment): Promise<FixtureAssignment> {
+    // Exclusivity is per (fixture × VIDEO). The same physical fixture
+    // legitimately carries different products in different episodes at the
+    // same wall-clock time — closing globally would fabricate control
+    // periods for content that is still published and still treated.
+    const superseded = await db
+      .update(fixtureAssignments)
+      .set({ endedAt: new Date(), endReason: "replaced" })
+      .where(and(
+        eq(fixtureAssignments.surfaceGroupId, row.surfaceGroupId),
+        eq(fixtureAssignments.videoId, row.videoId),
+        isNull(fixtureAssignments.endedAt),
+      ))
+      .returning();
+    if (superseded.length > 0) {
+      console.log(`[Measurement] fixture_assignments: superseded ${superseded.length} open window(s) on ${row.surfaceGroupId} (video ${row.videoId})`);
+    }
+    const [created] = await db.insert(fixtureAssignments).values(row).returning();
+    return created;
+  }
+
+  async closeFixtureAssignment(
+    match: { placementId?: number; assignmentId?: number },
+    endReason: string,
+  ): Promise<number> {
+    const clauses = [isNull(fixtureAssignments.endedAt)];
+    if (match.placementId != null) clauses.push(eq(fixtureAssignments.placementId, match.placementId));
+    if (match.assignmentId != null) clauses.push(eq(fixtureAssignments.assignmentId, match.assignmentId));
+    if (clauses.length === 1) return 0; // never close everything by accident
+    const rows = await db
+      .update(fixtureAssignments)
+      .set({ endedAt: new Date(), endReason })
+      .where(and(...clauses))
+      .returning();
+    if (rows.length === 0) {
+      // A dead close path leaves treatment windows open forever, and every
+      // later second of that fixture reads as TREATED. Never swallow it.
+      console.warn(`[Measurement] fixture_assignments: close matched 0 windows (${JSON.stringify(match)}, reason=${endReason})`);
+    }
+    return rows.length;
+  }
+
+  async getFixtureAssignments(surfaceGroupId: string): Promise<FixtureAssignment[]> {
+    return await db
+      .select()
+      .from(fixtureAssignments)
+      .where(eq(fixtureAssignments.surfaceGroupId, surfaceGroupId))
+      .orderBy(desc(fixtureAssignments.startedAt));
+  }
+
+  /** Open an explicit CONTROL period on a fixture — observed, untreated.
+   *  Idempotent: never opens a second control row while one is open, and
+   *  never opens one while a treatment is live. */
+  async openControlPeriod(args: {
+    userId: string;
+    surfaceGroupId: string;
+    videoId: number;
+  }): Promise<FixtureAssignment | null> {
+    const open = await db
+      .select()
+      .from(fixtureAssignments)
+      .where(and(
+        eq(fixtureAssignments.surfaceGroupId, args.surfaceGroupId),
+        eq(fixtureAssignments.videoId, args.videoId),
+        isNull(fixtureAssignments.endedAt),
+      ));
+    if (open.length > 0) return null; // treated or already in control
+    const [created] = await db
+      .insert(fixtureAssignments)
+      .values({
+        userId: args.userId,
+        surfaceGroupId: args.surfaceGroupId,
+        videoId: args.videoId,
+        brandProductId: null,
+        isControl: true,
+        startedAt: new Date(),
+      } as any)
+      .returning();
+    return created;
+  }
+
+  /** Treatment/control periods for a fixture, oldest first — the crossover
+   *  timeline a researcher reads directly. */
+  async getFixtureTimeline(surfaceGroupId: string): Promise<FixtureAssignment[]> {
+    return await db
+      .select()
+      .from(fixtureAssignments)
+      .where(eq(fixtureAssignments.surfaceGroupId, surfaceGroupId))
+      .orderBy(asc(fixtureAssignments.startedAt));
+  }
+
+  /** Open treatment windows whose brand assignment term has passed. */
+  async getExpiredOpenAssignments(): Promise<Array<{ assignmentId: number | null; userId: string; surfaceGroupId: string; videoId: number }>> {
+    const rows = await db
+      .select({
+        assignmentId: fixtureAssignments.assignmentId,
+        userId: fixtureAssignments.userId,
+        surfaceGroupId: fixtureAssignments.surfaceGroupId,
+        videoId: fixtureAssignments.videoId,
+        expiresAt: brandPlacementAssignments.expiresAt,
+      })
+      .from(fixtureAssignments)
+      .innerJoin(
+        brandPlacementAssignments,
+        eq(fixtureAssignments.assignmentId, brandPlacementAssignments.id),
+      )
+      .where(and(
+        isNull(fixtureAssignments.endedAt),
+        eq(fixtureAssignments.isControl, false),
+        lte(brandPlacementAssignments.expiresAt, new Date()),
+      ));
+    return rows.map((r) => ({
+      assignmentId: r.assignmentId,
+      userId: r.userId,
+      surfaceGroupId: r.surfaceGroupId,
+      videoId: r.videoId,
+    }));
+  }
+
+  // ── Creator behavior + audience response ────────────────────────────
+
+  // ── Attribution links ───────────────────────────────────────────────
+
+  async createPlacementLink(row: InsertPlacementLink): Promise<PlacementLink> {
+    const [created] = await db.insert(placementLinks).values(row).returning();
+    return created;
+  }
+
+  async getPlacementLinkBySlug(slug: string): Promise<PlacementLink | undefined> {
+    const [row] = await db.select().from(placementLinks).where(eq(placementLinks.slug, slug));
+    return row;
+  }
+
+  async getPlacementLinkForPlacement(placementId: number): Promise<PlacementLink | undefined> {
+    const [row] = await db
+      .select()
+      .from(placementLinks)
+      .where(and(eq(placementLinks.placementId, placementId), eq(placementLinks.active, true)))
+      .orderBy(desc(placementLinks.createdAt));
+    return row;
+  }
+
+  async recordLinkClick(row: { linkId: number; placementId: number; referrerHost?: string | null; deviceClass?: string | null; country?: string | null }): Promise<void> {
+    await db.insert(linkClicks).values(row as any);
+  }
+
+  /** Click + conversion totals per placement — the attribution readout. */
+  async getAttributionTotals(): Promise<Array<{ placementId: number; clicks: number; conversions: number; valueCents: number }>> {
+    const clicks = await db
+      .select({ placementId: linkClicks.placementId, n: sql<number>`count(*)::int` })
+      .from(linkClicks)
+      .groupBy(linkClicks.placementId);
+    const convs = await db
+      .select({
+        placementId: placementConversions.placementId,
+        n: sql<number>`count(*)::int`,
+        value: sql<number>`coalesce(sum(${placementConversions.valueCents}), 0)::int`,
+      })
+      .from(placementConversions)
+      .groupBy(placementConversions.placementId);
+    const byId = new Map<number, { placementId: number; clicks: number; conversions: number; valueCents: number }>();
+    for (const c of clicks) byId.set(c.placementId, { placementId: c.placementId, clicks: c.n, conversions: 0, valueCents: 0 });
+    for (const c of convs) {
+      const e = byId.get(c.placementId) ?? { placementId: c.placementId, clicks: 0, conversions: 0, valueCents: 0 };
+      e.conversions = c.n;
+      e.valueCents = c.value;
+      byId.set(c.placementId, e);
+    }
+    return Array.from(byId.values());
+  }
+
+  async recordConversion(row: {
+    linkId: number;
+    placementId: number;
+    externalRef?: string | null;
+    eventType?: string;
+    valueCents?: number | null;
+    currency?: string | null;
+    occurredAt?: Date;
+  }): Promise<boolean> {
+    // onConflictDoNothing on (linkId, externalRef) makes brand retries safe.
+    const out = await db
+      .insert(placementConversions)
+      .values(row as any)
+      .onConflictDoNothing()
+      .returning({ id: placementConversions.id });
+    return out.length > 0;
+  }
+
+  /** Treated vs untreated day-level outcomes for a fixture. The control
+   *  comparison the study needs: daily metrics are retroactive to publish
+   *  date, so untreated periods are often already retrievable. */
+  async getFixtureTreatmentDays(surfaceGroupId: string): Promise<{
+    windows: Array<{ videoId: number; brandProductId: number | null; productName: string | null; startedAt: Date; endedAt: Date | null; isControl: boolean }>;
+    days: Array<{ videoId: number; day: string; views: number | null; likes: number | null; comments: number | null }>;
+  }> {
+    const windows = await db
+      .select({
+        videoId: fixtureAssignments.videoId,
+        brandProductId: fixtureAssignments.brandProductId,
+        productName: fixtureAssignments.productName,
+        startedAt: fixtureAssignments.startedAt,
+        endedAt: fixtureAssignments.endedAt,
+        isControl: fixtureAssignments.isControl,
+      })
+      .from(fixtureAssignments)
+      .where(eq(fixtureAssignments.surfaceGroupId, surfaceGroupId))
+      .orderBy(fixtureAssignments.startedAt);
+    const videoIds = Array.from(new Set(windows.map((w) => w.videoId)));
+    const days = videoIds.length
+      ? await db
+          .select({
+            videoId: videoDailyMetrics.videoId,
+            day: videoDailyMetrics.day,
+            views: videoDailyMetrics.views,
+            likes: videoDailyMetrics.likes,
+            comments: videoDailyMetrics.comments,
+          })
+          .from(videoDailyMetrics)
+          .where(inArray(videoDailyMetrics.videoId, videoIds))
+          .orderBy(videoDailyMetrics.day)
+      : [];
+    return { windows: windows as any, days: days as any };
+  }
+
+  // ── Delivered renders (the repository) ──────────────────────────────
+
+  /** Deliver a render. Supersedes any live render of the same
+   *  (placement, aspectRatio) so the creator's repository always shows the
+   *  current cut, while the delivery history stays intact. */
+  async deliverPlacementRender(row: Omit<InsertPlacementRender, "version">): Promise<PlacementRender> {
+    const prior = await db
+      .select()
+      .from(placementRenders)
+      .where(and(
+        eq(placementRenders.placementId, row.placementId),
+        eq(placementRenders.aspectRatio, row.aspectRatio ?? "16:9"),
+      ))
+      .orderBy(desc(placementRenders.version));
+    const nextVersion = (prior[0]?.version ?? 0) + 1;
+    if (prior.length > 0) {
+      await db
+        .update(placementRenders)
+        .set({ supersededAt: new Date() })
+        .where(and(
+          eq(placementRenders.placementId, row.placementId),
+          eq(placementRenders.aspectRatio, row.aspectRatio ?? "16:9"),
+          isNull(placementRenders.supersededAt),
+        ));
+    }
+    const [created] = await db
+      .insert(placementRenders)
+      .values({ ...row, version: nextVersion } as any)
+      .returning();
+    return created;
+  }
+
+  /** A creator's delivery repository — current cuts only, newest first. */
+  async getDeliveredRendersForCreator(creatorUserId: string): Promise<PlacementRender[]> {
+    const ids = await this.identityMatchValues(creatorUserId);
+    return await db
+      .select()
+      .from(placementRenders)
+      .where(and(inArray(placementRenders.creatorUserId, ids), isNull(placementRenders.supersededAt)))
+      .orderBy(desc(placementRenders.deliveredAt));
+  }
+
+  async getPlacementRenderById(id: number): Promise<PlacementRender | undefined> {
+    const [row] = await db.select().from(placementRenders).where(eq(placementRenders.id, id));
+    return row;
+  }
+
+  async getRendersForPlacement(placementId: number): Promise<PlacementRender[]> {
+    return await db
+      .select()
+      .from(placementRenders)
+      .where(eq(placementRenders.placementId, placementId))
+      .orderBy(desc(placementRenders.deliveredAt));
+  }
+
+  async markRenderDownloaded(id: number): Promise<void> {
+    await db
+      .update(placementRenders)
+      .set({ downloadedAt: new Date() })
+      .where(and(eq(placementRenders.id, id), isNull(placementRenders.downloadedAt)));
+  }
+
+  async insertCreatorEvent(row: InsertCreatorEvent): Promise<void> {
+    await db.insert(creatorEvents).values(row);
+  }
+
+  async getCreatorEvents(creatorUserId: string, sinceDays = 90): Promise<CreatorEvent[]> {
+    const ids = await this.identityMatchValues(creatorUserId);
+    const since = new Date(Date.now() - sinceDays * 86400_000);
+    return await db
+      .select()
+      .from(creatorEvents)
+      .where(and(inArray(creatorEvents.creatorUserId, ids), gte(creatorEvents.occurredAt, since)))
+      .orderBy(desc(creatorEvents.occurredAt));
+  }
+
+  /** Event counts by type per creator — the behavior profile's backbone. */
+  async getCreatorEventCounts(sinceDays = 90): Promise<Array<{ creatorUserId: string; eventType: string; n: number; lastAt: Date | null }>> {
+    const since = new Date(Date.now() - sinceDays * 86400_000);
+    const rows = await db
+      .select({
+        creatorUserId: creatorEvents.creatorUserId,
+        eventType: creatorEvents.eventType,
+        n: sql<number>`count(*)::int`,
+        lastAt: sql<Date | null>`max(${creatorEvents.occurredAt})`,
+      })
+      .from(creatorEvents)
+      .where(and(gte(creatorEvents.occurredAt, since), eq(creatorEvents.actorRole, "creator")))
+      .groupBy(creatorEvents.creatorUserId, creatorEvents.eventType);
+    return rows as any;
+  }
+
+  async upsertVideoDailyMetric(row: InsertVideoDailyMetric): Promise<void> {
+    await db
+      .insert(videoDailyMetrics)
+      .values(row)
+      .onConflictDoUpdate({
+        target: [videoDailyMetrics.videoId, videoDailyMetrics.day],
+        set: {
+          views: row.views ?? null,
+          likes: row.likes ?? null,
+          comments: row.comments ?? null,
+          shares: row.shares ?? null,
+          estimatedMinutesWatched: row.estimatedMinutesWatched ?? null,
+          averageViewDuration: row.averageViewDuration ?? null,
+          capturedAt: new Date(),
+        },
+      });
+  }
+
+  async getVideoDailyMetrics(videoId: number): Promise<Array<{ day: string; views: number | null; likes: number | null; comments: number | null }>> {
+    const rows = await db
+      .select({ day: videoDailyMetrics.day, views: videoDailyMetrics.views, likes: videoDailyMetrics.likes, comments: videoDailyMetrics.comments })
+      .from(videoDailyMetrics)
+      .where(eq(videoDailyMetrics.videoId, videoId))
+      .orderBy(videoDailyMetrics.day);
+    return rows as any;
+  }
+
+  async insertContentComments(rows: InsertContentComment[]): Promise<number> {
+    if (rows.length === 0) return 0;
+    let inserted = 0;
+    for (let i = 0; i < rows.length; i += 200) {
+      const chunk = rows.slice(i, i + 200);
+      const out = await db.insert(contentComments).values(chunk).onConflictDoNothing().returning({ id: contentComments.id });
+      inserted += out.length;
+    }
+    return inserted;
+  }
+
+  async getUnclassifiedComments(limit = 200): Promise<ContentComment[]> {
+    return await db
+      .select()
+      .from(contentComments)
+      .where(isNull(contentComments.classifiedAt))
+      .orderBy(desc(contentComments.capturedAt))
+      .limit(limit);
+  }
+
+  async applyCommentClassification(
+    id: number,
+    patch: { sentiment: string; mentionsBrand: boolean },
+  ): Promise<void> {
+    await db
+      .update(contentComments)
+      .set({ sentiment: patch.sentiment, mentionsBrand: patch.mentionsBrand, classifiedAt: new Date() })
+      .where(eq(contentComments.id, id));
+  }
+
+  /** Any live exposure on this video — used to decide whether comments are
+   *  worth collecting and to split them pre/post go-live. */
+  async getPlacementExposureForVideo(videoId: number): Promise<PlacementExposure | undefined> {
+    const [row] = await db
+      .select()
+      .from(placementExposures)
+      .where(eq(placementExposures.sourceVideoId, videoId))
+      .orderBy(desc(placementExposures.liveAt))
+      .limit(1);
+    return row;
+  }
+
+  async getCommentsForVideo(videoId: number): Promise<ContentComment[]> {
+    return await db
+      .select()
+      .from(contentComments)
+      .where(eq(contentComments.videoId, videoId))
+      .orderBy(desc(contentComments.publishedAt));
+  }
+
+  /**
+   * Audience-response summary for one video — the creator-facing view the
+   * privacy policy promises ("summarise audience response").
+   *
+   * Deliberately AGGREGATE ONLY: counts by sentiment, the brand-mention split,
+   * and the pre/post-placement split, plus a few representative comment texts.
+   * No author names leave this method, which is what keeps the feature
+   * consistent with our own claim that we do not build profiles of the people
+   * who wrote the comments. Sample texts are the highest-liked classified
+   * comments, author stripped.
+   */
+  async getAudienceResponseSummary(videoId: number): Promise<{
+    total: number;
+    classified: number;
+    sentiment: { positive: number; neutral: number; negative: number; mixed: number };
+    brandMentions: number;
+    afterPlacement: number;
+    samples: Array<{ text: string; sentiment: string | null; likeCount: number | null; publishedAt: Date | null }>;
+  }> {
+    const rows = await db
+      .select()
+      .from(contentComments)
+      .where(eq(contentComments.videoId, videoId));
+
+    const sentiment = { positive: 0, neutral: 0, negative: 0, mixed: 0 };
+    let classified = 0, brandMentions = 0, afterPlacement = 0;
+    for (const r of rows) {
+      if (r.classifiedAt) classified += 1;
+      if (r.sentiment && r.sentiment in sentiment) (sentiment as any)[r.sentiment] += 1;
+      if (r.mentionsBrand) brandMentions += 1;
+      if (r.afterPlacementLive) afterPlacement += 1;
+    }
+
+    const samples = rows
+      .filter(r => r.classifiedAt && r.text)
+      .sort((a, b) => (b.likeCount ?? 0) - (a.likeCount ?? 0))
+      .slice(0, 5)
+      .map(r => ({ text: r.text, sentiment: r.sentiment, likeCount: r.likeCount, publishedAt: r.publishedAt }));
+
+    return { total: rows.length, classified, sentiment, brandMentions, afterPlacement, samples };
+  }
+
+  async insertRetentionCurve(row: InsertVideoRetentionCurve): Promise<void> {
+    await db.insert(videoRetentionCurves).values(row);
+  }
+
+  /** Most recent retention curve for a video. */
+  async getLatestRetentionCurve(videoId: number): Promise<VideoRetentionCurve | undefined> {
+    const [row] = await db
+      .select()
+      .from(videoRetentionCurves)
+      .where(eq(videoRetentionCurves.videoId, videoId))
+      .orderBy(desc(videoRetentionCurves.capturedAt))
+      .limit(1);
+    return row;
+  }
+
+  async insertVideoDemographics(row: InsertVideoDemographics): Promise<void> {
+    await db.insert(videoDemographics).values(row);
+  }
+
+  async getLatestVideoDemographics(videoId: number): Promise<VideoDemographics | undefined> {
+    const [row] = await db
+      .select()
+      .from(videoDemographics)
+      .where(eq(videoDemographics.videoId, videoId))
+      .orderBy(desc(videoDemographics.capturedAt))
+      .limit(1);
+    return row;
+  }
+
+  async insertVideoStatSnapshot(row: InsertVideoStatSnapshot): Promise<void> {
+    await db.insert(videoStatSnapshots).values(row);
+  }
+
+  /** Time series for one video, oldest first. */
+  async getVideoStatSeries(videoId: number, sinceDays = 90): Promise<VideoStatSnapshot[]> {
+    const since = new Date(Date.now() - sinceDays * 86400_000);
+    return await db
+      .select()
+      .from(videoStatSnapshots)
+      .where(and(eq(videoStatSnapshots.videoId, videoId), gt(videoStatSnapshots.capturedAt, since)))
+      .orderBy(asc(videoStatSnapshots.capturedAt));
+  }
+
+  /** Videos that matter to the study: anything carrying a fixture with a
+   *  treatment window or a recorded exposure. These get polled every cycle. */
+  async getVideoIdsUnderMeasurement(): Promise<number[]> {
+    const fromAssignments = await db
+      .selectDistinct({ videoId: fixtureAssignments.videoId })
+      .from(fixtureAssignments);
+    const fromExposures = await db
+      .selectDistinct({ videoId: placementExposures.sourceVideoId })
+      .from(placementExposures);
+    const ids = new Set<number>();
+    for (const r of fromAssignments) if (r.videoId) ids.add(r.videoId);
+    for (const r of fromExposures) if (r.videoId) ids.add(r.videoId);
+    return Array.from(ids);
+  }
+
+  async createPlacementExposure(row: InsertPlacementExposure): Promise<PlacementExposure> {
+    const [created] = await db.insert(placementExposures).values(row).returning();
+    return created;
+  }
+
+  async getPlacementExposuresForUser(userId: string): Promise<PlacementExposure[]> {
+    const ids = await this.identityMatchValues(userId);
+    return await db
+      .select()
+      .from(placementExposures)
+      .where(inArray(placementExposures.userId, ids))
+      .orderBy(desc(placementExposures.liveAt));
+  }
+
+  /** Exposures for many placements at once — the campaigns list needs to know
+   *  which rows are genuinely live without a query per row. */
+  async getPlacementExposuresForPlacements(placementIds: number[]): Promise<PlacementExposure[]> {
+    if (placementIds.length === 0) return [];
+    return await db
+      .select()
+      .from(placementExposures)
+      .where(inArray(placementExposures.placementId, placementIds))
+      .orderBy(desc(placementExposures.liveAt));
+  }
+
+  /** The brand's side of the join: their assignment → the go-live event. */
+  async getPlacementExposureForAssignment(assignmentId: number): Promise<PlacementExposure | undefined> {
+    const [row] = await db
+      .select()
+      .from(placementExposures)
+      .where(eq(placementExposures.assignmentId, assignmentId))
+      .orderBy(desc(placementExposures.liveAt))
+      .limit(1);
+    return row;
+  }
+
+  /** Same join for a whole list — one query, not one per placement. */
+  async getPlacementExposuresForAssignments(assignmentIds: number[]): Promise<PlacementExposure[]> {
+    if (assignmentIds.length === 0) return [];
+    return await db
+      .select()
+      .from(placementExposures)
+      .where(inArray(placementExposures.assignmentId, assignmentIds))
+      .orderBy(desc(placementExposures.liveAt));
+  }
+
+  async getPlacementExposureForPlacement(placementId: number): Promise<PlacementExposure | undefined> {
+    const [row] = await db
+      .select()
+      .from(placementExposures)
+      .where(eq(placementExposures.placementId, placementId))
+      .orderBy(desc(placementExposures.liveAt));
+    return row;
+  }
+
+  /** render_ready → live. Deliberately does NOT touch reviewedAt: that
+   *  timestamp anchors the go-live candidate search ("uploads since the
+   *  render was ready"), and overwriting it would break the suggestions on
+   *  every subsequent visit. */
+  async setPlacementLive(placementId: number): Promise<void> {
+    await db
+      .update(savedPlacements)
+      .set({ reviewStatus: "live", updatedAt: new Date() })
+      .where(eq(savedPlacements.id, placementId));
+  }
+
+  async updatePlacementReview(placementId: number, patch: { reviewStatus: string; reviewNote?: string | null }): Promise<SavedPlacement | undefined> {
+    const [row] = await db
+      .update(savedPlacements)
+      .set({
+        reviewStatus: patch.reviewStatus,
+        reviewNote: patch.reviewNote ?? null,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(savedPlacements.id, placementId))
+      .returning();
+    return row;
+  }
+
+  /**
+   * Titles for a set of videos, and NOTHING else.
+   *
+   * The obvious `getVideoById` in a loop is a trap here: it selects every
+   * column, including scene_index and scene_inventory. Those jsonb blobs hold
+   * per-shot perceptual hashes and per-scene surface inventories and run to
+   * megabytes on a scanned video — and node-postgres parses jsonb with a
+   * synchronous JSON.parse, so each row BLOCKS THE EVENT LOOP. Loop that over
+   * a dozen videos and the whole process stops serving anything: the page that
+   * triggered it hangs, and so does every unrelated request behind it.
+   *
+   * One query, two scalar columns, no jsonb.
+   */
+  /**
+   * The three video fields the placement inboxes actually render.
+   *
+   * Same trap as getVideoTitles, but worse at the call site: the inboxes ran
+   * getVideoById inside a Promise.all over every placement, so N heavy rows
+   * were fetched CONCURRENTLY — each holding one of only 10 pool connections
+   * and each blocking the event loop on jsonb parse. A creator with a dozen
+   * pending placements could stall the entire process by opening their inbox.
+   */
+  /**
+   * The library card's scene rollup — computed IN POSTGRES.
+   *
+   * /api/videos used to fetch every video's full scene_inventory (hundreds of
+   * KB each, parsed synchronously by the pg driver), destructure it away, and
+   * keep only three numbers. This does the aggregation server-side so the blob
+   * never crosses the wire.
+   *
+   * Semantics match the JS it replaces exactly: every scene class counts
+   * toward sceneCount, surfaces sum across all of them, but trackedSec only
+   * accumulates for scenes that actually bear surfaces — it advertises
+   * sellable time, not runtime. Videos scanned before the inventory existed
+   * are absent from the map, so the caller yields null and the client falls
+   * back to the raw surface count.
+   */
+  /**
+   * Owner keys (emails AND user ids) whose media may be served to ANONYMOUS
+   * visitors.
+   *
+   * The boundary is "the creator published a public profile", which means one
+   * of two opt-in acts: setting a profile slug (they chose a public URL via
+   * profile settings — this is what /api/public/creator/:slug serves) or being
+   * flagged is_featured for the marketplace. Gating on is_featured alone was
+   * too narrow: a creator with a slug but no feature flag has a live public
+   * page, and their thumbnails and video would have 404'd for logged-out
+   * visitors.
+   *
+   * video_index.userId is a mixed-key column — some rows key off users.id
+   * (UUID) and some off the email, depending on which import path created
+   * them — so the set carries BOTH forms for every public creator.
+   *
+   * Cached for 60s: every thumbnail on a public profile hits this, and the
+   * membership changes about never.
+   */
+  private publicOwnerCache: { keys: Set<string>; expiresAt: number } | null = null;
+  async getFeaturedOwnerKeys(): Promise<Set<string>> {
+    const now = Date.now();
+    if (this.publicOwnerCache && this.publicOwnerCache.expiresAt > now) {
+      return this.publicOwnerCache.keys;
+    }
+    const keys = new Set<string>();
+    try {
+      // One query for the public creators, one to resolve their UUIDs — not
+      // a per-creator lookup in a loop.
+      const publicCreators = await db
+        .select({ email: allowedUsers.email })
+        .from(allowedUsers)
+        .where(or(isNotNull(allowedUsers.slug), eq(allowedUsers.isFeatured, true)));
+
+      const emails = publicCreators.map((c) => c.email).filter(Boolean) as string[];
+      for (const e of emails) keys.add(e.toLowerCase());
+
+      if (emails.length > 0) {
+        const rows = await db
+          .select({ id: users.id })
+          .from(users)
+          .where(inArray(users.email, emails));
+        for (const r of rows) if (r.id) keys.add(r.id);
+      }
+    } catch (err: any) {
+      // FAIL CLOSED. An empty set denies anonymous media rather than opening
+      // it; signed-in users are unaffected because they short-circuit before
+      // this is consulted.
+      console.warn(`[Storage.getFeaturedOwnerKeys] ${err?.message}`);
+    }
+    this.publicOwnerCache = { keys, expiresAt: now + 60_000 };
+    return keys;
+  }
+
+  async getSceneSummaries(ids: number[]): Promise<Map<number, { sceneCount: number; surfaceCount: number; trackedMinutes: number }>> {
+    const unique = Array.from(new Set(ids.filter((n) => Number.isFinite(n))));
+    if (unique.length === 0) return new Map();
+    // Fail soft. This is a decorative badge on a library card; if the
+    // aggregate errors, the card falls back to its raw surface count rather
+    // than taking the whole library page down with it.
+    try {
+    const res: any = await db.execute(sql`
+      SELECT v.id,
+             COALESCE(jsonb_array_length(v.scene_inventory->'scenes'), 0) AS scene_count,
+             COALESCE(SUM(
+               CASE WHEN jsonb_typeof(s->'surfaces') = 'array'
+                    THEN jsonb_array_length(s->'surfaces') ELSE 0 END
+             ), 0) AS surface_count,
+             COALESCE(SUM(
+               CASE WHEN jsonb_typeof(s->'surfaces') = 'array'
+                     AND jsonb_array_length(s->'surfaces') > 0
+                     AND s->>'totalSec' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    THEN (s->>'totalSec')::numeric ELSE 0 END
+             ), 0) AS tracked_sec
+      FROM video_index v
+      LEFT JOIN LATERAL jsonb_array_elements(v.scene_inventory->'scenes') s ON TRUE
+      WHERE v.id IN (${sql.join(unique.map((n) => sql`${n}`), sql`, `)})
+        AND jsonb_typeof(v.scene_inventory->'scenes') = 'array'
+      GROUP BY v.id
+    `);
+    const rows: any[] = res?.rows ?? res ?? [];
+    return new Map(rows.map((r: any) => [Number(r.id), {
+      sceneCount: Number(r.scene_count) || 0,
+      surfaceCount: Number(r.surface_count) || 0,
+      trackedMinutes: Math.round((Number(r.tracked_sec) || 0) / 60),
+    }]));
+    } catch (err: any) {
+      console.warn(`[Storage.getSceneSummaries] rollup failed, cards fall back: ${err?.message}`);
+      return new Map();
+    }
+  }
+
+  /**
+   * Two status strings, for the cancellation check inside the render loops.
+   *
+   * Those loops called getVideoById once PER CLIP purely to read
+   * editorialStatus/editorialError — dragging scene_index and scene_inventory
+   * along each time, megabytes parsed synchronously by the pg driver, while a
+   * render is already competing for the same single thread. That is a periodic
+   * whole-process stall for the entire duration of a render job, on every page
+   * of the app, not just the one that started it.
+   */
+  async getVideoEditorialState(id: number): Promise<{ editorialStatus: string | null; editorialError: string | null } | undefined> {
+    const [row] = await db
+      .select({ editorialStatus: videoIndex.editorialStatus, editorialError: videoIndex.editorialError })
+      .from(videoIndex)
+      .where(eq(videoIndex.id, id))
+      .limit(1);
+    return row as any;
+  }
+
+  /** Thumbnail-shaped rows for a creator's library — no scene jsonb. */
+  async getCreatorVideoThumbRows(ownerKey: string): Promise<Array<{ id: number; title: string | null; thumbnailUrl: string | null; youtubeId: string | null; filePath: string | null; viewCount: number | null }>> {
+    return await db
+      .select({
+        id: videoIndex.id, title: videoIndex.title, thumbnailUrl: videoIndex.thumbnailUrl,
+        youtubeId: videoIndex.youtubeId, filePath: videoIndex.filePath, viewCount: videoIndex.viewCount,
+      })
+      .from(videoIndex)
+      .where(eq(videoIndex.userId, ownerKey)) as any;
+  }
+
+  async getVideoSummaries(ids: number[]): Promise<Map<number, VideoSummaryRow>> {
+    const unique = Array.from(new Set(ids.filter((n) => Number.isFinite(n))));
+    if (unique.length === 0) return new Map();
+    const rows = await db
+      .select({
+        id: videoIndex.id,
+        title: videoIndex.title,
+        thumbnailUrl: videoIndex.thumbnailUrl,
+        youtubeId: videoIndex.youtubeId,
+        userId: videoIndex.userId,
+        viewCount: videoIndex.viewCount,
+        platform: videoIndex.platform,
+        filePath: videoIndex.filePath,
+        duration: videoIndex.duration,
+        status: videoIndex.status,
+      })
+      .from(videoIndex)
+      .where(inArray(videoIndex.id, unique));
+    return new Map(rows.map((r) => [r.id, r]));
+  }
+
+  async getVideoTitles(ids: number[]): Promise<Map<number, string>> {
+    const unique = Array.from(new Set(ids.filter((n) => Number.isFinite(n))));
+    if (unique.length === 0) return new Map();
+    const rows = await db
+      .select({ id: videoIndex.id, title: videoIndex.title })
+      .from(videoIndex)
+      .where(inArray(videoIndex.id, unique));
+    return new Map(rows.map((r) => [r.id, r.title]));
+  }
+
+  /**
+   * The admin review queue's rows — only the columns it renders.
+   *
+   * `select()` on saved_placements drags transform, blend, keyframes and
+   * applies_to_group_ids jsonb across for every row. Keyframe arrays on a
+   * motion-tracked placement are long, and none of it reaches the response.
+   */
+  async getReviewQueuePlacements(): Promise<Array<{
+    id: number; videoId: number; createdBy: string;
+    hasImage: boolean;
+    reviewStatus: string | null; reviewNote: string | null; createdAt: Date | null;
+  }>> {
+    // THE IMAGE COLUMNS DO NOT LEAVE THE DATABASE HERE.
+    //
+    // harmonization.ts stores its output as `data:image/png;base64,...` — a
+    // FULL-SCENE PNG composite inlined into the column, base64 (+33%), so a
+    // single row can carry several megabytes. This query selected both image
+    // columns for up to 500 rows and the route serialised the lot into one
+    // JSON response. Twenty harmonized placements is already tens of
+    // megabytes; the client gives up at 30s having rendered nothing.
+    //
+    // The queue draws these at 40x40. It needs to know an image EXISTS, not
+    // what it contains — so the row carries a boolean and the <img> points at
+    // the per-placement thumbnail route, which serves one image, cacheable,
+    // on demand.
+    return db
+      .select({
+        id: savedPlacements.id,
+        videoId: savedPlacements.videoId,
+        createdBy: savedPlacements.createdBy,
+        hasImage: sql<boolean>`(${savedPlacements.harmonizedImageUrl} IS NOT NULL OR ${savedPlacements.productImageUrl} IS NOT NULL)`,
+        reviewStatus: savedPlacements.reviewStatus,
+        reviewNote: savedPlacements.reviewNote,
+        createdAt: savedPlacements.createdAt,
+      })
+      .from(savedPlacements)
+      .where(eq(savedPlacements.status, "active"))
+      .orderBy(desc(savedPlacements.createdAt))
+      .limit(200);
+  }
+
+  /** One placement's review image, fetched only when a thumbnail asks for it. */
+  async getPlacementReviewImage(id: number): Promise<{ harmonizedImageUrl: string | null; productImageUrl: string | null } | undefined> {
+    const [row] = await db
+      .select({
+        harmonizedImageUrl: savedPlacements.harmonizedImageUrl,
+        productImageUrl: savedPlacements.productImageUrl,
+      })
+      .from(savedPlacements)
+      .where(eq(savedPlacements.id, id))
+      .limit(1);
+    return row as any;
+  }
+
+  /**
+   * Does this creator have ANY placement? A count, not the rows.
+   *
+   * The onboarding checklist called getPlacementsByCreator — an unprojected
+   * select() — and then evaluated `placements.length > 0`. Unprojected means
+   * harmonized_image_url comes too, and that column holds multi-megabyte
+   * base64 PNG composites, so answering one boolean pulled the creator's
+   * entire harmonized image history across the wire from a remote Postgres.
+   * On every page load.
+   */
+  async countPlacementsByCreator(email: string): Promise<number> {
+    const [row] = await db
+      .select({ n: sql<number>`COUNT(*)::int` })
+      .from(savedPlacements)
+      .where(eq(savedPlacements.createdBy, email));
+    return Number(row?.n ?? 0);
+  }
+
+  /**
+   * Placement identity for a set of videos, batched and WITHOUT the image
+   * columns — enough to answer "has the creator framed this surface yet?".
+   * The inbox asked that question with a per-placement unprojected fetch, so
+   * it paid N round trips AND N image blobs to compute a boolean per row.
+   */
+  async getPlacementIdentityForVideos(videoIds: number[]): Promise<Map<number, Array<{
+    id: number; videoId: number; surfaceId: number | null; editorialClipId: number | null;
+    productId: number | null; status: string;
+  }>>> {
+    const unique = Array.from(new Set(videoIds.filter((n) => Number.isFinite(n))));
+    if (unique.length === 0) return new Map();
+    const rows = await db
+      .select({
+        id: savedPlacements.id,
+        videoId: savedPlacements.videoId,
+        surfaceId: savedPlacements.surfaceId,
+        editorialClipId: savedPlacements.editorialClipId,
+        productId: savedPlacements.productId,
+        status: savedPlacements.status,
+      })
+      .from(savedPlacements)
+      .where(inArray(savedPlacements.videoId, unique));
+    const out = new Map<number, any[]>();
+    for (const r of rows) {
+      const list = out.get(r.videoId) ?? [];
+      list.push(r);
+      out.set(r.videoId, list);
+    }
+    return out as any;
+  }
+
+  /**
+   * Active placements WITHOUT the two image columns.
+   *
+   * getAllActivePlacements is an unprojected select() with no limit, so
+   * /api/placements pulled every active placement on the platform — each
+   * carrying a full-scene harmonized PNG and a raw creator upload, both base64
+   * — out of Postgres and into one JSON response. That is the same defect that
+   * made the review queue time out, except unbounded: it grows with platform
+   * age until res.json() hits V8's max string length and throws outright.
+   *
+   * Callers get booleans; the bytes come from the per-placement thumb route.
+   */
+  async getActivePlacementsLean(limit = 500): Promise<any[]> {
+    const rows = await db
+      .select({
+        id: savedPlacements.id,
+        videoId: savedPlacements.videoId,
+        surfaceId: savedPlacements.surfaceId,
+        editorialClipId: savedPlacements.editorialClipId,
+        productId: savedPlacements.productId,
+        createdBy: savedPlacements.createdBy,
+        role: savedPlacements.role,
+        bidId: savedPlacements.bidId,
+        sceneGroupId: savedPlacements.sceneGroupId,
+        appliesToGroupIds: savedPlacements.appliesToGroupIds,
+        transform: savedPlacements.transform,
+        blend: savedPlacements.blend,
+        keyframes: savedPlacements.keyframes,
+        status: savedPlacements.status,
+        reviewStatus: savedPlacements.reviewStatus,
+        reviewNote: savedPlacements.reviewNote,
+        isHarmonized: savedPlacements.isHarmonized,
+        createdAt: savedPlacements.createdAt,
+        hasProductImage: sql<boolean>`(${savedPlacements.productImageUrl} IS NOT NULL)`,
+        hasHarmonized: sql<boolean>`(${savedPlacements.harmonizedImageUrl} IS NOT NULL)`,
+      })
+      .from(savedPlacements)
+      .where(eq(savedPlacements.status, "active"))
+      .orderBy(desc(savedPlacements.createdAt))
+      .limit(limit);
+    return rows as any[];
   }
 
   async getAllActivePlacements(): Promise<SavedPlacement[]> {
@@ -1147,6 +3550,26 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  async getSharedLinkByBrandPlacement(brandPlacementId: number): Promise<SharedLink | undefined> {
+    // Any status — callers must check isActive. A deliberately deactivated
+    // release link must BLOCK re-minting, not be silently replaced.
+    const [result] = await db
+      .select()
+      .from(sharedLinks)
+      .where(eq(sharedLinks.brandPlacementId, brandPlacementId))
+      .orderBy(desc(sharedLinks.createdAt))
+      .limit(1);
+    return result;
+  }
+
+  async getSharedLinkById(id: number): Promise<SharedLink | undefined> {
+    const [result] = await db
+      .select()
+      .from(sharedLinks)
+      .where(eq(sharedLinks.id, id));
+    return result;
+  }
+
   async incrementSharedLinkViews(slug: string): Promise<void> {
     await db
       .update(sharedLinks)
@@ -1237,7 +3660,204 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(remixJobs.createdAt));
   }
 
+  /** All jobs for one video, newest first. Scoped by VIDEO rather than by the
+   *  caller's derived integer id — see the note on GET /api/remix/video/:id/jobs. */
+  async getRemixJobsForVideo(videoId: number): Promise<RemixJob[]> {
+    return db.select().from(remixJobs)
+      .where(eq(remixJobs.videoId, videoId))
+      .orderBy(desc(remixJobs.createdAt));
+  }
+
+  async getActiveRemixJobForVideo(videoId: number): Promise<RemixJob | undefined> {
+    // "Active" = any non-terminal status (queued or step_N). Used to prevent a
+    // second concurrent pipeline for the same video.
+    const [result] = await db.select().from(remixJobs)
+      .where(and(
+        eq(remixJobs.videoId, videoId),
+        ne(remixJobs.status, "completed"),
+        ne(remixJobs.status, "failed"),
+        ne(remixJobs.status, "cancelled"),
+      ))
+      .orderBy(desc(remixJobs.createdAt))
+      .limit(1);
+    return result;
+  }
+
+  async failInterruptedRemixJobs(): Promise<number> {
+    // Any job not in a terminal state at startup was left mid-flight by a
+    // previous process (crash/redeploy). Its in-memory pipeline is gone, so it
+    // will never progress — mark it failed so the UI unblocks.
+    // NOTE: SQL `<>` is NULL-hostile — a NULL status would slip past the ne()
+    // chain, so it is matched explicitly (no writer inserts NULL today, but a
+    // NULL row would otherwise be an unsweepable permanently-"active" brick).
+    const result = await db.update(remixJobs)
+      .set({ status: "failed", errorMessage: "Interrupted by server restart", completedAt: new Date() })
+      .where(or(
+        and(
+          ne(remixJobs.status, "completed"),
+          ne(remixJobs.status, "failed"),
+          ne(remixJobs.status, "cancelled"),
+        ),
+        sql`${remixJobs.status} IS NULL`,
+      ))
+      .returning({ id: remixJobs.id });
+    return result.length;
+  }
+
+  async failInterruptedStitchPlans(): Promise<number> {
+    // Same restart-sweep as remix jobs, for highlight-reel stitch plans: a
+    // plan left 'generating' by a dead process never progresses, and the UI
+    // polls it forever. The stitch flow creates its remixJob row only after
+    // success, so the remix-job sweep can't catch these.
+    const result = await db.update(stitchPlans)
+      .set({ status: "failed", errorMessage: "Interrupted by server restart" })
+      .where(eq(stitchPlans.status, "generating"))
+      .returning({ id: stitchPlans.id });
+    return result.length;
+  }
+
+  /**
+   * Recurring sweep: a publish row still "publishing" past the platform
+   * upload deadline was orphaned by a dead process (the detached job that
+   * would have finalized it is gone). Flip it to failed so the job view
+   * settles and the duplicate guard stops refusing a retry.
+   */
+  async failStalePublishingPosts(staleMinutes: number = 25): Promise<number> {
+    const res: any = await db.execute(sql`
+      UPDATE published_posts
+      SET status = 'failed',
+          error_message = 'The upload did not finish — the server restarted mid-publish. Check the platform before publishing again.'
+      WHERE status = 'publishing'
+        AND created_at < NOW() - (${staleMinutes} * INTERVAL '1 minute')
+    `);
+    const count = Number(res?.rowCount ?? 0);
+    if (count > 0) console.log(`[Sweep] failStalePublishingPosts: failed ${count} orphaned publish row(s)`);
+    return count;
+  }
+
+  /**
+   * Recurring sweep: an editorial clip "rendering" far longer than any real
+   * render was stranded by a restart. Failing it (rather than leaving it
+   * spinning forever) is what lets Retry / Resume pick it up.
+   */
+  async failStaleClipRenders(staleMinutes: number = 30): Promise<number> {
+    const res: any = await db.execute(sql`
+      UPDATE editorial_clips
+      SET render_status = 'failed',
+          render_error = 'Render interrupted — the server restarted mid-render. Retry to render again.'
+      WHERE render_status = 'rendering'
+        AND COALESCE(render_started_at, created_at) < NOW() - (${staleMinutes} * INTERVAL '1 minute')
+    `);
+    const count = Number(res?.rowCount ?? 0);
+    if (count > 0) console.log(`[Sweep] failStaleClipRenders: failed ${count} stranded clip render(s)`);
+    return count;
+  }
+
+  // ── Notifications ────────────────────────────────────────────────
+
+  /** Expand a user key to its dual-ID aliases (users.id UUID + email). */
+  private async notificationAliases(userId: string): Promise<string[]> {
+    const aliases = [userId];
+    try {
+      const user = await this.getUserById(userId);
+      if (user?.email && user.email !== userId) aliases.push(user.email);
+      if (!user) {
+        const byEmail = await this.getUserByEmail(userId);
+        if (byEmail?.id && byEmail.id !== userId) aliases.push(byEmail.id);
+      }
+    } catch { /* fall back to the raw key */ }
+    return aliases;
+  }
+
+  async createNotification(data: { userId: string; type: string; title: string; body?: string | null; linkPath?: string | null; metadata?: Record<string, any> | null }): Promise<void> {
+    try {
+      await db.insert(notifications).values({
+        userId: data.userId,
+        type: data.type,
+        title: data.title,
+        body: data.body ?? null,
+        linkPath: data.linkPath ?? null,
+        metadata: data.metadata ?? null,
+      });
+    } catch (err: any) {
+      // Notifications are best-effort — never fail the emitting flow.
+      console.warn("[Storage] createNotification failed (non-fatal):", err?.message);
+    }
+  }
+
+  async getNotificationsForUser(userId: string, limit: number = 30): Promise<any[]> {
+    const aliases = await this.notificationAliases(userId);
+    return db.select().from(notifications)
+      .where(inArray(notifications.userId, aliases))
+      .orderBy(desc(notifications.createdAt))
+      .limit(limit);
+  }
+
+  async getUnreadNotificationCount(userId: string): Promise<number> {
+    const aliases = await this.notificationAliases(userId);
+    const rows = await db.select({ count: sql<number>`count(*)` }).from(notifications)
+      .where(and(inArray(notifications.userId, aliases), sql`${notifications.readAt} IS NULL`));
+    return Number(rows[0]?.count || 0);
+  }
+
+  async markNotificationRead(id: number, userId: string): Promise<boolean> {
+    const aliases = await this.notificationAliases(userId);
+    const result = await db.update(notifications)
+      .set({ readAt: new Date() })
+      .where(and(eq(notifications.id, id), inArray(notifications.userId, aliases)))
+      .returning({ id: notifications.id });
+    return result.length > 0;
+  }
+
+  async markPlacementNotificationsRead(placementId: number): Promise<void> {
+    // Acting on a placement (approve/reject) consumes its request
+    // notification — matches both the batched placementIds array and the
+    // legacy single placementId shape.
+    try {
+      await db.update(notifications)
+        .set({ readAt: new Date() })
+        .where(and(
+          sql`${notifications.readAt} IS NULL`,
+          sql`((${notifications.metadata} -> 'placementIds') @> ${JSON.stringify([placementId])}::jsonb OR (${notifications.metadata} ->> 'placementId')::int = ${placementId})`,
+        ));
+    } catch (err: any) {
+      console.warn("[Storage] markPlacementNotificationsRead failed (non-fatal):", err?.message);
+    }
+  }
+
+  async markAllNotificationsRead(userId: string): Promise<number> {
+    const aliases = await this.notificationAliases(userId);
+    const result = await db.update(notifications)
+      .set({ readAt: new Date() })
+      .where(and(inArray(notifications.userId, aliases), sql`${notifications.readAt} IS NULL`))
+      .returning({ id: notifications.id });
+    return result.length;
+  }
+
+  /** Persist how many clips a job actually produced. remix_jobs.clip_count has
+   *  existed since the table was created and nothing ever wrote it, so a
+   *  5-clip success and a 0-clip success were identical rows. */
+  async setRemixJobClipCount(jobId: number, clipCount: number): Promise<void> {
+    await db.update(remixJobs).set({ clipCount }).where(eq(remixJobs.id, jobId));
+  }
+
   async updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined> {
+    // Terminal states are (almost) sticky. During a redeploy the old and new
+    // processes overlap (reusePort): the new process's startup sweep may mark a
+    // job "failed" while the old process is still rendering it — its next
+    // step_N write must NOT resurrect the row into a live-looking status the
+    // client would poll forever. Sole allowed terminal→terminal transition:
+    // failed → completed (the old process actually finishing is the truth).
+    const TERMINAL = ["completed", "failed", "cancelled"];
+    const [current] = await db.select({ status: remixJobs.status }).from(remixJobs)
+      .where(eq(remixJobs.id, jobId));
+    if (current && TERMINAL.includes(current.status ?? "")) {
+      const allowed = current.status === "failed" && status === "completed";
+      if (!allowed && current.status !== status) {
+        console.warn(`[Storage] Ignoring remix job ${jobId} status ${current.status} → ${status} (terminal state is sticky)`);
+        return undefined;
+      }
+    }
     const updates: any = { status };
     if (errorMessage) updates.errorMessage = errorMessage;
     // Set completedAt on any terminal state. Historical note: this used to check
@@ -1318,6 +3938,16 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(stitchPlans.createdAt));
   }
 
+  // Cross-video, one query. Filter by the caller's video allowlist, never by
+  // stitchPlans.userId — that column is a stableUserIntId hash that differs
+  // between the UUID and email forms of the same account.
+  async getStitchPlansByVideoIds(videoIds: number[]): Promise<StitchPlan[]> {
+    if (videoIds.length === 0) return [];
+    return db.select().from(stitchPlans)
+      .where(inArray(stitchPlans.videoId, videoIds))
+      .orderBy(desc(stitchPlans.createdAt));
+  }
+
   async updateStitchPlanStatus(
     planId: number,
     status: string,
@@ -1345,8 +3975,32 @@ export class DatabaseStorage implements IStorage {
   // ── Editorial Clips Methods ──
 
   async saveEditorialClips(videoId: number, userId: number, clips: any[]): Promise<EditorialClip[]> {
-    // Delete existing clips for this video first (re-analysis replaces old results)
-    await db.delete(editorialClips).where(eq(editorialClips.videoId, videoId));
+    // Re-analysis replaces old results — but NOT clips that other rows now
+    // point at. published_posts, clip_analytics and publishing_schedules gained
+    // real FK constraints to editorial_clips.id (with no onDelete), so a blanket
+    // `DELETE WHERE video_id = X` throws a foreign-key violation the moment a
+    // video has ever had an editorial clip published, scheduled, or measured —
+    // which bricked Regenerate on exactly the creator's most active videos.
+    //
+    // Keep referenced clips (they are the creator's real publish/schedule
+    // history and must survive) and delete only the unreferenced candidates.
+    const referenced = new Set<number>();
+    for (const table of [publishedPosts, clipAnalytics, publishingSchedules]) {
+      const rows = await db
+        .select({ id: (table as any).editorialClipId })
+        .from(table as any)
+        .where(isNotNull((table as any).editorialClipId));
+      for (const r of rows) if (r.id != null) referenced.add(r.id as number);
+    }
+
+    if (referenced.size === 0) {
+      await db.delete(editorialClips).where(eq(editorialClips.videoId, videoId));
+    } else {
+      await db.delete(editorialClips).where(and(
+        eq(editorialClips.videoId, videoId),
+        notInArray(editorialClips.id, [...referenced]),
+      ));
+    }
 
     if (clips.length === 0) return [];
 
@@ -1365,6 +4019,7 @@ export class DatabaseStorage implements IStorage {
       surfaces: clip.surfaces ?? null,
       brandMatches: clip.brandMatches ?? null,
       editPoints: clip.editPoints ?? null,
+      segments: clip.segments ?? null,
       suggestedTitle: clip.suggestedTitle ?? null,
       topicTags: clip.topicTags ?? null,
       reasoning: clip.reasoning ?? null,
@@ -1381,8 +4036,146 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(editorialClips.finalScore));
   }
 
+  /**
+   * Batched variants — one query for MANY videos, grouped by caller.
+   *
+   * The Reel Builder picker needs every clip across all a creator's videos.
+   * Fetching per-video (getClipsByVideo in a loop) is a textbook N+1: 82 videos
+   * became 166 round trips and a 3.4s response. One IN() query each instead.
+   */
+  async getClipsByVideoIds(videoIds: number[]): Promise<GeneratedClip[]> {
+    if (videoIds.length === 0) return [];
+    return db.select().from(generatedClips)
+      .where(inArray(generatedClips.videoId, videoIds))
+      .orderBy(desc(generatedClips.createdAt));
+  }
+
+  async getEditorialClipsByVideoIds(videoIds: number[]): Promise<EditorialClip[]> {
+    if (videoIds.length === 0) return [];
+    return db.select().from(editorialClips)
+      .where(inArray(editorialClips.videoId, videoIds))
+      .orderBy(desc(editorialClips.finalScore));
+  }
+
+  /**
+   * Get a single editorial clip by ID — used by brand browsing flow when a
+   * brand opens a clip's detail/placement-request modal.
+   */
+  async getEditorialClipById(clipId: number): Promise<EditorialClip | undefined> {
+    const rows = await db.select().from(editorialClips)
+      .where(eq(editorialClips.id, clipId))
+      .limit(1);
+    return rows[0];
+  }
+
+  /**
+   * Browse all rendered editorial clips across the platform — used for the
+   * brand marketplace view. Returns clips that have been successfully rendered
+   * and are ready for brand placement requests. Joined minimally with video
+   * metadata for the card view.
+   */
+  async getBrowsableEditorialClips(opts: { limit?: number; offset?: number } = {}): Promise<
+    Array<EditorialClip & { videoTitle: string | null; videoThumbnailUrl: string | null; creatorUserId: string }>
+  > {
+    const limit = Math.min(opts.limit ?? 50, 200);
+    const offset = opts.offset ?? 0;
+
+    const rows = await db
+      .select({
+        clip: editorialClips,
+        videoTitle: videoIndex.title,
+        videoThumbnailUrl: videoIndex.thumbnailUrl,
+        creatorUserId: videoIndex.userId,
+      })
+      .from(editorialClips)
+      .innerJoin(videoIndex, eq(editorialClips.videoId, videoIndex.id))
+      .where(
+        and(
+          eq(editorialClips.renderStatus, "rendered"),
+          // Don't show clips from soft-deleted videos
+          sql`${videoIndex.deletedAt} IS NULL`,
+          // Creator-consent gate (same rule as the marketplace query): a
+          // creator's content reaches brand browsing only once they've
+          // APPROVED at least one surface on the video.
+          sql`EXISTS (SELECT 1 FROM detected_surfaces ds WHERE ds.video_id = ${videoIndex.id} AND ds.creator_approved = true AND ds.surface_type != 'Filtered')`,
+        ),
+      )
+      .orderBy(desc(editorialClips.finalScore))
+      .limit(limit)
+      .offset(offset);
+
+    return rows.map((r) => ({
+      ...r.clip,
+      videoTitle: r.videoTitle,
+      videoThumbnailUrl: r.videoThumbnailUrl,
+      creatorUserId: r.creatorUserId,
+    }));
+  }
+
+  /**
+   * Get surfaces that fall within an editorial clip's time range.
+   * Used by the brand placement request modal so brands only see surfaces
+   * that are actually visible in the clip they're targeting.
+   */
+  async getSurfacesInEditorialClip(clipId: number): Promise<DetectedSurface[]> {
+    const clip = await this.getEditorialClipById(clipId);
+    if (!clip) return [];
+    const rows = await db
+      .select()
+      .from(detectedSurfaces)
+      .where(
+        and(
+          eq(detectedSurfaces.videoId, clip.videoId),
+          sql`${detectedSurfaces.timestamp}::numeric >= ${clip.clipStart}::numeric`,
+          sql`${detectedSurfaces.timestamp}::numeric <= ${clip.clipEnd}::numeric`,
+        ),
+      )
+      .orderBy(detectedSurfaces.timestamp);
+
+    // Assembled clips: the envelope query above includes un-played gaps —
+    // only surfaces inside an actual beat exist in the rendered clip, and
+    // only those may be shown/sold to brands as placement inventory.
+    const segs = clip.segments as Array<{ start: number; end: number }> | null;
+    if (segs && segs.length > 0) {
+      return rows.filter((s) => {
+        const t = parseFloat(String(s.timestamp));
+        return segs.some((seg) => t >= seg.start && t <= seg.end);
+      });
+    }
+    return rows;
+  }
+
   async deleteEditorialClipsByVideo(videoId: number): Promise<void> {
     await db.delete(editorialClips).where(eq(editorialClips.videoId, videoId));
+  }
+
+  /** Persist the creator's edit settings (and trim) for a clip. Kept separate
+   *  from updateEditorialClipRender so a render-status write can never clobber
+   *  a setting the creator just changed. */
+  async updateEditorialClipEdit(
+    clipId: number,
+    updates: {
+      clipStart?: number;
+      clipEnd?: number;
+      duration?: number;
+      captionsEnabled?: boolean;
+      captionStyle?: string | null;
+      captionSettings?: any;
+      aspectRatio?: string | null;
+      segments?: any;
+      edits?: any;
+      silenceAnalysis?: any;
+      renderWarnings?: string[];
+    },
+  ): Promise<EditorialClip | undefined> {
+    const patch: Record<string, any> = {};
+    for (const [k, v] of Object.entries(updates)) {
+      if (v !== undefined) patch[k] = v;
+    }
+    if (Object.keys(patch).length === 0) return this.getEditorialClipById(clipId);
+    const [row] = await db.update(editorialClips).set(patch)
+      .where(eq(editorialClips.id, clipId)).returning();
+    return row;
   }
 
   async updateEditorialClipRender(
@@ -1393,15 +4186,20 @@ export class DatabaseStorage implements IStorage {
       aspectRatio?: string | null;
       renderStatus?: "pending" | "rendering" | "rendered" | "failed";
       renderError?: string | null;
+      /** Post-render quality rubric score (0-1); null = scoring failed */
+      qualityScore?: number | null;
     }
   ): Promise<EditorialClip | undefined> {
     const patch: Record<string, any> = {};
+    if (updates.qualityScore !== undefined && updates.qualityScore !== null) patch.qualityScore = updates.qualityScore;
     if (updates.exportPath !== undefined) patch.exportPath = updates.exportPath;
     if (updates.thumbnailPath !== undefined) patch.thumbnailPath = updates.thumbnailPath;
     if (updates.aspectRatio !== undefined) patch.aspectRatio = updates.aspectRatio;
     if (updates.renderStatus !== undefined) patch.renderStatus = updates.renderStatus;
     if (updates.renderError !== undefined) patch.renderError = updates.renderError;
     if (updates.renderStatus === "rendered") patch.renderedAt = new Date();
+    // Per-clip heartbeat for the stale-render sweep and the job view.
+    if (updates.renderStatus === "rendering") patch.renderStartedAt = new Date();
 
     const [result] = await db.update(editorialClips)
       .set(patch)
@@ -1425,6 +4223,15 @@ export class DatabaseStorage implements IStorage {
     else if (updates.completedAt !== undefined) patch.editorialCompletedAt = updates.completedAt;
 
     await db.update(videoIndex).set(patch).where(eq(videoIndex.id, videoId));
+  }
+
+  /**
+   * Batch-render heartbeat. The pipeline's staleness rule reads
+   * video_index.updated_at, but a batch only wrote it once at "rendering" —
+   * so a 10-clip render looked dead after 5 minutes. Touched per clip.
+   */
+  async touchVideoEditorialHeartbeat(videoId: number): Promise<void> {
+    await db.update(videoIndex).set({ updatedAt: new Date() }).where(eq(videoIndex.id, videoId));
   }
 
   // ── Generated Asset Methods ──
@@ -1476,28 +4283,77 @@ export class DatabaseStorage implements IStorage {
   // ── Distribution Profile Methods ──
 
   async createDistributionProfile(data: InsertDistributionProfile): Promise<DistributionProfile> {
-    const [result] = await db.insert(distributionProfiles).values(data).returning();
-    return result;
+    const [result] = await db.insert(distributionProfiles).values(encryptProfileTokens(data)).returning();
+    return decryptProfileTokens(result)!;
   }
 
   async getDistributionProfiles(userId: number): Promise<DistributionProfile[]> {
-    return db.select().from(distributionProfiles)
+    const rows = await db.select().from(distributionProfiles)
       .where(and(eq(distributionProfiles.userId, userId), eq(distributionProfiles.isActive, true)))
       .orderBy(desc(distributionProfiles.createdAt));
+    return rows.map(r => decryptProfileTokens(r)!);
   }
 
   async getDistributionProfile(id: number): Promise<DistributionProfile | undefined> {
     const [result] = await db.select().from(distributionProfiles)
       .where(eq(distributionProfiles.id, id)).limit(1);
-    return result;
+    return decryptProfileTokens(result);
   }
 
   async updateDistributionProfile(id: number, data: Partial<InsertDistributionProfile>): Promise<DistributionProfile | undefined> {
     const [result] = await db.update(distributionProfiles)
-      .set({ ...data, updatedAt: new Date() })
+      .set({ ...encryptProfileTokens(data), updatedAt: new Date() })
       .where(eq(distributionProfiles.id, id))
       .returning();
-    return result;
+    return decryptProfileTokens(result);
+  }
+
+  /**
+   * Make a distribution profile safe to delete.
+   *
+   * publishing_schedules.profile_id is NOT NULL with a foreign key, so any
+   * queued post blocks the delete outright. published_posts.profile_id is
+   * nullable and holds the creator's own posting history, which must survive
+   * them switching platforms.
+   */
+  /** Remove a user's connections for specific platforms. Returns the count. */
+  async deleteSocialAccountsByPlatforms(userId: string, platforms: string[]): Promise<number> {
+    if (platforms.length === 0) return 0;
+    const rows = await db
+      .delete(socialAccounts)
+      .where(and(
+        eq(socialAccounts.userId, userId),
+        inArray(socialAccounts.platform, platforms),
+      ))
+      .returning({ id: socialAccounts.id });
+    return rows.length;
+  }
+
+  async detachProfileReferences(profileId: number): Promise<{ cancelledSchedules: number; keptPosts: number }> {
+    // Anything already sent keeps its row; it just stops pointing at a profile
+    // that no longer exists.
+    const posts = await db
+      .update(publishedPosts)
+      .set({ profileId: null })
+      .where(eq(publishedPosts.profileId, profileId))
+      .returning({ id: publishedPosts.id });
+
+    // Anything NOT yet sent is cancelled — silently publishing to a
+    // disconnected account later would be worse than not publishing.
+    const pending = await db
+      .delete(publishingSchedules)
+      .where(and(
+        eq(publishingSchedules.profileId, profileId),
+        inArray(publishingSchedules.status, ["pending", "processing"]),
+      ))
+      .returning({ id: publishingSchedules.id });
+
+    // Terminal rows (completed / failed / cancelled) still hold the FK, and
+    // NOT NULL means they cannot be detached — so they go too. Their outcome
+    // is already recorded in published_posts, which survives above.
+    await db.delete(publishingSchedules).where(eq(publishingSchedules.profileId, profileId));
+
+    return { cancelledSchedules: pending.length, keptPosts: posts.length };
   }
 
   async deleteDistributionProfile(id: number): Promise<void> {
@@ -1525,11 +4381,163 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(publishedPosts.createdAt));
   }
 
+  /**
+   * The last SUCCESSFUL publish of one clip to one profile, or undefined.
+   *
+   * Exists to answer "have we already uploaded this?" before uploading again.
+   * Source-aware on purpose: remix and editorial clips have independent serial
+   * ids, so editorial clip 130 and remix clip 130 both exist and are different
+   * videos. Matching on the id alone would refuse a legitimate publish because
+   * an unrelated clip happened to share a number.
+   *
+   * Only published/dry_run count. A previous FAILED attempt should not block a
+   * retry — that is the case the creator is explicitly trying to fix.
+   */
+  async findPublishedPostForClip(
+    clipId: number,
+    source: "remix" | "editorial",
+    profileId: number,
+  ): Promise<PublishedPost | undefined> {
+    const clipMatch = source === "editorial"
+      ? eq(publishedPosts.editorialClipId, clipId)
+      : eq(publishedPosts.clipId, clipId);
+    const [result] = await db.select().from(publishedPosts)
+      .where(and(
+        clipMatch,
+        eq(publishedPosts.profileId, profileId),
+        inArray(publishedPosts.status, ["published", "dry_run"]),
+      ))
+      .orderBy(desc(publishedPosts.createdAt))
+      .limit(1);
+    return result;
+  }
+
   async getPublishedPostsByVideo(videoId: number): Promise<PublishedPost[]> {
     return db.select().from(publishedPosts)
       .where(eq(publishedPosts.videoId, videoId))
       .orderBy(desc(publishedPosts.createdAt));
   }
+
+  // Profile-independent (unlike getPublishedPostsByUser, which only sees
+  // active profiles): posts stay attached to their video for the feed.
+  async getPublishedPostsByVideoIds(videoIds: number[]): Promise<PublishedPost[]> {
+    if (videoIds.length === 0) return [];
+    return db.select().from(publishedPosts)
+      .where(inArray(publishedPosts.videoId, videoIds))
+      .orderBy(desc(publishedPosts.createdAt));
+  }
+
+  /**
+   * The durable half of the duplicate-publish guard: a `publishing` row
+   * younger than the upload deadline means an upload is in progress — on
+   * this server, another server, or one that has since restarted.
+   */
+  async findInFlightPublishForClip(
+    clipId: number,
+    source: "remix" | "editorial",
+    profileId: number,
+    maxAgeMs: number,
+  ): Promise<PublishedPost | undefined> {
+    const clipMatch = source === "editorial"
+      ? eq(publishedPosts.editorialClipId, clipId)
+      : eq(publishedPosts.clipId, clipId);
+    const since = new Date(Date.now() - maxAgeMs);
+    const [result] = await db.select().from(publishedPosts)
+      .where(and(
+        clipMatch,
+        eq(publishedPosts.profileId, profileId),
+        eq(publishedPosts.status, "publishing"),
+        gte(publishedPosts.createdAt, since),
+      ))
+      .orderBy(desc(publishedPosts.createdAt))
+      .limit(1);
+    return result;
+  }
+
+  /**
+   * Latest analytics row per post, batched. The feed asks about every
+   * published post at once; one query per post would be an N+1 on a list.
+   */
+  async getAnalyticsByPostIds(postIds: number[]): Promise<ClipAnalytics[]> {
+    if (postIds.length === 0) return [];
+    // DISTINCT ON in the database, not "fetch the whole history and throw
+    // most of it away in JS". clip_analytics is append-only and the capture
+    // job now adds a row per post every 6 hours, so the history it would
+    // have shipped grows without bound while the feed only ever wants the
+    // newest row per post. Uses idx_clip_analytics_post_time.
+    const res: any = await db.execute(sql`
+      SELECT DISTINCT ON (post_id) *
+      FROM clip_analytics
+      WHERE post_id IN (${sql.join(postIds.map((id) => sql`${id}`), sql`, `)})
+      ORDER BY post_id, fetched_at DESC
+    `);
+    const rows = (res?.rows ?? res ?? []) as any[];
+    // db.execute returns snake_case columns; map the ones callers read.
+    return rows.map((r) => ({
+      ...r,
+      postId: r.post_id ?? r.postId,
+      clipId: r.clip_id ?? r.clipId ?? null,
+      editorialClipId: r.editorial_clip_id ?? r.editorialClipId ?? null,
+      clipSource: r.clip_source ?? r.clipSource ?? null,
+      engagementRate: r.engagement_rate ?? r.engagementRate ?? null,
+      watchTimeSeconds: r.watch_time_seconds ?? r.watchTimeSeconds ?? null,
+      completionRate: r.completion_rate ?? r.completionRate ?? null,
+      clickThroughRate: r.click_through_rate ?? r.clickThroughRate ?? null,
+      fetchedAt: r.fetched_at ?? r.fetchedAt ?? null,
+    })) as ClipAnalytics[];
+  }
+
+  /**
+   * Posts the capture job can actually ask a platform about. Bounded to the
+   * last 90 days: an unbounded set means the job's cost grows forever, and a
+   * two-year-old post's counters have long stopped moving.
+   */
+  async getCollectablePublishedPosts(sinceDays: number = 90, limit: number = 500): Promise<PublishedPost[]> {
+    const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+    return db.select().from(publishedPosts)
+      .where(and(
+        eq(publishedPosts.status, "published"),
+        isNotNull(publishedPosts.platformPostId),
+        isNotNull(publishedPosts.profileId),
+        gte(publishedPosts.publishedAt, since),
+      ))
+      .orderBy(desc(publishedPosts.publishedAt))
+      .limit(limit);
+  }
+
+  /** Click totals per placement, batched, for the results panels. */
+  async getLinkClickCountsForPlacements(placementIds: number[]): Promise<Map<number, number>> {
+    const out = new Map<number, number>();
+    if (placementIds.length === 0) return out;
+    const rows = await db
+      .select({ placementId: linkClicks.placementId, n: sql<number>`count(*)::int` })
+      .from(linkClicks)
+      .where(inArray(linkClicks.placementId, placementIds))
+      .groupBy(linkClicks.placementId);
+    for (const r of rows) out.set(r.placementId, Number(r.n) || 0);
+    return out;
+  }
+
+  /**
+   * NOT IMPLEMENTED, on purpose. An automatic "the term ran out" sweep was
+   * written here and removed, because `expires_at` is stamped when the BRAND
+   * submits the request — not when the creator approves and not when the
+   * video goes live — and writing `expired` has three consequences the rest
+   * of the system does not expect:
+   *
+   *   1. `expired` is not in ACTIVE_PLACEMENT_STATUSES, so the surface would
+   *      silently become available for another brand to buy while the
+   *      product is still on air.
+   *   2. `expired` is not in getApprovedPlacementsForVideo, so the next
+   *      re-render would drop a product the audience is currently seeing.
+   *   3. A creator who served the full term would watch the amount move to
+   *      "not proceeding" and get struck through.
+   *
+   * The consequence of NOT sweeping is that a lapsed term keeps counting as
+   * accrued. That overstates a number nobody is being paid on yet, which is
+   * the smaller error. Re-anchor expires_at to approval (or to go-live) and
+   * decide what a served term should do to inventory before reviving this.
+   */
 
   async getPublishedPostsByUser(userId: number): Promise<PublishedPost[]> {
     const profiles = await this.getDistributionProfiles(userId);
@@ -1551,13 +4559,22 @@ export class DatabaseStorage implements IStorage {
     if (platformPostId) updateData.platformPostId = platformPostId;
     if (postUrl) updateData.postUrl = postUrl;
     if (errorMessage) updateData.errorMessage = errorMessage;
-    if (status === "published") updateData.publishedAt = new Date();
+    // dry_run is a completed publish too (the insert path always stamped it).
+    if (status === "published" || status === "dry_run") updateData.publishedAt = new Date();
 
     const [result] = await db.update(publishedPosts)
       .set(updateData)
       .where(eq(publishedPosts.id, postId))
       .returning();
     return result;
+  }
+
+  async updatePublishedPostFields(postId: number, patch: { caption?: string | null; hashtags?: string[] }): Promise<void> {
+    const updateData: Record<string, any> = {};
+    if (patch.caption !== undefined) updateData.caption = patch.caption;
+    if (patch.hashtags !== undefined) updateData.hashtags = patch.hashtags;
+    if (Object.keys(updateData).length === 0) return;
+    await db.update(publishedPosts).set(updateData).where(eq(publishedPosts.id, postId));
   }
 
   // ── Clip Analytics Methods ──
@@ -1573,13 +4590,36 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(clipAnalytics.fetchedAt));
   }
 
-  async getAnalyticsByClip(clipId: number): Promise<ClipAnalytics[]> {
+  /**
+   * Analytics for one clip. The source matters: remix and editorial ids are
+   * independent serial sequences, so filtering on clipId alone returned a
+   * different clip's numbers whenever the ids happened to collide — and
+   * returned nothing at all for editorial clips, which live in the other column.
+   */
+  async getAnalyticsByClip(clipId: number, source: "remix" | "editorial" = "remix"): Promise<ClipAnalytics[]> {
     return db.select().from(clipAnalytics)
-      .where(eq(clipAnalytics.clipId, clipId))
+      .where(source === "editorial"
+        ? eq(clipAnalytics.editorialClipId, clipId)
+        : eq(clipAnalytics.clipId, clipId))
       .orderBy(desc(clipAnalytics.fetchedAt));
   }
 
+  /**
+   * Every analytics row for a video, keyed through the POSTS rather than
+   * through generated_clips ids. The old version filtered on clipId IN
+   * (remix clip ids), so an editorial post — which writes clipId NULL and
+   * editorialClipId instead — could never appear in a video's aggregate no
+   * matter how many rows it had.
+   */
   async getAnalyticsSummaryByVideo(videoId: number): Promise<ClipAnalytics[]> {
+    const posts = await this.getPublishedPostsByVideo(videoId);
+    if (posts.length === 0) return [];
+    return db.select().from(clipAnalytics)
+      .where(inArray(clipAnalytics.postId, posts.map((p) => p.id)))
+      .orderBy(desc(clipAnalytics.fetchedAt));
+  }
+
+  private async _legacyAnalyticsSummaryByClip(videoId: number): Promise<ClipAnalytics[]> {
     const clips = await this.getClipsByVideo(videoId);
     if (clips.length === 0) return [];
     const clipIds = clips.map(c => c.id);
@@ -1627,10 +4667,120 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async cancelSchedule(scheduleId: number): Promise<void> {
-    await db.update(publishingSchedules)
+  async cancelSchedule(scheduleId: number, userId?: number): Promise<boolean> {
+    // When userId is provided the cancel is ownership-scoped — a caller can
+    // only cancel their own schedule (returns false on someone else's id).
+    const conditions = [eq(publishingSchedules.id, scheduleId)];
+    if (userId !== undefined) conditions.push(eq(publishingSchedules.userId, userId));
+    const result = await db.update(publishingSchedules)
       .set({ status: "cancelled" })
-      .where(eq(publishingSchedules.id, scheduleId));
+      .where(and(...conditions))
+      .returning({ id: publishingSchedules.id });
+    return result.length > 0;
+  }
+
+  async claimSchedule(scheduleId: number): Promise<boolean> {
+    // Atomic compare-and-set claim: only one process wins the row even when
+    // two schedulers overlap (Replit reusePort redeploy overlap). Without
+    // this, both processes read the same pending list and double-publish.
+    const result = await db.update(publishingSchedules)
+      .set({ status: "processing" })
+      .where(and(
+        eq(publishingSchedules.id, scheduleId),
+        eq(publishingSchedules.status, "pending"),
+      ))
+      .returning({ id: publishingSchedules.id });
+    return result.length > 0;
+  }
+
+  /**
+   * Boot sweep: any video stuck in "Scanning" longer than the threshold is
+   * an orphan (scans hard-cap around 10 minutes; a crashed/redeployed
+   * process can never finish one). Flip to an honest failed state so the
+   * creator can rescan instead of staring at a frozen spinner forever.
+   */
+  async failStuckScans(staleMinutes: number = 30): Promise<number> {
+    const res: any = await db.execute(sql`
+      UPDATE video_index
+      SET status = 'Scan Failed — Interrupted', updated_at = NOW()
+      WHERE status = 'Scanning'
+        AND updated_at < NOW() - (${staleMinutes} * INTERVAL '1 minute')
+    `);
+    const count = Number(res?.rowCount ?? 0);
+    if (count > 0) console.log(`[Startup] failStuckScans: released ${count} stuck scan(s)`);
+    return count;
+  }
+
+  async normalizeLegacyIdentityKeys(): Promise<Record<string, number>> {
+    // Dual-ID root migration, applied as an idempotent boot sweep: rewrite
+    // email-keyed identity columns to users.id wherever a users row exists.
+    // Rows whose email has no users row stay email-keyed and remain covered
+    // by the alias lookups (isSameCreator / getVideoIndex match sets), which
+    // are deliberately KEPT as a safety net. Writers that still produce
+    // email keys (YouTube indexer, some auth fallbacks) converge on the
+    // next boot. Excluded on purpose: youtube_connections (email-keyed by
+    // design, consumers fully alias-aware — normalizing would duplicate
+    // rows on reconnect) and int-keyed tables (stableUserIntId domain).
+    const results: Record<string, number> = {};
+    // brand_products must convert in lockstep with placements.brandUserId:
+    // the delegated-product flow compares brandProducts.userId to
+    // placement.brandUserId directly — converting one side only breaks it.
+    const sweeps: Array<{ table: string; column: string; label: string; guard?: string }> = [
+      { table: "video_index", column: "user_id", label: "videoIndex.userId" },
+      { table: "brand_placement_assignments", column: "creator_user_id", label: "placements.creatorUserId" },
+      { table: "brand_placement_assignments", column: "brand_user_id", label: "placements.brandUserId" },
+      { table: "monetization_items", column: "creator_user_id", label: "monetizationItems.creatorUserId" },
+      { table: "brand_products", column: "user_id", label: "brandProducts.userId" },
+      {
+        table: "social_accounts", column: "user_id", label: "socialAccounts.userId",
+        // A user who reconnected post-dual-ID already has a users.id-keyed
+        // twin for the same platform account; converting the email row would
+        // violate idx_social_accounts_unique and roll back the WHOLE
+        // statement (every user's rows) on every boot. Skip rows whose
+        // converged form already exists — the twin holds the fresher token
+        // and the email row stays covered by the alias lookups.
+        guard: `AND NOT EXISTS (
+            SELECT 1 FROM social_accounts s2
+            WHERE s2.user_id = u.id
+              AND s2.platform = t.platform
+              AND s2.account_type = t.account_type
+              AND s2.platform_account_id = t.platform_account_id
+          )`,
+      },
+    ];
+    for (const { table, column, label, guard } of sweeps) {
+      try {
+        const res: any = await db.execute(sql`
+          UPDATE ${sql.raw(`"${table}"`)} t
+          SET ${sql.raw(`"${column}"`)} = u.id
+          FROM users u
+          WHERE t.${sql.raw(`"${column}"`)} LIKE '%@%'
+            AND lower(t.${sql.raw(`"${column}"`)}) = lower(u.email)
+            ${sql.raw(guard || "")}
+        `);
+        const count = Number(res?.rowCount ?? 0);
+        results[label] = count;
+        if (count > 0) console.log(`[IdentityMigration] ${label}: normalized ${count} row(s) to users.id`);
+      } catch (err: any) {
+        console.warn(`[IdentityMigration] ${label} sweep failed (non-fatal):`, err?.message);
+        results[label] = -1;
+      }
+    }
+    return results;
+  }
+
+  async cancelOrphanedLegacySchedules(): Promise<number> {
+    // Pre-stableUserIntId rows were all keyed userId=1 (the old
+    // `req.user?.id || 1` fallback) — no real user maps to them now, so a
+    // pending one would fire posts nobody can see or cancel.
+    const result = await db.update(publishingSchedules)
+      .set({ status: "cancelled", errorMessage: "Orphaned legacy schedule (pre-identity-fix userId=1)" })
+      .where(and(
+        eq(publishingSchedules.userId, 1),
+        eq(publishingSchedules.status, "pending"),
+      ))
+      .returning({ id: publishingSchedules.id });
+    return result.length;
   }
 
   // ─── Video Transcript Methods ──────────────────────────────────
@@ -1790,6 +4940,116 @@ export class DatabaseStorage implements IStorage {
       );
   }
 
+  // ─── Room Model Methods (persistent set memory) ─────
+
+  // Every room model owned by any of the given identities. Creator identity
+  // is split across users.id and legacy email keys, so the CALLER passes the
+  // full alias list it wants merged (the scanner sends video.userId plus the
+  // canonical id when they differ) — this method is plain equality, no alias
+  // resolution of its own.
+  async getRoomModelsForUsers(userIds: string[]): Promise<RoomModel[]> {
+    if (userIds.length === 0) return [];
+    return await db
+      .select()
+      .from(roomModels)
+      .where(inArray(roomModels.userId, userIds));
+  }
+
+  async getRoomModelById(id: number): Promise<RoomModel | undefined> {
+    const [model] = await db
+      .select()
+      .from(roomModels)
+      .where(eq(roomModels.id, id));
+    return model;
+  }
+
+  // Whole-table read for the operator console. Set memory is invisible
+  // everywhere else — a model built from a degraded scan keeps confirming
+  // itself onto every future episode, and nothing prunes it — so the admin
+  // view needs every row, not one creator's. Freshest confirmation first.
+  async getAllRoomModels(): Promise<RoomModel[]> {
+    return await db
+      .select()
+      .from(roomModels)
+      .orderBy(desc(roomModels.updatedAt));
+  }
+
+  async insertRoomModel(model: InsertRoomModel): Promise<RoomModel> {
+    const [result] = await db
+      .insert(roomModels)
+      .values(model)
+      .returning();
+    return result;
+  }
+
+  async updateRoomModel(id: number, patch: {
+    sceneExemplarHashes?: string[];
+    surfaces?: unknown;
+    lastVideoId?: number;
+    episodeCount?: number;
+  }): Promise<void> {
+    const setValues: Record<string, any> = { updatedAt: new Date() };
+    if (patch.sceneExemplarHashes !== undefined) setValues.sceneExemplarHashes = patch.sceneExemplarHashes;
+    if (patch.surfaces !== undefined) setValues.surfaces = patch.surfaces;
+    if (patch.lastVideoId !== undefined) setValues.lastVideoId = patch.lastVideoId;
+    if (patch.episodeCount !== undefined) setValues.episodeCount = patch.episodeCount;
+    await db
+      .update(roomModels)
+      .set(setValues)
+      .where(eq(roomModels.id, id));
+  }
+
+  // Append one surface to a model's jsonb list under the append-only idx
+  // rule: next idx = max existing idx + 1, computed over the RAW entries so
+  // even a malformed entry's idx is never reused (the groupId
+  // "rm{modelId}-s{idx}" must stay unambiguous forever). Reads the row fresh
+  // rather than trusting a caller-held copy, so a scan upsert landing between
+  // the caller's read and this write can't be clobbered. Returns the idx the
+  // surface landed at.
+  async appendRoomModelSurface(modelId: number, surface: {
+    surfaceType: string;
+    orientation: "horizontal" | "vertical";
+    bbox: { x: number; y: number; w: number; h: number };
+    confidence: number;
+    frameUrl: string | null;
+    taught?: boolean;
+  }): Promise<number> {
+    const [model] = await db
+      .select()
+      .from(roomModels)
+      .where(eq(roomModels.id, modelId));
+    if (!model) throw new Error(`Room model ${modelId} not found`);
+    const existing = Array.isArray(model.surfaces) ? (model.surfaces as any[]) : [];
+    const nextIdx = existing.reduce(
+      (mx, s) => (s && typeof s.idx === "number" && Number.isFinite(s.idx) ? Math.max(mx, s.idx) : mx),
+      -1,
+    ) + 1;
+    await db
+      .update(roomModels)
+      .set({ surfaces: [...existing, { idx: nextIdx, ...surface }], updatedAt: new Date() })
+      .where(eq(roomModels.id, modelId));
+    return nextIdx;
+  }
+
+  // Forget one set. Detected surfaces already written by past scans stay —
+  // only the memory that would re-confirm them on the next scan goes, so the
+  // next scan of that room rediscovers it from scratch.
+  // Returns whether a row actually went away, so the route can 404 a stale
+  // id instead of reporting a deletion that never happened.
+  async deleteRoomModel(id: number): Promise<boolean> {
+    const gone = await db.delete(roomModels).where(eq(roomModels.id, id)).returning({ id: roomModels.id });
+    return gone.length > 0;
+  }
+
+  // Forget every set on the platform. Returns how many models were dropped
+  // so the operator sees what the reset actually cost.
+  async deleteAllRoomModels(): Promise<number> {
+    const deleted = await db
+      .delete(roomModels)
+      .returning({ id: roomModels.id });
+    return deleted.length;
+  }
+
   // Creator profile methods
   async getFeaturedCreators(): Promise<AllowedUser[]> {
     return await db
@@ -1808,7 +5068,7 @@ export class DatabaseStorage implements IStorage {
 
   async updateCreatorProfile(
     email: string,
-    updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string }
+    updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string; cardImageUrl?: string | null }
   ): Promise<void> {
     const normalizedEmail = email.toLowerCase().trim();
     await db
@@ -1919,7 +5179,7 @@ export class DatabaseStorage implements IStorage {
         .from(studioVoices)
         .where(and(
           eq(studioVoices.isActive, true),
-          sql`${studioVoices.tier} = ANY(${allowedTiers})`
+          inArray(studioVoices.tier, allowedTiers)
         ));
     }
     return await db
@@ -2013,7 +5273,11 @@ export class DatabaseStorage implements IStorage {
 
   async hasApprovedStudioAccess(email: string): Promise<boolean> {
     const normalized = email.toLowerCase().trim();
-    if (["martin@gofullscale.co"].includes(normalized)) return true;
+    // Admins always have Studio access. This was the single literal
+    // "martin@gofullscale.co", which meant every other admin had to add
+    // themselves to the waitlist, and a move to the .ai identity would have
+    // silently revoked access. ADMIN_EMAILS is the canonical list.
+    if (ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(normalized)) return true;
     const [entry] = await db
       .select({ status: studioWaitlist.status })
       .from(studioWaitlist)
@@ -2025,6 +5289,29 @@ export class DatabaseStorage implements IStorage {
       )
       .limit(1);
     return !!entry;
+  }
+
+  /** Every early-access request, newest first — the admin queue. */
+  async getStudioWaitlistEntries(): Promise<StudioWaitlistEntry[]> {
+    return db.select().from(studioWaitlist).orderBy(desc(studioWaitlist.submittedAt));
+  }
+
+  /**
+   * Approve or decline a request. Writes reviewedAt/reviewedBy, which the
+   * schema declared and nothing ever set. Approving is what actually grants
+   * Studio access — hasApprovedStudioAccess reads this status.
+   */
+  async setStudioWaitlistStatus(
+    id: number,
+    status: "approved" | "rejected" | "pending",
+    reviewedBy: string,
+  ): Promise<StudioWaitlistEntry | undefined> {
+    const [row] = await db
+      .update(studioWaitlist)
+      .set({ status, reviewedAt: new Date(), reviewedBy })
+      .where(eq(studioWaitlist.id, id))
+      .returning();
+    return row;
   }
 
   // ── Brand Brief Methods ──────────────────────────────────────────────
@@ -2080,6 +5367,351 @@ export class DatabaseStorage implements IStorage {
       .where(eq(brandBriefs.userId, userId))
       .returning();
     return result;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Admin analytics aggregates — batched roll-ups for the operator surfaces
+  // (/api/admin/creator-intelligence, /api/admin/data-inventory).
+  //
+  // Every method is ONE query per table, GROUP BY the RAW identity key —
+  // never a query per creator (the per-account loop in the old operator
+  // roster was the same N+1 shape that exhausted the pool in prod, see
+  // getSurfaceCountsForVideos). Identity columns are mixed-key (users.id
+  // UUID or legacy email — the dual-ID reality identityMatchValues handles
+  // per-user); the route folds the raw-keyed rows onto canonical users.id
+  // via an alias map built once from the users table.
+  // ══════════════════════════════════════════════════════════════════════
+
+  /** Lightweight full roster — identity + join date only, no auth fields. */
+  async getAllUserIdentities(): Promise<Array<{
+    id: string;
+    email: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    createdAt: Date | null;
+  }>> {
+    return await db
+      .select({
+        id: users.id,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        createdAt: users.createdAt,
+      })
+      .from(users)
+      .orderBy(users.createdAt);
+  }
+
+  /**
+   * Per-owner video supply + editorial roll-up in one GROUP BY: scanned
+   * videos (status LIKE 'Ready%' — statuses are "Ready (12 Spots)" style),
+   * editorial clip totals, and the sceneInventory JSON aggregation (scene
+   * classes + sellable screen time). Sellable seconds count each scene's
+   * totalSec once, and only for scenes that carry at least one surface —
+   * screen time with nothing to sell on it isn't inventory.
+   */
+  async getCreatorSupplyAggregates(): Promise<Array<{
+    userId: string;
+    videosScanned: number;
+    clipsGenerated: number;
+    clipsRendered: number;
+    sceneClasses: number;
+    sellableSec: number;
+  }>> {
+    const scenes = sql`${videoIndex.sceneInventory}->'scenes'`;
+    const rows = await db
+      .select({
+        userId: videoIndex.userId,
+        // Legacy 'Scan Complete' rows are scanned too — same status band the
+        // marketplace queries use, so a legacy-only creator can't show
+        // Videos=0 while contributing surfaces and scenes.
+        videosScanned: sql<number>`count(*) FILTER (WHERE ${videoIndex.status} LIKE 'Ready%' OR ${videoIndex.status} = 'Scan Complete')::int`,
+        clipsGenerated: sql<number>`COALESCE(SUM(${videoIndex.editorialClipCount}), 0)::int`,
+        sceneClasses: sql<number>`COALESCE(SUM(CASE WHEN jsonb_typeof(${scenes}) = 'array' THEN jsonb_array_length(${scenes}) ELSE 0 END), 0)::int`,
+        sellableSec: sql<number>`COALESCE(SUM(CASE WHEN jsonb_typeof(${scenes}) = 'array' THEN (
+          SELECT COALESCE(SUM((sc->>'totalSec')::double precision), 0)
+          FROM jsonb_array_elements(${scenes}) sc
+          WHERE jsonb_typeof(sc->'surfaces') = 'array' AND jsonb_array_length(sc->'surfaces') > 0
+        ) ELSE 0 END), 0)::double precision`,
+      })
+      .from(videoIndex)
+      .where(sql`${videoIndex.deletedAt} IS NULL`)
+      .groupBy(videoIndex.userId);
+
+    // Rendered = actual editorial_clips rows with render_status 'rendered'
+    // — the same definition the data-inventory card uses, so the two admin
+    // surfaces reconcile. (The video-level editorialStatus proxy both over-
+    // and under-counted: failed clips on a 'ready' video counted, rendered
+    // clips on a later-'failed' video didn't.)
+    const renderedRows = await db
+      .select({
+        userId: videoIndex.userId,
+        clipsRendered: sql<number>`count(*)::int`,
+      })
+      .from(editorialClips)
+      .innerJoin(videoIndex, eq(videoIndex.id, editorialClips.videoId))
+      .where(and(
+        sql`${editorialClips.renderStatus} = 'rendered'`,
+        sql`${videoIndex.deletedAt} IS NULL`,
+      ))
+      .groupBy(videoIndex.userId);
+    const renderedByUser = new Map(renderedRows.map((r) => [r.userId, Number(r.clipsRendered)]));
+
+    return rows.map((r) => ({
+      userId: r.userId,
+      videosScanned: Number(r.videosScanned),
+      clipsGenerated: Number(r.clipsGenerated),
+      clipsRendered: renderedByUser.get(r.userId) ?? 0,
+      sceneClasses: Number(r.sceneClasses),
+      sellableSec: Number(r.sellableSec),
+    }));
+  }
+
+  /**
+   * Per-owner canonical-surface counts. Same COALESCE fallback + Filtered
+   * exclusion as getSurfaceCountsForVideos, with video_id folded into the
+   * legacy composite so pre-grouping rows can't collide across videos in a
+   * cross-video GROUP BY. Group-id semantics here are DELIBERATE: fresh
+   * g{videoId}-... ids embed the video, so per-episode surfaces count per
+   * episode — but room-model rm{modelId}-s{idx} ids are identical across
+   * every rescan and episode of the same set, so a recurring studio desk
+   * counts as ONE canonical surface no matter how many episodes it appears
+   * in. That matches the product meaning of "canonical surface" (a
+   * physical thing, not a per-video sighting); per-video counts and the
+   * placement group-match are videoId-scoped and unaffected.
+   * surfacesApproved counts a canonical surface once ANY member row is
+   * creator-approved — approval is a per-surface toggle, but member rows
+   * written before the toggle flip stay false.
+   */
+  async getCreatorSurfaceAggregates(): Promise<Array<{
+    userId: string;
+    canonicalSurfaces: number;
+    surfacesApproved: number;
+  }>> {
+    const groupExpr = sql`COALESCE(${detectedSurfaces.surfaceGroupId}, ${detectedSurfaces.videoId}::text || ':' || ${detectedSurfaces.surfaceType} || ':' || COALESCE(${detectedSurfaces.sceneId}, 0)::text)`;
+    const rows = await db
+      .select({
+        userId: videoIndex.userId,
+        canonicalSurfaces: sql<number>`count(DISTINCT ${groupExpr})::int`,
+        surfacesApproved: sql<number>`count(DISTINCT ${groupExpr}) FILTER (WHERE ${detectedSurfaces.creatorApproved})::int`,
+      })
+      .from(detectedSurfaces)
+      .innerJoin(videoIndex, eq(videoIndex.id, detectedSurfaces.videoId))
+      .where(and(
+        ne(detectedSurfaces.surfaceType, "Filtered"),
+        sql`${videoIndex.deletedAt} IS NULL`,
+      ))
+      .groupBy(videoIndex.userId);
+    return rows.map((r) => ({
+      userId: r.userId,
+      canonicalSurfaces: Number(r.canonicalSurfaces),
+      surfacesApproved: Number(r.surfacesApproved),
+    }));
+  }
+
+  /**
+   * Placement funnel per creator key: total brand requests (any status) and
+   * creator-approved-onward (creator_approved → pending_brand_review →
+   * brand_approved — same "approved by the creator" band
+   * getApprovedPlacementsForVideo renders from).
+   */
+  async getCreatorPlacementFunnelAggregates(): Promise<Array<{
+    userId: string;
+    brandRequests: number;
+    placementsApproved: number;
+  }>> {
+    const rows = await db
+      .select({
+        userId: brandPlacementAssignments.creatorUserId,
+        brandRequests: sql<number>`count(*)::int`,
+        placementsApproved: sql<number>`count(*) FILTER (WHERE ${brandPlacementAssignments.status} IN ('creator_approved', 'pending_brand_review', 'brand_approved'))::int`,
+      })
+      .from(brandPlacementAssignments)
+      .groupBy(brandPlacementAssignments.creatorUserId);
+    return rows.map((r) => ({
+      userId: r.userId,
+      brandRequests: Number(r.brandRequests),
+      placementsApproved: Number(r.placementsApproved),
+    }));
+  }
+
+  /**
+   * Released A1 pages per creator key — shared_links minted against a brand
+   * placement (brand_placement_id NOT NULL, enforced by the inner join).
+   */
+  async getCreatorReleaseCounts(): Promise<Array<{ userId: string; released: number }>> {
+    const rows = await db
+      .select({
+        userId: brandPlacementAssignments.creatorUserId,
+        released: sql<number>`count(*)::int`,
+      })
+      .from(sharedLinks)
+      .innerJoin(brandPlacementAssignments, eq(brandPlacementAssignments.id, sharedLinks.brandPlacementId))
+      .groupBy(brandPlacementAssignments.creatorUserId);
+    return rows.map((r) => ({ userId: r.userId, released: Number(r.released) }));
+  }
+
+  /** Raw identity keys with a connected social account, platform tagged.
+   *  Deliberately skips token columns — no decrypt work for a coverage flag. */
+  async getSocialCoverageKeys(): Promise<Array<{ userId: string; platform: string }>> {
+    return await db
+      .select({ userId: socialAccounts.userId, platform: socialAccounts.platform })
+      .from(socialAccounts);
+  }
+
+  /** Raw identity keys holding a YouTube OAuth connection (mixed id/email). */
+  async getYoutubeConnectionKeys(): Promise<string[]> {
+    const rows = await db
+      .select({ userId: youtubeConnections.userId })
+      .from(youtubeConnections);
+    return rows.map((r) => r.userId);
+  }
+
+  /**
+   * Latest insight snapshot per (RAW identity key, platform account). The
+   * snapshot job writes one row PER connected Meta account (IG and FB) per
+   * cycle, all sharing user_id — DISTINCT ON user_id alone would collapse a
+   * multi-account creator to whichever account captured most recently, and
+   * the winner flips between cycles. The route sums accounts per canonical
+   * user instead.
+   */
+  async getLatestInsightSnapshotPerUser(): Promise<Array<{
+    userId: string;
+    platformAccountId: string;
+    followers: number | null;
+    metrics: unknown;
+    capturedAt: Date | null;
+  }>> {
+    return await db
+      .selectDistinctOn(
+        [socialInsightSnapshots.userId, socialInsightSnapshots.platformAccountId],
+        {
+          userId: socialInsightSnapshots.userId,
+          platformAccountId: socialInsightSnapshots.platformAccountId,
+          followers: socialInsightSnapshots.followers,
+          metrics: socialInsightSnapshots.metrics,
+          capturedAt: socialInsightSnapshots.capturedAt,
+        },
+      )
+      .from(socialInsightSnapshots)
+      .orderBy(
+        socialInsightSnapshots.userId,
+        socialInsightSnapshots.platformAccountId,
+        desc(socialInsightSnapshots.capturedAt),
+      );
+  }
+
+  /**
+   * Live table census for /api/admin/data-inventory. COUNTS ONLY — no raw
+   * platform-metric values leave this method, so nothing downstream can leak
+   * Meta/YouTube numbers into an exportable surface. Same-table counts are
+   * merged into single statements (14 small queries total, admin-only path).
+   */
+  async getDataInventoryCounts(): Promise<{
+    users: { rowCount: number; last30d: number };
+    allowlistByType: Record<string, number>;
+    videos: { rowCount: number; last30d: number; ready: number; sceneClasses: number; sellableSec: number };
+    surfaces: { rowCount: number; last30d: number; canonical: number };
+    savedPlacements: { rowCount: number; last30d: number };
+    assignments: { rowCount: number; last30d: number; priced: number; pricedLast30d: number };
+    assignmentsByStatus: Record<string, number>;
+    editorialClips: { rowCount: number; last30d: number; rendered: number };
+    sharedLinks: { rowCount: number; last30d: number; releasePages: number };
+    insightSnapshots: { rowCount: number; last30d: number };
+    socialAccounts: { rowCount: number; last30d: number };
+    youtubeConnections: { rowCount: number; last30d: number };
+    brandMatchScores: { rowCount: number; last30d: number };
+    sceneAnalysis: { rowCount: number; last30d: number };
+    brandProducts: { rowCount: number; last30d: number };
+  }> {
+    const recent = (col: any) => sql<number>`count(*) FILTER (WHERE ${col} >= now() - interval '30 days')::int`;
+    const scenes = sql`${videoIndex.sceneInventory}->'scenes'`;
+    const canonicalExpr = sql`COALESCE(${detectedSurfaces.surfaceGroupId}, ${detectedSurfaces.videoId}::text || ':' || ${detectedSurfaces.surfaceType} || ':' || COALESCE(${detectedSurfaces.sceneId}, 0)::text)`;
+    const pricedCond = sql`(COALESCE(${brandPlacementAssignments.placementFeeCents}, 0) > 0 OR COALESCE(${brandPlacementAssignments.customFeeCents}, 0) > 0 OR ${brandPlacementAssignments.pricingBreakdown} IS NOT NULL)`;
+
+    // Two waves of <=8: the pool caps at 10 connections, and a 15-wide
+    // burst behind an already-busy pool (scans, renders) can queue past the
+    // 10s acquire timeout and 500 the whole endpoint.
+    const [
+      [usersRow], allowlistRows, [videosRow], [surfacesRow], [savedRow],
+      [assignRow], assignStatusRows, [editorialRow],
+    ] = await Promise.all([
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(users.createdAt) }).from(users),
+      db.select({ userType: allowedUsers.userType, count: sql<number>`count(*)::int` })
+        .from(allowedUsers).groupBy(allowedUsers.userType),
+      db.select({
+        rowCount: sql<number>`count(*)::int`,
+        last30d: recent(videoIndex.createdAt),
+        ready: sql<number>`count(*) FILTER (WHERE ${videoIndex.status} LIKE 'Ready%' OR ${videoIndex.status} = 'Scan Complete')::int`,
+        sceneClasses: sql<number>`COALESCE(SUM(CASE WHEN jsonb_typeof(${scenes}) = 'array' THEN jsonb_array_length(${scenes}) ELSE 0 END), 0)::int`,
+        sellableSec: sql<number>`COALESCE(SUM(CASE WHEN jsonb_typeof(${scenes}) = 'array' THEN (
+          SELECT COALESCE(SUM((sc->>'totalSec')::double precision), 0)
+          FROM jsonb_array_elements(${scenes}) sc
+          WHERE jsonb_typeof(sc->'surfaces') = 'array' AND jsonb_array_length(sc->'surfaces') > 0
+        ) ELSE 0 END), 0)::double precision`,
+      }).from(videoIndex).where(sql`${videoIndex.deletedAt} IS NULL`),
+      db.select({
+        rowCount: sql<number>`count(*)::int`,
+        last30d: recent(detectedSurfaces.createdAt),
+        canonical: sql<number>`count(DISTINCT ${canonicalExpr})::int`,
+      }).from(detectedSurfaces).where(ne(detectedSurfaces.surfaceType, "Filtered")),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(savedPlacements.createdAt) }).from(savedPlacements),
+      db.select({
+        rowCount: sql<number>`count(*)::int`,
+        last30d: recent(brandPlacementAssignments.createdAt),
+        priced: sql<number>`count(*) FILTER (WHERE ${pricedCond})::int`,
+        pricedLast30d: sql<number>`count(*) FILTER (WHERE ${pricedCond} AND ${brandPlacementAssignments.createdAt} >= now() - interval '30 days')::int`,
+      }).from(brandPlacementAssignments),
+      db.select({ status: brandPlacementAssignments.status, count: sql<number>`count(*)::int` })
+        .from(brandPlacementAssignments).groupBy(brandPlacementAssignments.status),
+      db.select({
+        rowCount: sql<number>`count(*)::int`,
+        last30d: recent(editorialClips.createdAt),
+        rendered: sql<number>`count(*) FILTER (WHERE ${editorialClips.renderStatus} = 'rendered')::int`,
+      }).from(editorialClips),
+    ]);
+    const [
+      [linksRow], [snapshotsRow], [socialRow], [ytRow],
+      [matchRow], [sceneAnalysisRow], [productsRow],
+    ] = await Promise.all([
+      db.select({
+        rowCount: sql<number>`count(*)::int`,
+        last30d: recent(sharedLinks.createdAt),
+        releasePages: sql<number>`count(*) FILTER (WHERE ${sharedLinks.brandPlacementId} IS NOT NULL)::int`,
+      }).from(sharedLinks),
+      // captured_at is the snapshots table's row-creation stamp (defaultNow at insert)
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(socialInsightSnapshots.capturedAt) }).from(socialInsightSnapshots),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(socialAccounts.createdAt) }).from(socialAccounts),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(youtubeConnections.createdAt) }).from(youtubeConnections),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(brandMatchScores.createdAt) }).from(brandMatchScores),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(sceneAnalysis.createdAt) }).from(sceneAnalysis),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(brandProducts.createdAt) }).from(brandProducts),
+    ]);
+
+    const n = (v: unknown) => Number(v ?? 0);
+    return {
+      users: { rowCount: n(usersRow?.rowCount), last30d: n(usersRow?.last30d) },
+      allowlistByType: Object.fromEntries(allowlistRows.map((r) => [r.userType ?? "unknown", n(r.count)])),
+      videos: {
+        rowCount: n(videosRow?.rowCount), last30d: n(videosRow?.last30d),
+        ready: n(videosRow?.ready), sceneClasses: n(videosRow?.sceneClasses), sellableSec: n(videosRow?.sellableSec),
+      },
+      surfaces: { rowCount: n(surfacesRow?.rowCount), last30d: n(surfacesRow?.last30d), canonical: n(surfacesRow?.canonical) },
+      savedPlacements: { rowCount: n(savedRow?.rowCount), last30d: n(savedRow?.last30d) },
+      assignments: {
+        rowCount: n(assignRow?.rowCount), last30d: n(assignRow?.last30d),
+        priced: n(assignRow?.priced), pricedLast30d: n(assignRow?.pricedLast30d),
+      },
+      assignmentsByStatus: Object.fromEntries(assignStatusRows.map((r) => [r.status, n(r.count)])),
+      editorialClips: { rowCount: n(editorialRow?.rowCount), last30d: n(editorialRow?.last30d), rendered: n(editorialRow?.rendered) },
+      sharedLinks: { rowCount: n(linksRow?.rowCount), last30d: n(linksRow?.last30d), releasePages: n(linksRow?.releasePages) },
+      insightSnapshots: { rowCount: n(snapshotsRow?.rowCount), last30d: n(snapshotsRow?.last30d) },
+      socialAccounts: { rowCount: n(socialRow?.rowCount), last30d: n(socialRow?.last30d) },
+      youtubeConnections: { rowCount: n(ytRow?.rowCount), last30d: n(ytRow?.last30d) },
+      brandMatchScores: { rowCount: n(matchRow?.rowCount), last30d: n(matchRow?.last30d) },
+      sceneAnalysis: { rowCount: n(sceneAnalysisRow?.rowCount), last30d: n(sceneAnalysisRow?.last30d) },
+      brandProducts: { rowCount: n(productsRow?.rowCount), last30d: n(productsRow?.last30d) },
+    };
   }
 }
 

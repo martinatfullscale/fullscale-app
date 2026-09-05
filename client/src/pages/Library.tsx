@@ -1,13 +1,14 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { TopBar } from "@/components/TopBar";
 import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2, Trash2, Pencil, Brain, Scissors, Send } from "lucide-react";
-import { useLocation } from "wouter";
-import { SiInstagram, SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
+import { useLocation, useSearch } from "wouter";
+import { SiInstagram, SiYoutube, SiTwitch, SiFacebook, SiTiktok, SiX } from "react-icons/si";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -19,6 +20,7 @@ import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisM
 import NarrativeInsights from "@/components/NarrativeInsights";
 import EditorialClips from "@/components/EditorialClips";
 import RemixStudio from "@/components/RemixStudio";
+
 import DistributionDashboard from "@/components/DistributionDashboard";
 import { VideoPreviewModal } from "@/components/VideoPreviewModal";
 
@@ -43,13 +45,20 @@ interface IndexedVideo {
   updatedAt: string;
   adOpportunities: number;
   filePath?: string | null;
+  /** Scene-inventory rollup from the server: canonical surfaces × recurring
+   *  scenes. Null for videos scanned before the inventory existed — the
+   *  card falls back to the raw adOpportunities count. */
+  sceneSummary?: { sceneCount: number; surfaceCount: number; trackedMinutes: number } | null;
 }
 
-type PlatformFilter = "all" | "youtube" | "instagram" | "twitch" | "facebook" | "fullscale";
+type PlatformFilter = "all" | "youtube" | "instagram" | "twitch" | "tiktok" | "twitter" | "facebook" | "fullscale";
 
 interface VideoIndexResponse {
   videos: IndexedVideo[];
   total: number;
+  /** Echoed by the server when ?as=<email> was honored. Null when the
+   *  admin is viewing their own library. Drives the "Viewing as" banner. */
+  viewingAs?: string | null;
 }
 
 const demoVideoData = [
@@ -206,6 +215,9 @@ interface DisplayVideo {
   thumbnailUrl?: string | null;
   category?: string;
   subcategory?: string | null;
+  youtubeId?: string | null;
+  sourceUrl?: string | null;
+  sceneSummary?: { sceneCount: number; surfaceCount: number; trackedMinutes: number } | null;
 }
 
 function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
@@ -221,7 +233,23 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
       aiText: "Processing..."
     };
   }
-  
+
+  // Scene-inventory rollup is the honest count when the scan produced one:
+  // canonical physical surfaces across recurring scene classes, not the
+  // per-frame detection rows that inflate with sampling density. Null on
+  // videos scanned before the inventory existed — those fall through to
+  // the raw adOpportunities count below.
+  const sceneSummary = (video as any).sceneSummary ?? null;
+  if (sceneSummary && sceneSummary.surfaceCount > 0) {
+    return {
+      status: `${sceneSummary.surfaceCount} surface${sceneSummary.surfaceCount !== 1 ? "s" : ""} · ${sceneSummary.sceneCount} scene${sceneSummary.sceneCount !== 1 ? "s" : ""}`,
+      statusColor: "bg-emerald-500/20 text-emerald-400",
+      statusDot: "bg-emerald-500",
+      aiStatus: "ready",
+      aiText: `${sceneSummary.sceneCount} Scene${sceneSummary.sceneCount !== 1 ? "s" : ""} Indexed`
+    };
+  }
+
   if (adOpportunities > 0) {
     return {
       status: `Ready (${adOpportunities} Spots)`,
@@ -244,13 +272,19 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
     };
   }
   
-  if (dbStatus === "indexed" || dbStatus === "scan failed" || dbStatus === "ready (0 spots)") {
+  // Whole scan-failure family (— Cancelled / — Interrupted / — Source
+  // Unavailable / — Reconnect …) maps to a retryable state so the creator
+  // can rescan instead of the row falling through to "Pending Scan".
+  if (dbStatus === "indexed" || dbStatus.startsWith("scan failed") || dbStatus === "ready (0 spots)") {
+    const failDetail = dbStatus.startsWith("scan failed —") || dbStatus.startsWith("scan failed -")
+      ? (video as any).status.split(/—|-/).slice(1).join("-").trim()
+      : "";
     return {
-      status: "No Surfaces - Retry",
+      status: failDetail ? `Scan Failed — Retry` : "No Surfaces - Retry",
       statusColor: "bg-amber-500/20 text-amber-400",
       statusDot: "bg-amber-500",
       aiStatus: "retry",
-      aiText: "0 Found - Retry"
+      aiText: failDetail || "0 Found - Retry"
     };
   }
   
@@ -307,6 +341,14 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
     thumbnailUrl,
     category: video.category || undefined,
     subcategory: video.subcategory || undefined,
+    // Carry the platform identifiers through so the scene modal's "Watch on
+    // YouTube/Instagram/Facebook" embed button has what it needs.
+    youtubeId: (video as any).youtubeId || (video as any).youtube_id || null,
+    sourceUrl: (video as any).sourceUrl || (video as any).source_url || null,
+    // Scene rollup rides along so the click handler can recognize a
+    // completed scan even when the status badge shows the inventory
+    // counts instead of the legacy "Ready (N Spots)" text.
+    sceneSummary: (video as any).sceneSummary ?? null,
   };
 }
 
@@ -371,8 +413,8 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
 
   const handleApprove = () => {
     toast({
-      title: "Placement Saved",
-      description: "This surface has been approved for brand placement.",
+      title: "Surface Approved",
+      description: "This surface is now visible to brands as a placement option.",
     });
     onClose();
   };
@@ -514,30 +556,62 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
   );
 }
 
-function EmptyLibrary({ onSync, isSyncing }: { onSync: () => void; isSyncing: boolean }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-20 px-8">
-      <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mb-6">
-        <Play className="w-10 h-10 text-muted-foreground" />
+/**
+ * Empty state that knows whether YouTube is connected.
+ *
+ * The old version offered one button — "Sync YouTube Channel" — which cannot
+ * succeed for a creator who hasn't connected YouTube, and hid the two paths
+ * that DO work for them (paste a link, upload a file) even though both are on
+ * the page. Unconnected creators get three equal doors; connected ones get Sync.
+ */
+function EmptyLibrary({ connected, onSync, isSyncing, onConnect, onPaste, onUpload }: {
+  connected: boolean | null;
+  onSync: () => void;
+  isSyncing: boolean;
+  onConnect: () => void;
+  onPaste: () => void;
+  onUpload: () => void;
+}) {
+  if (connected) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 px-8">
+        <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mb-6">
+          <Play className="w-10 h-10 text-muted-foreground" />
+        </div>
+        <h2 className="text-2xl font-bold text-white mb-2">Your Library is Empty</h2>
+        <p className="text-muted-foreground text-center max-w-md mb-8">
+          Your YouTube channel is connected. Sync it to pull in your videos, or paste a link / upload a file above.
+        </p>
+        <Button size="lg" className="gap-2" onClick={onSync} disabled={isSyncing} data-testid="button-sync-channel">
+          {isSyncing ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
+          {isSyncing ? "Syncing Channel..." : "Sync YouTube Channel"}
+        </Button>
       </div>
-      <h2 className="text-2xl font-bold text-white mb-2">Your Library is Empty</h2>
+    );
+  }
+  const Door = ({ icon: Icon, title, body, cta, onClick, testId }: { icon: any; title: string; body: string; cta: string; onClick: () => void; testId: string }) => (
+    <button
+      onClick={onClick}
+      className="flex flex-col items-start gap-3 p-5 rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/20 text-left transition-colors"
+      data-testid={testId}
+    >
+      <span className="w-10 h-10 rounded-lg bg-primary/15 text-primary flex items-center justify-center"><Icon className="w-5 h-5" /></span>
+      <span className="font-semibold text-white">{title}</span>
+      <span className="text-sm text-muted-foreground leading-snug">{body}</span>
+      <span className="mt-auto text-sm font-medium text-primary">{cta} →</span>
+    </button>
+  );
+  return (
+    <div className="flex flex-col items-center justify-center py-16 px-8">
+      <h2 className="text-2xl font-bold text-white mb-2">Bring in your first video</h2>
       <p className="text-muted-foreground text-center max-w-md mb-8">
-        Sync your YouTube channel to import your high-value videos and discover monetization opportunities.
+        Three ways in. Once a video is here, FullScale scans it and cuts your first clips automatically.
       </p>
-      <Button 
-        size="lg" 
-        className="gap-2" 
-        onClick={onSync}
-        disabled={isSyncing}
-        data-testid="button-sync-channel"
-      >
-        {isSyncing ? (
-          <Loader2 className="w-5 h-5 animate-spin" />
-        ) : (
-          <RefreshCw className="w-5 h-5" />
-        )}
-        {isSyncing ? "Syncing Channel..." : "Sync YouTube Channel"}
-      </Button>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full max-w-3xl">
+        <Door icon={Video} title="Connect YouTube" body="Pull your whole channel in and keep it synced." cta="Connect" onClick={onConnect} testId="empty-connect-youtube" />
+        <Door icon={Globe} title="Paste a link" body="A YouTube, TikTok, Twitch or X video URL — no account needed." cta="Paste a link" onClick={onPaste} testId="empty-paste-link" />
+        <Door icon={Upload} title="Upload a file" body="An MP4 from your computer." cta="Upload" onClick={onUpload} testId="empty-upload-file" />
+      </div>
     </div>
   );
 }
@@ -552,6 +626,10 @@ export default function Library() {
   const [selectedVideo, setSelectedVideo] = useState<DisplayVideo | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
+  // URL-paste import (YouTube / Twitch / TikTok / X)
+  const [importUrlValue, setImportUrlValue] = useState("");
+  const [isImportingUrl, setIsImportingUrl] = useState(false);
+  const [searchQuery, setSearchQuery] = useState<string>("");
   const [sceneModalOpen, setSceneModalOpen] = useState(false);
   const [sceneVideo, setSceneVideo] = useState<VideoWithScenes | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
@@ -560,10 +638,47 @@ export default function Library() {
   const [narrativeInsightsOpen, setNarrativeInsightsOpen] = useState(false);
   const [narrativeVideoId, setNarrativeVideoId] = useState<number | null>(null);
   const [remixStudioOpen, setRemixStudioOpen] = useState(false);
+
   const [remixVideoId, setRemixVideoId] = useState<number | null>(null);
   const [distributionOpen, setDistributionOpen] = useState(false);
   const [distributionVideoId, setDistributionVideoId] = useState<number | null>(null);
-  
+
+  // ----- Admin "view as user" -----
+  // Reads ?as=<email> from the URL on mount and any time the URL changes.
+  // When set (and the caller is admin), the library endpoint returns that
+  // user's videos instead of the caller's own. Backed by the server-side
+  // override in GET /api/video-index/with-opportunities.
+  const [viewAsEmail, setViewAsEmail] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    const v = params.get("as");
+    return v ? v.toLowerCase().trim() || null : null;
+  });
+  useEffect(() => {
+    const onPop = () => {
+      const params = new URLSearchParams(window.location.search);
+      const v = params.get("as");
+      setViewAsEmail(v ? v.toLowerCase().trim() || null : null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  /** Strip ?as= from the URL and clear local state — "Return to my library". */
+  const clearViewAs = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("as");
+    window.history.replaceState({}, "", url.toString());
+    setViewAsEmail(null);
+  };
+  /** Set ?as=<email> in the URL and trigger refetch. */
+  const setViewAs = (email: string | null) => {
+    const url = new URL(window.location.href);
+    if (email) url.searchParams.set("as", email);
+    else url.searchParams.delete("as");
+    window.history.replaceState({}, "", url.toString());
+    setViewAsEmail(email);
+  };
+
   // Admin emails for flexible auth fallback (supports URL param bypass in dev)
   const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
   
@@ -598,9 +713,12 @@ export default function Library() {
     console.log(`[Library] hasLocalFile: ${video.hasLocalFile}, filePath: ${video.filePath}, status: ${video.status}`);
     
     // For scanned videos (status contains "Complete" or "Ready"), show scene analysis modal with surfaces
-    // This takes priority over video preview for analyzed content
+    // This takes priority over video preview for analyzed content.
+    // sceneSummary.surfaceCount covers cards whose badge shows the inventory
+    // counts ("3 surfaces · 2 scenes") — that status text contains neither
+    // "Complete" nor "Ready" but the scan is very much done.
     const videoAny = video as any;
-    const adOpportunityCount = videoAny.adOpportunities ?? videoAny.surfaceCount ?? 0;
+    const adOpportunityCount = videoAny.adOpportunities ?? videoAny.surfaceCount ?? videoAny.sceneSummary?.surfaceCount ?? 0;
     const hasCompletedScan = video.status?.toLowerCase().includes('complete') || 
                              video.status?.toLowerCase().includes('ready') ||
                              adOpportunityCount > 0;
@@ -622,10 +740,15 @@ export default function Library() {
     console.log(`[Library] Checking real mode: isRealMode=${isRealMode}, videoId >= 50: ${videoId >= 50}`);
     if (isRealMode && videoId >= 50) {
       try {
-        // Pass admin_email for flexible auth if user is admin
-        const url = isAdminUser 
-          ? `/api/video/${videoId}/surfaces?admin_email=${encodeURIComponent(userEmail)}`
-          : `/api/video/${videoId}/surfaces`;
+        // Pass admin_email for flexible auth if user is admin.
+        // includeUnapproved=true: when the owner is browsing their own
+        // library, show ALL detected surfaces (not just creatorApproved).
+        // Without this, fresh-scanned videos look empty because every new
+        // surface defaults to creatorApproved=false until explicitly
+        // approved via the review UI.
+        const params = new URLSearchParams({ includeUnapproved: "true" });
+        if (isAdminUser && userEmail) params.set("admin_email", userEmail);
+        const url = `/api/video/${videoId}/surfaces?${params.toString()}`;
         console.log(`[Library] Fetching surfaces from: ${url}`);
         const res = await fetch(url, { credentials: "include" });
         console.log(`[Library] Response status: ${res.status}`);
@@ -701,6 +824,9 @@ export default function Library() {
             viewCount: viewCount,
             scenes: finalScenes,
             filePath: video.filePath,
+            youtubeId: (video as any).youtubeId,
+            platform: (video as any).platform,
+            sourceUrl: (video as any).sourceUrl,
           });
           setSceneModalOpen(true);
           return;
@@ -729,6 +855,9 @@ export default function Library() {
       viewCount: viewCount,
       scenes: emptyScene,
       filePath: video.filePath,
+      youtubeId: (video as any).youtubeId,
+      platform: (video as any).platform,
+      sourceUrl: (video as any).sourceUrl,
     });
     setSceneModalOpen(true);
   };
@@ -745,30 +874,57 @@ export default function Library() {
   // Version key to force refetch when demo data changes - increment when adding new videos
   const DEMO_DATA_VERSION = 2;
   
-  const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError, isFetching: isFetchingVideos, refetch: refetchVideos } = useQuery<VideoIndexResponse>({
-    queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail] as const,
+  // Is YouTube connected? Drives the empty state: "Sync" only makes sense
+  // when it is; otherwise the creator needs the other doors (paste / upload).
+  const { data: ytStatus } = useQuery<{ connected: boolean }>({
+    queryKey: ["/api/auth/youtube/status"],
+    queryFn: async () => {
+      const res = await fetchWithTimeout("/api/auth/youtube/status", { credentials: "include" });
+      if (!res.ok) return { connected: false };
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
+  const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError, error: videosError, isFetching: isFetchingVideos, refetch: refetchVideos } = useQuery<VideoIndexResponse>({
+    queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail, viewAsEmail] as const,
     queryFn: async ({ queryKey }) => {
       // Extract isPitchMode and mode from queryKey to avoid stale closure
-      const [, pitchModeFromKey, modeFromKey, , isAdmin, email] = queryKey;
-      
+      const [, pitchModeFromKey, modeFromKey, , isAdmin, email, viewAs] = queryKey;
+
       console.log(`[Library] ===== QUERY FN DEBUG =====`);
       console.log(`[Library] queryKey:`, queryKey);
       console.log(`[Library] pitchModeFromKey: ${pitchModeFromKey}`);
       console.log(`[Library] modeFromKey: ${modeFromKey}`);
-      console.log(`[Library] isAdmin: ${isAdmin}, email: ${email}`);
-      
+      console.log(`[Library] isAdmin: ${isAdmin}, email: ${email}, viewAs: ${viewAs ?? "(self)"}`);
+
       let endpoint = pitchModeFromKey ? "/api/demo/videos" : (modeFromKey === "real" ? "/api/video-index/with-opportunities" : "/api/demo/videos");
-      
-      // Add admin_email param for flexible auth
+
+      // Build query string — preserve existing admin_email behavior + tack
+      // on the new "view as user" param when set. Both are admin-only on
+      // the server side.
+      const params = new URLSearchParams();
       if (!pitchModeFromKey && modeFromKey === "real" && isAdmin && email) {
-        endpoint += `?admin_email=${encodeURIComponent(email as string)}`;
+        params.set("admin_email", email as string);
       }
+      if (!pitchModeFromKey && modeFromKey === "real" && viewAs) {
+        params.set("as", viewAs as string);
+      }
+      const qs = params.toString();
+      if (qs) endpoint += `?${qs}`;
       
       console.log(`[Library] FINAL endpoint: ${endpoint}`);
       console.log(`[Library] Expected: /api/video-index/with-opportunities?admin_email=...`);
       
-      const res = await fetch(endpoint, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch videos");
+      const res = await fetchWithTimeout(endpoint, { credentials: "include" });
+      if (!res.ok) {
+        // Keeping the server's message matters: a hardcoded string here made
+        // every backend failure indistinguishable, and the render below turns
+        // any error into the "connect your channel" empty state — so a broken
+        // library and an empty one looked identical for the whole outage.
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `Failed to load your library (${res.status})`);
+      }
       const data = await res.json();
       
       console.log(`[Library] Videos fetched: ${data.videos?.length} items`);
@@ -781,22 +937,49 @@ export default function Library() {
     // Don't fetch until auth state is resolved — prevents briefly hitting /api/demo/videos
     // when hybridMode is "demo" while auth is still loading after a hard redirect
     enabled: !isAuthLoading || isPitchMode || isUrlAdminBypass,
+    // The server's /api/video-index endpoint kicks off a background IG/FB
+    // thumbnail refresh on each call. Re-poll every 15s so refreshed thumbs
+    // appear on the page without the user having to reload.
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   });
 
   const syncMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/video-index/refresh", { 
+      const res = await fetchWithTimeout("/api/video-index/refresh", {
         method: "POST",
-        credentials: "include" 
+        credentials: "include"
       });
-      if (!res.ok) throw new Error("Failed to sync channel");
+      if (!res.ok) {
+        // The server now says WHY (409 not connected / 502 token refresh
+        // failed) instead of a 200 with indexed:0 that read as "no videos".
+        const body = await res.json().catch(() => ({}));
+        throw new Error(
+          body?.code === "not_connected"
+            ? "YouTube isn't connected yet — connect it in Settings, or paste a video link above."
+            : body?.code === "token_refresh_failed"
+              ? "Your YouTube connection expired. Reconnect it in Settings and sync again."
+              : body?.error || "Failed to sync channel",
+        );
+      }
       return res.json();
     },
     onSuccess: (data) => {
-      toast({
-        title: "Channel Synced",
-        description: `Indexed ${data.indexed || 0} high-value videos from your channel.`,
-      });
+      const indexed = data.indexed || 0;
+      if (indexed === 0) {
+        // Zero indexed usually means YouTube isn't connected yet — a green
+        // "success" here told new users everything worked while their
+        // library stayed empty with no path forward.
+        toast({
+          title: "No videos found",
+          description: "Connect your YouTube channel on the Dashboard first, or paste a video URL above to import one directly.",
+        });
+      } else {
+        toast({
+          title: "Channel Synced",
+          description: `Indexed ${indexed} high-value videos from your channel.`,
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ["videos"] });
     },
     onError: (error: Error) => {
@@ -886,14 +1069,19 @@ export default function Library() {
               next.delete(videoId);
               return next;
             });
+            // Invalidate BOTH the videos list AND this video's surfaces query —
+            // the per-video surfaces query (`['/api/video', id, 'surfaces']`) is
+            // what the SceneAnalysisModal renders, so without invalidation the
+            // bbox overlays don't update until a hard refresh.
             queryClient.invalidateQueries({ queryKey: ["videos"] });
-            
+            queryClient.invalidateQueries({ queryKey: ['/api/video', videoId, 'surfaces'] });
+
             if (video.status?.toLowerCase().includes("ready") && video.adOpportunities > 0) {
               toast({
                 title: "Scan Complete",
                 description: `Found ${video.adOpportunities} ad placement surfaces. Click the video to view details.`,
               });
-            } else if (video.status?.toLowerCase() === "scan failed") {
+            } else if (video.status?.toLowerCase().startsWith("scan failed")) {
               toast({
                 title: "Scan Failed",
                 description: "Could not analyze this video. Please try again.",
@@ -910,7 +1098,11 @@ export default function Library() {
           console.error("Poll error:", err);
         }
       }, 3000);
-      
+
+      // 20-minute polling window (was 2min). Multi-GB uploads can take 8-15min
+      // through Gemini at ~5MB/s with rate-limit backoff. The previous 2min
+      // timeout left the spinner stuck on the thumbnail forever for large files;
+      // user had to hard-refresh to see surfaces. 20min covers worst case.
       setTimeout(() => {
         clearInterval(pollInterval);
         setScanningVideoIds(prev => {
@@ -918,7 +1110,11 @@ export default function Library() {
           next.delete(videoId);
           return next;
         });
-      }, 120000);
+        // Final cache invalidation in case the scan completed but the poll
+        // missed the status flip (network blip, tab backgrounded, etc).
+        queryClient.invalidateQueries({ queryKey: ["videos"] });
+        queryClient.invalidateQueries({ queryKey: ['/api/video', videoId, 'surfaces'] });
+      }, 20 * 60 * 1000);
     },
     onError: (error: Error, videoId) => {
       setScanningVideoIds(prev => {
@@ -933,6 +1129,58 @@ export default function Library() {
       });
     },
   });
+
+  // Deep links that land ON the thing they announce.
+  //   ?video=<id>&open=clips  — from the "Your clips are ready" notification:
+  //                              open Remix Studio on that video (defaults to
+  //                              the clips tab) instead of the bare grid.
+  //   ?scan=first             — from onboarding step 2: start scanning the
+  //                              first pending video on arrival, rather than
+  //                              dropping the creator here to find the button.
+  // Fires once per arrival, after the library has loaded, then strips the
+  // params so a refresh doesn't re-trigger.
+  // Driven by wouter's search string, not window.location read once: the bell
+  // navigates with setLocation, which changes the URL WITHOUT remounting this
+  // page — so an effect keyed only on videoData never re-ran when a creator
+  // sitting on /library clicked "Your clips are ready", and then fired later,
+  // unprompted, when the 15s refetch produced a new object. Keyed on the
+  // search string, each distinct deep link is handled exactly once.
+  const search = useSearch();
+  const handledSearch = useRef<string | null>(null);
+  useEffect(() => {
+    if (!videoData?.videos || !search || handledSearch.current === search) return;
+    const params = new URLSearchParams(search);
+    const openClips = params.get("open") === "clips";
+    const videoParam = Number(params.get("video"));
+    const scanFirst = params.get("scan") === "first";
+    if (!openClips && !scanFirst) return;
+    handledSearch.current = search;
+
+    if (openClips && Number.isFinite(videoParam) && videoParam > 0) {
+      setRemixVideoId(videoParam);
+      setRemixStudioOpen(true);
+    } else if (scanFirst) {
+      // Same classifier the cards use, so "retry" (a failed scan) counts too —
+      // the exact case onboarding sends people here for.
+      const vids = videoData.videos as IndexedVideo[];
+      const scanning = vids.find((v) => getVideoStatusInfo(v).aiStatus === "scanning");
+      const first = vids.find((v) => ["pending", "retry"].includes(getVideoStatusInfo(v).aiStatus));
+      if (first?.id) {
+        scanVideoMutation.mutate(first.id);
+        toast({ title: "Scanning your video", description: `Started on "${(first as any).title || "your video"}" — this takes a minute or two.` });
+        setTimeout(() => document.querySelector(`[data-testid="button-scan-${first.id}"], [data-testid="button-tf-scan-${first.id}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 250);
+      } else if (scanning) {
+        toast({ title: "Already scanning", description: "Your video is being scanned now — clips appear here when it finishes." });
+      } else {
+        toast({ title: "Nothing to scan yet", description: "Paste a video link or upload a file above to get started." });
+      }
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete("open"); url.searchParams.delete("video"); url.searchParams.delete("scan");
+    window.history.replaceState({}, "", url.toString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, videoData]);
 
   const batchScanMutation = useMutation({
     mutationFn: async (limit: number) => {
@@ -959,6 +1207,25 @@ export default function Library() {
         description: error.message,
         variant: "destructive",
       });
+    },
+  });
+
+  // Escape hatch for stuck scans: flips "Scanning" to a failed state the
+  // creator can rescan from. A live scan aborts within a few frames; a dead
+  // one is simply released.
+  const cancelScanMutation = useMutation({
+    mutationFn: async (videoId: number) => {
+      const res = await fetchWithTimeout(`/api/videos/${videoId}/cancel-scan`, { method: "POST", credentials: "include" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Cancel failed");
+      return res.json();
+    },
+    onSuccess: (_data, videoId) => {
+      setScanningVideoIds(prev => { const s = new Set(prev); s.delete(videoId); return s; });
+      toast({ title: "Scan cancelled", description: "The video is released — rescan whenever you like." });
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Couldn't cancel scan", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1024,7 +1291,7 @@ export default function Library() {
                 title: "Scan Complete",
                 description: `Found ${video.adOpportunities} placement surfaces. Click the video to view details.`,
               });
-            } else if (video.status?.toLowerCase() === "scan failed") {
+            } else if (video.status?.toLowerCase().startsWith("scan failed")) {
               toast({
                 title: "Scan Failed",
                 description: "Could not analyze this video. Please try again.",
@@ -1134,16 +1401,32 @@ export default function Library() {
     console.warn(`[Library] This means mode="${mode}" but demo endpoint was called`);
   }
   
-  // Filter videos by platform
+  // Filter videos by platform AND search query.
+  // Search matches against title, category, subcategory, and brand name —
+  // case-insensitive substring. Multi-word queries match if every word
+  // appears somewhere across the searchable fields (any order).
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const queryTerms = normalizedQuery.split(/\s+/).filter(Boolean);
+
   const filteredDisplayVideos = displayVideos.filter((video) => {
-    if (platformFilter === "all") return true;
-    return video.platform === platformFilter;
+    if (platformFilter !== "all" && video.platform !== platformFilter) return false;
+    if (queryTerms.length === 0) return true;
+    const haystack = [
+      video.title,
+      video.context,
+      video.category,
+      video.subcategory,
+      video.brandName,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return queryTerms.every(term => haystack.includes(term));
   });
   
   // Platform counts for tabs
   const youtubeCount = displayVideos.filter(v => v.platform === "youtube").length;
   const instagramCount = displayVideos.filter(v => v.platform === "instagram").length;
   const twitchCount = displayVideos.filter(v => v.platform === "twitch").length;
+  const tiktokCount = displayVideos.filter(v => v.platform === "tiktok").length;
+  const twitterCount = displayVideos.filter(v => v.platform === "twitter").length;
   const facebookCount = displayVideos.filter(v => v.platform === "facebook").length;
   const uploadsCount = displayVideos.filter(v => v.platform === "fullscale").length;
   
@@ -1161,8 +1444,29 @@ export default function Library() {
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
       <TopBar />
 
+      {/* "Viewing as" banner — visible whenever an admin has opted into
+          another user's library via ?as=<email>. Mirrors the server-side
+          override (videoData.viewingAs is the authoritative source). Keeps
+          the admin oriented and gives them a one-click "Return" path. */}
+      {videoData?.viewingAs && (
+        <div className="bg-amber-500/15 border-y border-amber-500/30 px-6 py-2.5 flex items-center justify-between gap-3 text-sm" data-testid="banner-viewing-as">
+          <div className="text-amber-100">
+            <span className="text-amber-200/70">Viewing as</span>{" "}
+            <span className="font-semibold text-amber-100" data-testid="text-viewing-as-email">{videoData.viewingAs}</span>
+            <span className="text-amber-200/70"> — actions you take here happen against your own account; only the displayed videos are theirs.</span>
+          </div>
+          <button
+            onClick={clearViewAs}
+            className="shrink-0 px-3 py-1 rounded-md text-xs font-medium border border-amber-400/40 text-amber-100 hover:bg-amber-400/15 transition-colors"
+            data-testid="button-return-to-my-library"
+          >
+            Return to my library
+          </button>
+        </div>
+      )}
+
       <main className="p-8 max-w-7xl mx-auto">
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           className="mb-8 flex flex-wrap items-start justify-between gap-4"
@@ -1180,6 +1484,17 @@ export default function Library() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {isRealMode && (
+              <Button
+                variant="outline"
+                className="gap-2"
+                onClick={() => setLocation("/library/reels/new/edit")}
+                data-testid="button-build-reel"
+              >
+                <Video className="w-4 h-4" />
+                Build a Reel
+              </Button>
+            )}
             {isRealMode && (
               <Button
                 variant="outline"
@@ -1222,6 +1537,22 @@ export default function Library() {
           </div>
         </motion.div>
 
+        {/* Keyword search — matches title, category, subcategory, brand name */}
+        <div className="mb-4">
+          <Input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search videos by title, category, or keyword…"
+            className="max-w-xl bg-white/5 border-white/10"
+            data-testid="input-library-search"
+          />
+          {searchQuery.trim() && (
+            <p className="text-xs text-muted-foreground mt-1.5">
+              {filteredDisplayVideos.length} of {displayVideos.length} videos match "{searchQuery.trim()}"
+            </p>
+          )}
+        </div>
+
         {/* Platform Filter Tabs with Region Dropdown */}
         <div className="flex items-center gap-4 mb-6 flex-wrap">
           <Tabs value={platformFilter} onValueChange={(v) => setPlatformFilter(v as PlatformFilter)}>
@@ -1240,6 +1571,14 @@ export default function Library() {
               <TabsTrigger value="twitch" className="gap-2 data-[state=active]:bg-purple-500/20" data-testid="tab-twitch">
                 <SiTwitch className="w-4 h-4 text-purple-500" />
                 Twitch ({twitchCount})
+              </TabsTrigger>
+              <TabsTrigger value="tiktok" className="gap-2 data-[state=active]:bg-zinc-500/20" data-testid="tab-tiktok">
+                <SiTiktok className="w-4 h-4" />
+                TikTok ({tiktokCount})
+              </TabsTrigger>
+              <TabsTrigger value="twitter" className="gap-2 data-[state=active]:bg-sky-500/20" data-testid="tab-twitter">
+                <SiX className="w-4 h-4" />
+                X ({twitterCount})
               </TabsTrigger>
               <TabsTrigger value="facebook" className="gap-2 data-[state=active]:bg-blue-500/20" data-testid="tab-facebook">
                 <SiFacebook className="w-4 h-4 text-blue-500" />
@@ -1265,14 +1604,76 @@ export default function Library() {
               <SelectItem value="europe">Europe</SelectItem>
             </SelectContent>
           </Select>
+
+          {/* URL-paste import: the v1 ingest path for Twitch/TikTok/X */}
+          <div className="flex items-center gap-2 flex-1 min-w-[280px] max-w-md" data-testid="import-url-bar">
+            <Input
+              value={importUrlValue}
+              onChange={(e) => setImportUrlValue(e.target.value)}
+              placeholder="Paste a YouTube, Twitch, TikTok, or X video URL…"
+              className="bg-white/5 border-white/10 text-sm"
+              data-testid="input-import-url"
+              onKeyDown={(e) => { if (e.key === "Enter") (document.getElementById("btn-import-url") as HTMLButtonElement)?.click(); }}
+            />
+            <Button
+              id="btn-import-url"
+              size="sm"
+              disabled={isImportingUrl || !importUrlValue.trim()}
+              onClick={async () => {
+                setIsImportingUrl(true);
+                try {
+                  const res = await fetchWithTimeout("/api/video/import-url", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "include",
+                    body: JSON.stringify({ url: importUrlValue.trim() }),
+                  });
+                  const data = await res.json();
+                  if (!res.ok) throw new Error(data?.error || "Import failed");
+                  toast({ title: "Video imported", description: `${data.video?.title ?? "Imported"} — hit Scan when ready.` });
+                  setImportUrlValue("");
+                  queryClient.invalidateQueries({ queryKey: ["videos"] });
+                } catch (err: any) {
+                  toast({ title: "Import failed", description: err?.message ?? "Check the URL and try again.", variant: "destructive" });
+                } finally {
+                  setIsImportingUrl(false);
+                }
+              }}
+              data-testid="button-import-url"
+            >
+              {isImportingUrl ? "Importing…" : "Import"}
+            </Button>
+          </div>
         </div>
 
         {isLoadingVideos ? (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
           </div>
-        ) : isRealMode && (videos.length === 0 || isVideosError) ? (
-          <EmptyLibrary onSync={() => syncMutation.mutate()} isSyncing={syncMutation.isPending} />
+        ) : isRealMode && isVideosError ? (
+          // An error is NOT an empty library. Showing "sync your channel" for
+          // a failed request told the creator to fix the wrong thing.
+          <div className="max-w-lg mx-auto text-center py-16">
+            <p className="text-sm font-medium mb-1">Couldn't load your library</p>
+            <p className="text-xs text-muted-foreground leading-relaxed mb-4">
+              {(videosError as Error)?.message || "Unknown error"}
+            </p>
+            <Button variant="outline" size="sm" onClick={() => refetchVideos()}>
+              Try again
+            </Button>
+          </div>
+        ) : isRealMode && videos.length === 0 ? (
+          <EmptyLibrary
+            connected={ytStatus ? !!ytStatus.connected : null}
+            onSync={() => syncMutation.mutate()}
+            isSyncing={syncMutation.isPending}
+            onConnect={() => { window.location.href = "/api/auth/youtube"; }}
+            onPaste={() => {
+              const el = document.querySelector('[data-testid="import-url-bar"] input') as HTMLInputElement | null;
+              el?.focus(); el?.scrollIntoView({ block: "center", behavior: "smooth" });
+            }}
+            onUpload={() => setUploadModalOpen(true)}
+          />
         ) : (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -1334,6 +1735,14 @@ export default function Library() {
                     ) : video.platform === "facebook" ? (
                       <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center">
                         <SiFacebook className="w-3.5 h-3.5 text-white" />
+                      </div>
+                    ) : video.platform === "tiktok" ? (
+                      <div className="w-6 h-6 rounded-full bg-black border border-white/20 flex items-center justify-center">
+                        <SiTiktok className="w-3.5 h-3.5 text-white" />
+                      </div>
+                    ) : video.platform === "twitter" ? (
+                      <div className="w-6 h-6 rounded-full bg-black border border-white/20 flex items-center justify-center">
+                        <SiX className="w-3.5 h-3.5 text-white" />
                       </div>
                     ) : video.platform === "fullscale" ? (
                       <div className="w-6 h-6 rounded-full bg-emerald-600 flex items-center justify-center">
@@ -1425,12 +1834,73 @@ export default function Library() {
                           </Button>
                         </div>
                       )}
-                      {/* Social media (no local file): Show "Upload Required" indicator */}
-                      {!video.hasLocalFile && video.aiStatus === "pending" && (
+                      {/* Cancel scan — escape hatch when a scan is running or stuck.
+                          Rendered for ALL platforms (stuck YouTube scans need it too). */}
+                      {(video.aiStatus === "scanning" || scanningVideoIds.has(video.id)) && (
+                        <div
+                          className="absolute bottom-2 right-2 z-20"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (video.id) cancelScanMutation.mutate(video.id);
+                          }}
+                        >
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1 h-7 px-2 border-red-500/40 text-red-300 hover:bg-red-500/10 bg-black/40 backdrop-blur-sm"
+                            data-testid={`button-cancel-scan-${video.id}`}
+                            disabled={cancelScanMutation.isPending}
+                          >
+                            <X className="w-3 h-3" /> Cancel scan
+                          </Button>
+                        </div>
+                      )}
+                      {/* YouTube / pasted-URL video (no local file): a REAL Scan
+                          button. This used to be a grey "Upload to Scan" badge
+                          left over from before the scanner learned to pull
+                          YouTube sources directly (f68d3a3) — so three pieces
+                          of copy told the creator to "hit Scan" on a card with
+                          no button, and a failed (retry) scan showed nothing
+                          at all. The cloud scan (/api/video-scan/:id) handles
+                          these; only the local-file variant needs the file. */}
+                      {/* Only for sources the cloud scan can FETCH (YouTube /
+                          pasted-URL). A local upload whose file is gone has no
+                          source to pull — a green Scan there could only fail
+                          with a misleading "No Surfaces Found", so it keeps an
+                          honest "re-upload" badge instead. */}
+                      {!video.hasLocalFile && !(video.platform === "fullscale" || String(video.youtubeId ?? "").startsWith("upload-")) && (video.aiStatus === "pending" || video.aiStatus === "retry" || scanningVideoIds.has(video.id)) && (
+                        <div
+                          className="absolute bottom-12 right-2 z-20"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (video.id && !scanningVideoIds.has(video.id)) scanVideoMutation.mutate(video.id);
+                          }}
+                        >
+                          <Button
+                            size="sm"
+                            variant="default"
+                            className="gap-1.5 bg-emerald-600 hover:bg-emerald-700"
+                            data-testid={`button-scan-${video.id}`}
+                            disabled={scanningVideoIds.has(video.id)}
+                          >
+                            {scanningVideoIds.has(video.id) ? (
+                              <><Loader2 className="w-3 h-3 animate-spin" /> Scanning...</>
+                            ) : video.aiStatus === "retry" ? (
+                              <><RefreshCw className="w-3 h-3" /> Retry scan</>
+                            ) : (
+                              <><Scan className="w-3 h-3" /> Scan</>
+                            )}
+                          </Button>
+                        </div>
+                      )}
+                      {/* An upload whose file is no longer on disk: nothing to
+                          scan from. Say so honestly rather than offering a
+                          Scan that can only fail. */}
+                      {!video.hasLocalFile && (video.platform === "fullscale" || String(video.youtubeId ?? "").startsWith("upload-")) && (video.aiStatus === "pending" || video.aiStatus === "retry") && (
                         <div className="absolute bottom-12 right-2 z-20">
-                          <div className="px-2 py-1 rounded-md bg-zinc-700/90 text-zinc-300 text-xs font-medium flex items-center gap-1">
+                          <div className="px-2 py-1 rounded-md bg-zinc-700/90 text-zinc-300 text-xs font-medium flex items-center gap-1" title="The uploaded file isn't available anymore — upload it again to scan.">
                             <Upload className="w-3 h-3" />
-                            Upload to Scan
+                            File missing — re-upload
                           </div>
                         </div>
                       )}
@@ -1517,7 +1987,7 @@ export default function Library() {
                         }}
                       >
                         <Scissors className="w-3 h-3" />
-                        Remix
+                        Story clips
                       </button>
                       <button
                         className="flex items-center gap-1 px-2 py-1 rounded-md bg-green-500/15 text-green-400 hover:bg-green-500/25 text-xs font-medium transition-colors"

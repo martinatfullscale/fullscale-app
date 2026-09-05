@@ -19,7 +19,23 @@ export const pool = new Pool({
   idleTimeoutMillis: 20000,   // Close idle connections after 20s (before Neon kills them)
   connectionTimeoutMillis: 10000, // Wait up to 10s for connection
   allowExitOnIdle: false,     // Keep pool alive
+  // A checked-out client with no timeout is never reclaimed: one slow query
+  // holds its slot indefinitely, and with max:10 it takes ten of those to
+  // wedge the entire app. Every later request then WAITS instead of failing —
+  // which is what "the site is laggy, then everything spins forever" actually
+  // is. Postgres kills the query at the server; pg returns the connection.
+  statement_timeout: 30_000,
+  query_timeout: 30_000,
+  // A transaction left open by a crashed handler is the other way to leak a
+  // slot permanently.
+  idle_in_transaction_session_timeout: 60_000,
 });
+
+/** Pool pressure, for the health endpoint. waitingCount > 0 means requests
+ *  are queued for a connection — the leading indicator of the hang. */
+export function poolStats() {
+  return { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount, max: 10 };
+}
 
 // Handle pool errors gracefully (Neon can terminate idle connections)
 pool.on('error', (err) => {

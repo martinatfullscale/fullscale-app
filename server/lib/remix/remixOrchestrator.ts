@@ -25,6 +25,8 @@ import * as fs from "fs";
 import { storage } from "../../storage";
 import { detectClipCandidates, PLATFORM_CONFIGS, type ClipCandidate } from "./clipDetector";
 import { generateClip, type ClipPlacement } from "./clipGenerator";
+import { renderEditorialClipOutput, runFFmpegThumbnail } from "./editorialAutoPipeline";
+import { getVideoSize } from "./faceTracker";
 import { generateCaptions } from "./captionEngine";
 import { scoreClipQuality } from "./qualityScorer";
 import type { RankedClip } from "./clipRanker";
@@ -41,6 +43,9 @@ export interface RemixConfig {
   clipRange?: { start: number; end: number };
   /** When true, use editorial intelligence pipeline instead of legacy per-frame detection */
   editorialMode?: boolean;
+  /** Theme/keywords the user is chasing — steers editorial analysis toward
+   *  matching transcript beats (passed to analyzeEditorial as `query`) */
+  keywords?: string;
   /** Enable face-tracking smart reframing for portrait clips (default: true) */
   faceTrackingEnabled?: boolean;
 }
@@ -61,6 +66,10 @@ export interface RemixResult {
     thumbnailPath: string | null;
   }>;
   error?: string;
+  /** Candidates that entered the render step and produced nothing, when at
+   *  least one other clip succeeded. A partially-empty run is still a success,
+   *  but the creator should be able to find out what was lost. */
+  partialFailures?: string[];
 }
 
 const DEFAULT_CONFIG: RemixConfig = {
@@ -89,7 +98,78 @@ function rankedClipToCandidate(ranked: RankedClip, platform: string): ClipCandid
     primaryTone: ranked.monetizationTier, // Repurposed: "premium"/"standard"/"organic"
     narrativeSummary: ranked.suggestedTitle,
     platform,
+    // Carry the assembled beats through. Dropping them here is what made an
+    // assembled clip (hook@480s + body@210s + payoff@500s) render as a single
+    // flat 210s→260s slice — the analyzer's clipStart/clipEnd/duration are
+    // min/max/sum across beats, so -ss min -t sum reads the wrong window.
+    segments: ranked.segments,
   };
+}
+
+/**
+ * Render a candidate — assembled multi-beat when it carries ≥2 valid segments,
+ * otherwise the normal single-range generateClip.
+ *
+ * generateClip does one `-ss start -t duration` extraction, which is correct
+ * for a contiguous clip but plays the wrong footage for an assembled one (its
+ * start/duration are min/sum across beats). Multi-beat clips go through
+ * renderEditorialClipOutput — the same concat path the editorial auto-pipeline
+ * uses — so the beats render in order.
+ *
+ * Fails SAFE: any error in the assembled path falls back to generateClip, so a
+ * problem here is never worse than the single-range behavior that shipped
+ * before. Single-range clips (the majority) never touch the new path.
+ */
+async function renderCandidateClip(
+  input: Parameters<typeof generateClip>[0],
+  speakerSegments: any[] | undefined,
+): Promise<Awaited<ReturnType<typeof generateClip>>> {
+  const clip: any = input.clip;
+  const segs = Array.isArray(clip.segments)
+    ? clip.segments.filter((s: any) => typeof s?.start === "number" && typeof s?.end === "number" && s.end > s.start)
+    : [];
+  if (segs.length < 2) return generateClip(input);
+
+  try {
+    const pc: any = input.platformConfig;
+    let srcSize = { width: 1920, height: 1080 };
+    try { srcSize = await getVideoSize(input.videoPath); } catch { /* default */ }
+    const needsReframe = srcSize.width > srcSize.height && pc.aspectRatio === "9:16";
+
+    const outputFilename = `clip_j${input.jobId}_v${input.videoId}_${clip.platform}_assembled_${Date.now()}.mp4`;
+    const outputPath = path.join(input.outputDir, outputFilename);
+
+    await renderEditorialClipOutput({ ...clip, segments: segs }, outputPath, {
+      videoLocalPath: input.videoPath,
+      platformConfig: {
+        targetWidth: pc.targetWidth, targetHeight: pc.targetHeight,
+        targetFps: pc.targetFps, aspectRatio: pc.aspectRatio,
+      },
+      srcSize,
+      needsReframe,
+      speakerSegments,
+      captionOpts: { enabled: input.captionsEnabled, style: input.captionStyle },
+      logTag: "Remix",
+    });
+
+    if (!fs.existsSync(outputPath)) throw new Error("assembled render produced no file");
+    const stats = fs.statSync(outputPath);
+    const thumbnailPath = outputPath.replace(/\.mp4$/, "_thumb.jpg");
+    const totalDuration = segs.reduce((sum: number, s: any) => sum + (s.end - s.start), 0);
+    try { await runFFmpegThumbnail(outputPath, thumbnailPath, totalDuration * 0.25); } catch { /* non-fatal */ }
+
+    console.log(`[Remix]   Assembled ${segs.length}-beat clip: ${outputFilename} (${totalDuration.toFixed(1)}s)`);
+    return {
+      success: true,
+      clipPath: outputPath,
+      thumbnailPath: fs.existsSync(thumbnailPath) ? thumbnailPath : null,
+      duration: totalDuration,
+      fileSize: stats.size,
+    };
+  } catch (err: any) {
+    console.warn(`[Remix]   Assembled render failed (${err?.message}) — falling back to single-range extraction.`);
+    return generateClip(input);
+  }
 }
 
 /**
@@ -144,8 +224,14 @@ async function checkCancelled(jobId: number): Promise<void> {
     if (job?.status === "cancelled") {
       throw new Error("CANCELLED_BY_USER");
     }
+    // "failed" can be written externally (startup sweep during an overlapping
+    // redeploy). Terminal statuses are sticky, so keeping rendering would burn
+    // CPU on a job whose status can never be updated — abort at the checkpoint.
+    if (job?.status === "failed") {
+      throw new Error("JOB_MARKED_FAILED_EXTERNALLY");
+    }
   } catch (err: any) {
-    if (err.message === "CANCELLED_BY_USER") throw err;
+    if (err.message === "CANCELLED_BY_USER" || err.message === "JOB_MARKED_FAILED_EXTERNALLY") throw err;
     // DB errors — don't block the pipeline
   }
 }
@@ -169,17 +255,30 @@ export async function runRemixPipeline(
   console.log(`[Remix] Video: ${videoId}, Platforms: ${mergedConfig.platformTargets.join(", ")}, Max clips: ${mergedConfig.maxClips}`);
 
   let tempScopeDir: string | null = null;
+  let sourcePinDir: string | null = null;
 
   try {
     // Get video info
     const video = await storage.getVideoById(videoId);
-    if (!video || !video.filePath) {
-      throw new Error("Video not found or no file path");
+    if (!video || (!video.filePath && !video.youtubeId)) {
+      throw new Error("Video not found or has no source");
+    }
+
+    // Light-cloud imports (YouTube/IG/FB) have no filePath — pull via the
+    // shared source cache (OAuth-capable, TTL'd) the same way playback does.
+    let sourceFilePath: string = video.filePath as string;
+    if (!sourceFilePath) {
+      // Pin (hard link) so the playback cache sweeper can't unlink the
+      // source under this multi-minute job; cleaned with tempScopeDir below.
+      const { getPinnedSourcePath } = await import("../sourceCache");
+      sourcePinDir = path.join("/tmp/remix-videos", `job-${jobId}-pin`);
+      sourceFilePath = await getPinnedSourcePath(video as any, sourcePinDir);
+      console.log(`[Remix] Pulled + pinned platform source for video ${videoId}: ${sourceFilePath}`);
     }
 
     // Resolve video path (handles Object Storage download if needed).
     // Scope the temp path with this job's ID so concurrent remix jobs never collide.
-    const resolved = await resolveVideoPath(video.filePath, `job-${jobId}`);
+    const resolved = await resolveVideoPath(sourceFilePath, `job-${jobId}`);
     const videoPath = resolved.localPath;
     if (resolved.tempScopeDir) tempScopeDir = resolved.tempScopeDir;
 
@@ -270,6 +369,7 @@ export async function runRemixPipeline(
           dominantColor: b.dominantColor,
         })),
         maxClips: mergedConfig.maxClips,
+        query: mergedConfig.keywords,
       });
 
       if (editorialMoments.length === 0) {
@@ -620,11 +720,18 @@ export async function runRemixPipeline(
     fs.mkdirSync(outputDir, { recursive: true });
 
     const generatedClips: RemixResult["clips"] = [];
+    // Why each candidate produced nothing. Without this a job that renders
+    // zero clips reports plain success and the creator is told "complete"
+    // with an empty grid and no way to find out why.
+    const clipFailures: string[] = [];
 
     for (let i = 0; i < candidates.length; i++) {
       const clip = candidates[i];
       const platformConfig = PLATFORM_CONFIGS[clip.platform];
-      if (!platformConfig) continue;
+      if (!platformConfig) {
+        clipFailures.push(`clip #${i + 1}: no platform config for "${clip.platform}"`);
+        continue;
+      }
 
       const placements = clipPlacements.get(i) || [];
 
@@ -666,7 +773,13 @@ export async function runRemixPipeline(
       // Step 5: Generate the clip (with VFX motion tracking if available)
       console.log(`[Remix]   Generating clip #${i + 1}/${candidates.length} (${clip.platform})...`);
 
-      const clipResult = await generateClip({
+      // Speaker segments across the whole clip window, for the assembled path's
+      // own captioning (the concat renderer windows them per beat).
+      const speakerSegmentsForClip = (transcript && transcript.status === "completed" && transcript.segments)
+        ? (transcript.segments as any[]).filter((seg: any) => seg.start >= clip.startTime && seg.start <= clip.endTime)
+        : undefined;
+
+      const clipResult = await renderCandidateClip({
         videoPath,
         videoId,
         clip,
@@ -674,6 +787,7 @@ export async function runRemixPipeline(
         placements,
         captionsEnabled: mergedConfig.captionsEnabled && !!captionSegments,
         captionSegments,
+        captionStyle: mergedConfig.captionStyle,
         outputDir,
         jobId,
         cameraMotion: clipMotionData.get(i),
@@ -681,10 +795,11 @@ export async function runRemixPipeline(
           enabled: mergedConfig.faceTrackingEnabled ?? true,
           sampleIntervalSec: 0.5,
         },
-      });
+      }, speakerSegmentsForClip);
 
       if (!clipResult.success) {
         console.error(`[Remix]   Clip #${i + 1} generation failed: ${clipResult.error}`);
+        clipFailures.push(`clip #${i + 1}: ${clipResult.error || "render failed"}`);
         continue;
       }
 
@@ -782,13 +897,43 @@ export async function runRemixPipeline(
     const publishReady = generatedClips.filter(c => c.recommendation === "publish").length;
     const needReview = generatedClips.filter(c => c.recommendation === "review").length;
 
+    // ZERO CLIPS IS A FAILURE, NOT A SUCCESS.
+    // Every candidate can fail to render — each one `continue`s past the DB
+    // insert — and the job would still have been marked "completed". The
+    // creator then sees "complete", an empty clip grid, and no error anywhere:
+    // the exact "it says done but there's no output" report. Surface the real
+    // reason on the row the UI is already polling.
+    if (generatedClips.length === 0) {
+      const why = clipFailures.length > 0
+        ? `No clips were produced. ${clipFailures.slice(0, 3).join("; ")}${clipFailures.length > 3 ? ` (+${clipFailures.length - 3} more)` : ""}`
+        : `No clips were produced — ${candidates.length} candidate(s) entered the render step and none completed.`;
+      console.error(`[Remix] ========== REMIX JOB ${jobId} PRODUCED NOTHING ==========`);
+      console.error(`[Remix] ${why}`);
+      await storage.updateRemixJobStatus(jobId, "failed", why);
+      await storage.setRemixJobClipCount(jobId, 0).catch(() => {});
+      return {
+        jobId,
+        success: false,
+        clipsGenerated: 0,
+        clipsPublishReady: 0,
+        clipsNeedReview: 0,
+        clips: [],
+        error: why,
+      };
+    }
+
     await storage.updateRemixJobStatus(jobId, "completed");
-    // Update clip count on the job
-    // (storage method doesn't have a dedicated update for this, use status update)
+    // clip_count exists on the row and nothing ever wrote it, so the UI could
+    // not distinguish "0 clips" from "not counted".
+    await storage.setRemixJobClipCount(jobId, generatedClips.length).catch((e: any) =>
+      console.warn(`[Remix] Could not persist clip count for job ${jobId}: ${e?.message}`));
 
     console.log(`[Remix] ========== REMIX JOB ${jobId} COMPLETE ==========`);
     console.log(`[Remix] Generated: ${generatedClips.length} clips`);
     console.log(`[Remix] Publish-ready: ${publishReady}, Needs review: ${needReview}`);
+    if (clipFailures.length > 0) {
+      console.warn(`[Remix] ${clipFailures.length} candidate(s) did not render: ${clipFailures.join("; ")}`);
+    }
 
     return {
       jobId,
@@ -797,6 +942,7 @@ export async function runRemixPipeline(
       clipsPublishReady: publishReady,
       clipsNeedReview: needReview,
       clips: generatedClips,
+      partialFailures: clipFailures.length > 0 ? clipFailures : undefined,
     };
   } catch (err: any) {
     // Distinguish cancellation from real failure
@@ -830,6 +976,7 @@ export async function runRemixPipeline(
     // recursive:true, force:true) means it's idempotent and tolerates missing files,
     // and it cleans up any intermediate temp files the pipeline may have written into
     // the scope directory, not just the downloaded source video.
+    if (sourcePinDir) { try { fs.rmSync(sourcePinDir, { recursive: true, force: true }); } catch { /* ignore */ } }
     if (tempScopeDir) {
       try {
         fs.rmSync(tempScopeDir, { recursive: true, force: true });
@@ -890,8 +1037,26 @@ export async function reRenderClip(
     };
   }
 
-  // Resolve video path
-  const filePath = video.filePath;
+  // Resolve video path — pull light-cloud imports via the source cache.
+  let filePath = video.filePath;
+  let rerenderPinDir: string | null = null;
+  if (!filePath && video.youtubeId) {
+    try {
+      const { getPinnedSourcePath } = await import("../sourceCache");
+      rerenderPinDir = path.join("/tmp/remix-videos", `rerender-${clipId}-pin-${Date.now()}`);
+      filePath = await getPinnedSourcePath(video as any, rerenderPinDir);
+    } catch (dlErr: any) {
+      return {
+        jobId: 0,
+        success: false,
+        clipsGenerated: 0,
+        clipsPublishReady: 0,
+        clipsNeedReview: 0,
+        clips: [],
+        error: `Source download failed: ${dlErr?.message || dlErr}`,
+      };
+    }
+  }
   if (!filePath) {
     return {
       jobId: 0,
@@ -900,7 +1065,7 @@ export async function reRenderClip(
       clipsPublishReady: 0,
       clipsNeedReview: 0,
       clips: [],
-      error: "Video has no file path",
+      error: "Video has no source",
     };
   }
 
@@ -1109,6 +1274,7 @@ export async function reRenderClip(
       placements,
       captionsEnabled: captionsEnabled && !!captionSegments,
       captionSegments,
+      captionStyle,
       outputDir,
       jobId: originalClip.remixJobId,
       cameraMotion: reRenderMotionData,
@@ -1227,6 +1393,7 @@ export async function reRenderClip(
       error: err.message,
     };
   } finally {
+    if (rerenderPinDir) { try { fs.rmSync(rerenderPinDir, { recursive: true, force: true }); } catch { /* non-fatal */ } }
     if (tempScopeDir) {
       try {
         fs.rmSync(tempScopeDir, { recursive: true, force: true });

@@ -1,5 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
+import { startStallWatch, stallWatchMiddleware } from "./lib/stallWatch";
 import { serveStatic, waitForBuild } from "./static";
 import { createServer } from "http";
 import { db } from "./db";
@@ -7,12 +8,106 @@ import { videoIndex } from "@shared/schema";
 import { seed } from "./db/seed";
 import { sql } from "drizzle-orm";
 import path from "path";
+import fs from "fs";
+import os from "os";
+import { spawnSync } from "child_process";
 import cookieParser from "cookie-parser";
 import { objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
+// Static imports (not createRequire) so this resolves identically whether
+// esbuild bundles to ESM or CJS — the previous createRequire(import.meta.url)
+// approach silently no-ops in the production CJS bundle because import.meta
+// doesn't exist there.
+import ffmpegStaticPath from "ffmpeg-static";
+import ffprobeStatic from "ffprobe-static";
 // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
-// import { initializeScanWorker } from "./lib/scanWorker";
+
+// -----------------------------------------------------------------------
+// FFMPEG/FFPROBE PATH BOOTSTRAP — must run before anything spawns a child
+// process.
+//
+// Production incident (2026-06-11, scan of video 91070): yt-dlp errored
+// "You have requested downloading the video partially, but ffmpeg is not
+// installed" on the deployed instance — the Replit DEPLOYMENT's PATH does
+// not include the workspace nix ffmpeg, even though `.replit` lists it.
+// Every media feature spawns bare `ffmpeg`/`ffprobe` from PATH (frame
+// extraction, scene index, thumbnails, transcript audio, video export,
+// yt-dlp trim/merge), so on production they all failed silently — this is
+// the common root cause behind "Scan Failed"/"No frames extracted" on
+// uploads and "Transcript not available after pipeline run" editorial
+// errors.
+//
+// Fix: ship ffmpeg + ffprobe as npm deps (ffmpeg-static / ffprobe-static)
+// and prepend their directories to PATH at boot. Child processes inherit
+// process.env, so every existing spawn("ffmpeg"), fluent-ffmpeg call, and
+// yt-dlp invocation finds them with zero per-call-site changes. Prepending
+// (not appending) means the bundled binaries win over any system ffmpeg,
+// giving us a deterministic version in every environment.
+// -----------------------------------------------------------------------
+try {
+  const ffmpegBin = ffmpegStaticPath as unknown as string | null;
+  const ffprobeBin = (ffprobeStatic as { path?: string } | undefined)?.path;
+  const extraDirs = [ffmpegBin, ffprobeBin]
+    .filter((p): p is string => typeof p === "string" && p.length > 0)
+    .map((p) => path.dirname(p));
+  if (extraDirs.length > 0) {
+    process.env.PATH = [...extraDirs, process.env.PATH ?? ""].join(path.delimiter);
+    console.log(`[Boot] ffmpeg/ffprobe PATH bootstrap: ${extraDirs.join(", ")}`);
+  } else {
+    console.warn("[Boot] ffmpeg-static/ffprobe-static resolved to no binaries — relying on system PATH");
+  }
+} catch (err: any) {
+  console.warn(`[Boot] ffmpeg PATH bootstrap failed (${err?.message}); relying on system PATH`);
+}
+
+// Verify the bootstrap produced a runnable ffmpeg — loudly, at boot. If the
+// ffmpeg-static binary is missing from the deploy image, every bare
+// spawn("ffmpeg") silently falls back to whatever system ffmpeg the nix env
+// provides (the one that segfaults on --download-sections), and the failure
+// only surfaces as cryptic mid-scan errors hours later. A 1s -version probe
+// plus a PATH scan tells us immediately whether ffmpeg runs and which
+// directory's binary actually wins.
+try {
+  const resolvedFfmpeg = (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .map((dir) => path.join(dir, "ffmpeg"))
+    .find((candidate) => {
+      try { fs.accessSync(candidate, fs.constants.X_OK); return true; } catch { return false; }
+    });
+  const probe = spawnSync("ffmpeg", ["-version"], { timeout: 1000, encoding: "utf8" });
+  if (probe.status === 0) {
+    const versionLine = (probe.stdout || "").split("\n")[0]?.trim() || "unknown version";
+    console.log(`[Boot] ffmpeg verified: ${versionLine} (resolved: ${resolvedFfmpeg ?? "unknown"})`);
+  } else if ((probe.error as any)?.code === "ETIMEDOUT") {
+    // NOT a failure. A cold container pages a ~78MB static binary off disk on
+    // first exec, which routinely exceeds a 1s budget — and this probe is
+    // spawnSYNC, so raising the budget would hold the whole event loop for
+    // that long before the server can even bind. Say what was actually
+    // observed; the previous wording declared every media feature dead on
+    // what is usually just a slow first read, and sent a live outage
+    // investigation chasing ffmpeg for hours.
+    console.warn(
+      `[Boot] ffmpeg -version did not answer within 1s (resolved=${resolvedFfmpeg ?? "not on PATH"}). ` +
+      `Usually just a cold-start page-in of the static binary, not a broken install — media features are ` +
+      `NOT known to be broken from this alone. The first real scan will confirm.`
+    );
+  } else {
+    console.error(
+      `[Boot] ffmpeg -version FAILED (status=${probe.status ?? "null"}, error=${probe.error?.message ?? "none"}, ` +
+      `resolved=${resolvedFfmpeg ?? "no executable ffmpeg on PATH"}) — every media feature (scans, thumbnails, ` +
+      `exports, yt-dlp trims) will fail; check that ffmpeg-static shipped in the deploy image`
+    );
+  }
+} catch (err: any) {
+  console.error(`[Boot] ffmpeg boot verification errored (${err?.message}) — media features may be broken`);
+}
 
 const app = express();
+
+// Stall instrumentation, registered before every other middleware so its timer
+// brackets the FULL cost of a request — body parsing, session lookup, handler
+// and all. Two outages this week were misdiagnosed because the page that spins
+// is rarely the endpoint at fault; this makes the process name it.
+app.use(stallWatchMiddleware);
 const httpServer = createServer(app);
 
 declare module "http" {
@@ -25,18 +120,32 @@ declare module "http" {
 // This is required for secure cookies to work behind Replit's reverse proxy
 app.set("trust proxy", 1);
 
+// Process-level safety net: never let an unhandled promise rejection or
+// an uncaught exception take down the server. The deploy auto-restarts
+// after a crash but every restart costs ~10s of downtime + interrupts
+// in-flight work. Log loudly instead so we can fix the root cause.
+process.on("unhandledRejection", (reason: any, promise) => {
+  console.error("[process] UNHANDLED REJECTION:", reason?.message || reason);
+  if (reason?.stack) console.error(reason.stack);
+});
+process.on("uncaughtException", (err: any) => {
+  console.error("[process] UNCAUGHT EXCEPTION:", err?.message || err);
+  if (err?.stack) console.error(err.stack);
+});
+
 // ============================================
 // HIGHEST PRIORITY: Static assets before EVERYTHING
 // This ensures logo and videos load regardless of auth/session state
 // ============================================
 const projectRoot = process.cwd();
 
-// Serve public directory assets (videos, images) with CORS headers for canvas compositing
+// Serve public directory assets (videos, images) with CORS headers for canvas compositing.
+// These filenames are not content-hashed, so we cache short and require revalidation —
+// otherwise updates to og:image, favicon, marketing videos, etc. are invisible for days.
 app.use(express.static(path.join(projectRoot, "public"), {
-  maxAge: '7d',
+  maxAge: '1h',
   etag: true,
   lastModified: true,
-  immutable: true,
   index: false,
   setHeaders: (res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -46,14 +155,21 @@ app.use(express.static(path.join(projectRoot, "public"), {
 
 // Serve attached assets (logo, generated images/videos)
 app.use('/attached_assets', express.static(path.join(projectRoot, "attached_assets"), {
-  maxAge: '7d',
+  maxAge: '1h',
   etag: true,
   lastModified: true,
-  immutable: true,
 }));
 
 app.get('/storage/*', async (req, res) => {
   try {
+    // Finished renders are NOT public assets: this route has no session
+    // (registered before session middleware) and serves with CORS * and a
+    // 7-day cache, so /storage/exports/export_<id>.mp4 was anonymously
+    // enumerable. Exports are served exclusively through the ownership-
+    // gated /api/exports/:id/download.
+    if (req.path.startsWith('/storage/exports/')) {
+      return res.status(404).json({ error: 'Not found' });
+    }
     const objectKey = objectKeyFromServeUrl(req.path);
     const { file } = getStorageStream(objectKey);
     const [metadata] = await file.getMetadata();
@@ -164,7 +280,21 @@ app.use((req, res, next) => {
     if (reqPath.startsWith("/api")) {
       let logLine = `${req.method} ${reqPath} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        // TRUNCATED, and deliberately so. This used to JSON.stringify the WHOLE
+        // response body on every /api request — a library page serialises 81
+        // videos with full descriptions, tens of thousands of characters, into
+        // a single synchronous stdout write, per request. On Replit stdout is a
+        // pipe to the log collector, so a slow consumer applies backpressure
+        // and the write blocks the only thread we have. The app then pays that
+        // cost on its BIGGEST responses, which are exactly the slow ones we
+        // were trying to debug — the logging made the symptom it was reporting.
+        //
+        // 300 chars keeps the shape of the payload (which is all it was ever
+        // useful for) at a fixed, tiny cost.
+        try {
+          const body = JSON.stringify(capturedJsonResponse);
+          logLine += ` :: ${body.length > 300 ? body.slice(0, 300) + `…(${body.length} chars)` : body}`;
+        } catch { /* circular or unserialisable — the line is fine without it */ }
       }
       log(logLine);
     }
@@ -187,16 +317,108 @@ app.use((req, res, next) => {
       req.path.endsWith('.js')) {
     return next();
   }
-  // If server not ready, serve loading page
+  // If server not ready, serve loading page.
+  //
+  // THIS MUST NEVER 500. Replit's GCE deployment target has no healthcheck
+  // path configured (.replit [deployment] sets only `run`), so it probes `/`
+  // — and a 500 here is read as "app is unhealthy", which restarts the
+  // container, which starts a cold boot, which serves `/` from this branch
+  // again. That is a self-sustaining restart loop, and while it runs EVERY
+  // request in the app dies mid-flight: forever spinners, an empty library,
+  // "social accounts not connected", a sign-out that never completes. None of
+  // those are the features being broken; they are a process being killed.
+  //
+  // res.sendFile with no callback forwards any error (missing file, permission,
+  // a deploy swapping the directory underneath us) straight to the 500 handler,
+  // so the fallback below is the thing that actually breaks the loop.
   if (!serverReady) {
-    return res.sendFile(path.join(process.cwd(), 'public', 'loading.html'));
+    return res.sendFile(path.join(process.cwd(), 'public', 'loading.html'), (err) => {
+      if (!err || res.headersSent) return;
+      console.warn(`[Boot] loading.html unavailable (${err.message}) — serving inline shell`);
+      res.status(200).type('html').send(
+        '<!doctype html><meta charset="utf-8"><title>Starting…</title>' +
+        '<meta http-equiv="refresh" content="3">' +
+        '<body style="font:16px system-ui;display:grid;place-items:center;height:100vh;margin:0">' +
+        '<p>Starting up — this page refreshes automatically.</p></body>',
+      );
+    });
   }
   next();
 });
 
+// -----------------------------------------------------------------------
+// STALE TEMP-ARTIFACT JANITOR
+//
+// Scans, editorial pipelines, and remix renders stage large working copies
+// (up to a full ~1GB creator source each) in job-scoped temp dirs and
+// delete them in in-process finally blocks — a guarantee that only holds
+// while the process survives. On the Replit reserved VM /tmp persists
+// across restarts, so an OOM-kill or redeploy mid-job orphans the copy;
+// pin dirs are hard links, so sourceCache's own sweeper unlinking its
+// cache entry does NOT free those bytes. Enough orphans and the scanner's
+// 100MB disk preflight starts hard-failing every scan.
+//
+// This sweep removes stale entries from:
+//   - os.tmpdir() entries prefixed scan- (covers scan-v2- and the legacy
+//     scanner-v1 scan-<id>-<ts> dirs) / dense-scan- / detect-, after 2h
+//     (well past the longest legitimate scan; scans cap ~10min). Prefix-
+//     matched because tmpdir is shared with the yt-dlp binary cache,
+//     cookie jar, and fullscale-source-cache — none of which may ever be
+//     touched here; sourceCache runs its own sweeper.
+//   - everything under /tmp/storage-downloads, after 2h.
+//   - everything under the job-exclusive roots /tmp/editorial-source,
+//     /tmp/editorial-renders, /tmp/remix-videos, after 6h. These stage
+//     their files once at job start, so the top-level mtime is the job
+//     START time — and a many-clip render run (15-min-per-clip ffmpeg
+//     ceiling, no overall cap) can legitimately still be reading its
+//     staged source well past 2h.
+// -----------------------------------------------------------------------
+const TEMP_SWEEP_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const TEMP_SWEEP_RENDER_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const TEMP_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+async function sweepStaleTempArtifacts(): Promise<void> {
+  const now = Date.now();
+  const removed: string[] = [];
+  const targets: Array<{ root: string; maxAgeMs: number; match: (name: string) => boolean }> = [
+    { root: os.tmpdir(), maxAgeMs: TEMP_SWEEP_MAX_AGE_MS, match: (n) => n.startsWith("scan-") || n.startsWith("dense-scan-") || n.startsWith("detect-") },
+    { root: "/tmp/editorial-source", maxAgeMs: TEMP_SWEEP_RENDER_MAX_AGE_MS, match: () => true },
+    { root: "/tmp/editorial-renders", maxAgeMs: TEMP_SWEEP_RENDER_MAX_AGE_MS, match: () => true },
+    { root: "/tmp/remix-videos", maxAgeMs: TEMP_SWEEP_RENDER_MAX_AGE_MS, match: () => true },
+    { root: "/tmp/storage-downloads", maxAgeMs: TEMP_SWEEP_MAX_AGE_MS, match: () => true },
+  ];
+  for (const { root, maxAgeMs, match } of targets) {
+    const cutoff = now - maxAgeMs;
+    let names: string[];
+    try {
+      names = await fs.promises.readdir(root);
+    } catch {
+      continue; // Root doesn't exist yet — nothing has been staged there
+    }
+    for (const name of names) {
+      if (!match(name)) continue;
+      const full = path.join(root, name);
+      try {
+        const stat = await fs.promises.stat(full);
+        if (stat.mtimeMs >= cutoff) continue; // Possibly a live job — leave it
+        await fs.promises.rm(full, { recursive: true, force: true });
+        removed.push(full);
+      } catch {
+        // Entry vanished mid-sweep (the job's own cleanup won the race) — fine
+      }
+    }
+  }
+  if (removed.length > 0) {
+    console.log(`[TempSweep] Removed ${removed.length} stale temp artifact(s): ${removed.join(", ")}`);
+  }
+}
+
 (async () => {
   try {
-    log("Starting server initialization...");
+    // Which code is actually running? Replit stamps a per-deployment id on
+    // every log line that resembles a git SHA but isn't one; this is the
+    // real build commit, injected by script/build.ts at bundle time.
+    log(`Starting server initialization... (build ${process.env.BUILD_COMMIT || "dev"})`);
     
     // ============================================
     // PHASE 1: Health endpoint (for load balancer)
@@ -246,6 +468,23 @@ app.use((req, res, next) => {
     await registerRoutes(httpServer, app);
     log("Routes registered successfully");
 
+    // Warm up yt-dlp binary in the background (downloads latest if cached
+    // copy is stale). Non-blocking — server keeps starting while this runs.
+    // First-scan latency is meaningfully better when the warm-up has run.
+    import("./lib/ytDlpUpdater").then(m => m.ensureYtDlpReady()).catch(err =>
+      console.warn("[startup] yt-dlp warm-up failed (non-fatal):", err?.message)
+    );
+
+    // Configure GCS bucket CORS once per process so direct-to-storage uploads
+    // (large-file path via resumable session URLs) don't fail the browser's
+    // preflight. Idempotent and cheap; non-blocking on failure since the
+    // server-side fallback (multer) still works without it.
+    import("./lib/objectStorage").then(m => m.ensureBucketCors())
+      .then(cfg => console.log(`[startup] GCS bucket CORS configured for direct uploads (origins: ${cfg.origin.join(", ")})`))
+      .catch(err =>
+        console.warn("[startup] GCS bucket CORS setup failed (non-fatal — direct uploads may CORS-error until manual fix):", err?.message)
+      );
+
     // Error handler
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;
@@ -294,6 +533,7 @@ app.use((req, res, next) => {
             () => {
               httpServer.removeListener("error", onError);
               log(`Server listening on port ${port}`);
+              startStallWatch();
               resolve();
             },
           );
@@ -314,6 +554,28 @@ app.use((req, res, next) => {
     // Mark server as fully ready AFTER listening
     serverReady = true;
     log("Server fully ready and accepting traffic");
+
+    // Deploy-replacement handshake. Replit stops the outgoing process with
+    // SIGTERM — but two modules register SIGTERM listeners (the yt-dlp
+    // process-group reaper, glbRenderer's puppeteer cleanup), and ANY
+    // registered listener suppresses Node's default terminate action. On a
+    // reserved VM that means the old process lingers holding this port,
+    // the replacement exhausts its EADDRINUSE retry budget above, and the
+    // deploy reports "app failed to start". This is the one authoritative
+    // shutdown owner: release the port immediately, let the other
+    // listeners' best-effort cleanup fire, then exit unconditionally.
+    let shuttingDown = false;
+    const shutdownAndExit = (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      log(`${signal} received — releasing port ${port} and exiting`);
+      try { httpServer.close(() => process.exit(0)); } catch { process.exit(0); }
+      // close() waits for open keep-alive connections — don't. The
+      // replacement process needs this port inside its retry window.
+      setTimeout(() => process.exit(0), 2_500).unref();
+    };
+    process.on("SIGTERM", () => shutdownAndExit("SIGTERM"));
+    process.on("SIGINT", () => shutdownAndExit("SIGINT"));
     
     // ============================================
     // PHASE 7: Background tasks (non-blocking)
@@ -330,7 +592,127 @@ app.use((req, res, next) => {
       } catch (dbError) {
         log(`Database seeding warning: ${dbError}`);
       }
-      
+
+      // Is the database actually caught up with this build? Drizzle names
+      // every column explicitly, so one un-pushed migration fails every query
+      // touching that table and the whole app reads as "laggy, everything
+      // spins". Loud at boot beats diagnosing it from symptoms again.
+      //
+      // And REPAIR it, not just report it. This build shipped with four tables
+      // (creator_credits, credit_grants, ai_generations, credit_purchases)
+      // absent from the deployment database — logged loudly, then left broken,
+      // because the fix lived behind an admin button nobody knew to press
+      // while the app was misbehaving. A deployment that can heal itself is
+      // worth more than a deployment that describes its own illness.
+      //
+      // Safe to run unattended: the plan is STRICTLY ADDITIVE by construction
+      // — CREATE TABLE IF NOT EXISTS and ADD COLUMN IF NOT EXISTS only, never
+      // a DROP, never a type change — so it cannot destroy data and is a no-op
+      // when the schema already matches. Set SCHEMA_AUTOREPAIR=false to
+      // disable.
+      try {
+        const { logSchemaDriftAtBoot, applySchemaFix } = await import("./lib/schemaCheck");
+        const drift = await logSchemaDriftAtBoot();
+        const needsRepair = (drift?.missingTables?.length ?? 0) > 0 || (drift?.missingColumns?.length ?? 0) > 0;
+        // OPT-IN, not default. Automatic DDL at boot changes startup behaviour,
+        // and a deploy failed to start immediately after this shipped. Whether
+        // or not it was the cause, running unattended migrations by default is
+        // not something to leave on while startup is the thing under
+        // investigation. Set SCHEMA_AUTOREPAIR=true to enable, or click
+        // "Repair database schema" in the admin placements page.
+        if (needsRepair && process.env.SCHEMA_AUTOREPAIR === "true") {
+          log("Schema drift detected — applying additive repair (SCHEMA_AUTOREPAIR=true)...");
+          const result = await applySchemaFix();
+          const ok = (result?.applied ?? []).filter((a: any) => a.ok).length;
+          const failed = (result?.applied ?? []).filter((a: any) => !a.ok);
+          log(`Schema repair: ${ok} statement(s) applied, ${failed.length} failed`);
+          for (const f of failed) log(`  repair FAILED: ${f.sql} -> ${f.error}`);
+        } else if (needsRepair) {
+          log("Schema drift detected — NOT auto-repairing (set SCHEMA_AUTOREPAIR=true, or use the admin Repair button).");
+        }
+      } catch (schemaErr) {
+        log(`Schema check failed to run: ${schemaErr}`);
+      }
+
+      // Publishing scheduler — fires user-scheduled posts when due (60s poll).
+      // Kill switch: SCHEDULER_ENABLED=false.
+      if (process.env.SCHEDULER_ENABLED !== "false") {
+        try {
+          const { startScheduler } = await import("./lib/distribution/scheduler");
+          startScheduler();
+          log("Publishing scheduler started");
+        } catch (schedulerError) {
+          log(`Publishing scheduler failed to start: ${schedulerError}`);
+        }
+      } else {
+        log("Publishing scheduler disabled via SCHEDULER_ENABLED=false");
+      }
+
+      // Social insight snapshots — Meta only retains account insights ~90
+      // days (stories 24h); this 12h job appends them to our own table so
+      // creator history accumulates. Kill switch: SNAPSHOTS_ENABLED=false.
+      if (process.env.SNAPSHOTS_ENABLED !== "false") {
+        try {
+          const { startSocialSnapshotJob } = await import("./lib/socialSnapshots");
+          startSocialSnapshotJob();
+        } catch (snapErr) {
+          log(`Social snapshot job failed to start: ${snapErr}`);
+        }
+      }
+
+      // Per-video audience time series — the OUTCOME side of the CV-impact
+      // measurement design. view_count is overwritten on refresh, so without
+      // this there are no trajectories to compare before/after a placement
+      // went live. Scoped to videos under measurement. Kill switch:
+      // VIDEO_STAT_SERIES_ENABLED=false.
+      if (process.env.VIDEO_STAT_SERIES_ENABLED !== "false") {
+        try {
+          const { startVideoStatSeriesJob } = await import("./lib/videoStatSeries");
+          startVideoStatSeriesJob();
+        } catch (vsErr) {
+          log(`Video stat series job failed to start: ${vsErr}`);
+        }
+      }
+
+      // Audience retention curves + per-video demographics — the
+      // measurement the CV-impact study turns on (do viewers linger or drop
+      // at the seconds a product is on screen). Uses the yt-analytics scope
+      // that has been granted since launch. Kill: RETENTION_CAPTURE_ENABLED=false.
+      if (process.env.RETENTION_CAPTURE_ENABLED !== "false") {
+        try {
+          const { startRetentionCaptureJob } = await import("./lib/retentionFetcher");
+          startRetentionCaptureJob();
+        } catch (rcErr) {
+          log(`Retention capture job failed to start: ${rcErr}`);
+        }
+      }
+
+      // Per-post performance for clips the creator published through
+      // FullScale. Without this job clip_analytics only ever received rows
+      // when someone pressed Refresh inside the Distribution modal, so every
+      // "views" figure in the product read 0 — the work was done and the
+      // receipt was hidden. Kill: ANALYTICS_CAPTURE_ENABLED=false.
+      if (process.env.ANALYTICS_CAPTURE_ENABLED !== "false") {
+        try {
+          const { startAnalyticsCaptureJob } = await import("./lib/distribution/analyticsCollector");
+          startAnalyticsCaptureJob();
+        } catch (acErr) {
+          log(`Analytics capture job failed to start: ${acErr}`);
+        }
+      }
+
+      // Audience response: per-day engagement (retroactive, so before/after
+      // around a placement works immediately) + comment text with sentiment
+      // and brand-mention classification. Kill: AUDIENCE_RESPONSE_ENABLED=false.
+      if (process.env.AUDIENCE_RESPONSE_ENABLED !== "false") {
+        try {
+          const { startAudienceResponseJob } = await import("./lib/audienceResponse");
+          startAudienceResponseJob();
+        } catch (arErr) {
+          log(`Audience response job failed to start: ${arErr}`);
+        }
+      }
+
       // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
       // try {
       //   log("Initializing TensorFlow scan worker...");
@@ -340,6 +722,22 @@ app.use((req, res, next) => {
       //   log(`TensorFlow worker initialization warning: ${tfError}`);
       // }
     });
+
+    // Stale temp-artifact janitor (see sweepStaleTempArtifacts above).
+    // Deferred 60s so boot-critical I/O finishes first, then every 6h.
+    // unref'd so the timers never hold the process open.
+    const firstSweep = setTimeout(() => {
+      sweepStaleTempArtifacts().catch((err: any) =>
+        console.warn("[TempSweep] sweep failed (non-fatal):", err?.message || err)
+      );
+      const recurring = setInterval(() => {
+        sweepStaleTempArtifacts().catch((err: any) =>
+          console.warn("[TempSweep] sweep failed (non-fatal):", err?.message || err)
+        );
+      }, TEMP_SWEEP_INTERVAL_MS);
+      recurring.unref();
+    }, 60_000);
+    firstSweep.unref();
 
   } catch (error) {
     console.error("Failed to start server:", error);

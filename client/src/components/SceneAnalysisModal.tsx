@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video, Layers } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, ChevronDown, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video, Layers, Crosshair } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
 import PlacementPreviewModal from "./PlacementPreviewModal";
 import * as tf from "@tensorflow/tfjs";
 import * as cocoSsd from "@tensorflow-models/coco-ssd";
@@ -10,6 +13,10 @@ import * as cocoSsd from "@tensorflow-models/coco-ssd";
 export interface Scene {
   id: string;
   timestamp: string;
+  /** Exact frame timestamp in seconds (float). The display `timestamp` label
+      is floor-truncated to M:SS, which collides when two sampled frames land
+      in the same second — use this for surface↔frame matching. */
+  rawTs?: number;
   imageUrl: string;
   surfaces: number;
   surfaceTypes: string[];
@@ -24,6 +31,11 @@ export interface VideoWithScenes {
   viewCount: number;
   scenes: Scene[];
   filePath?: string | null;
+  // Source video identifiers — used by the embedded "Watch original" player
+  // for YT/IG/FB videos where we don't store the source bytes ourselves.
+  youtubeId?: string | null;
+  platform?: string | null;
+  sourceUrl?: string | null;
 }
 
 interface DetectedObject {
@@ -38,6 +50,8 @@ interface DatabaseSurface {
   videoId: number;
   timestamp: string;
   surfaceType: string;
+  orientation?: string | null;
+  creatorApproved?: boolean;
   confidence: string;
   boundingBoxX: string;
   boundingBoxY: string;
@@ -46,6 +60,78 @@ interface DatabaseSurface {
   frameUrl: string | null;
   sceneContext: string | null;
   surroundings: string[] | null;
+  /** Canonical-surface identity stamped at scan time — every detection row
+      of the same physical surface shares one id. Null on rows from scans
+      that predate group stamping; those fall into the ungrouped tail. */
+  surfaceGroupId?: string | null;
+  /** Scene cluster ID from the perceptual scene index, stamped at scan
+      time. Null on pre-index rows — teach mode then falls back to locating
+      the frame timestamp in the scene index's shots. */
+  sceneId?: number | null;
+  /** Numbered fixture identity ("Wall 2", "Side Table 1") resolved
+      server-side from the scene inventory via surfaceGroupId. Null for
+      legacy videos / unresolvable rows — render surfaceType instead. */
+  displayLabel?: string | null;
+}
+
+// Scene-block inventory persisted alongside the scan (video_index.scene_inventory).
+// A "scene" is a recurring camera setup — the wide 3-person shot that comes
+// back 40 times, the host close-up, etc. Each carries its canonical physical
+// surfaces (one entry per surfaceGroupId) with occurrence counts and total
+// screen time, so the review UI can show "3 surfaces across 2 scenes" instead
+// of a wall of per-frame detection rows. Null for videos scanned before the
+// inventory existed — the modal falls back to the flat per-row list.
+interface SceneInventorySurface {
+  groupId: string;
+  surfaceType: string;
+  /** Numbered fixture identity ("Wall 2") stamped at inventory build time.
+      Absent/null on inventories built before numbering existed. */
+  displayLabel?: string | null;
+  bbox: { x: number; y: number; w: number; h: number };
+  confidence: number;
+  screenTimeSec: number;
+  rowCount: number;
+  representativeRowId: number;
+  frameUrl: string | null;
+}
+
+interface SceneInventoryScene {
+  sceneId: number;
+  label: string;
+  occurrences: number;
+  totalSec: number;
+  surfaces: SceneInventorySurface[];
+}
+
+interface SceneInventory {
+  version: number;
+  source: "sceneIndex" | "grid";
+  scenes: SceneInventoryScene[];
+  generatedAt: string;
+}
+
+// Minimal slice of the perceptual scene index the surfaces endpoint passes
+// through — enough to map any frame timestamp to its recurring scene class.
+// Teach mode needs the class id even when the displayed frame has zero
+// detection rows, which is exactly when a creator wants to teach.
+interface SceneIndexShot {
+  shotIdx: number;
+  sceneId: number;
+  tStart: number;
+  tEnd: number;
+}
+
+/** A drawn teach bbox: display px (relative to the frame image's rendered
+ *  box) for the overlay + form anchor, plus the 0-1 normalization captured
+ *  at release time so a later window resize can't skew what gets saved. */
+interface TeachRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  wrapW: number;
+  wrapH: number;
+  norm: { x: number; y: number; w: number; h: number };
 }
 
 interface SceneAnalysisModalProps {
@@ -64,6 +150,58 @@ const PLACEMENT_SURFACES = [
   "oven", "toaster", "sink", "backpack", "handbag", "suitcase", "umbrella"
 ];
 
+// The scanner's canonical surface vocabulary (scanner_v2 detection prompt) —
+// what a creator can teach. Values go to the teach endpoint verbatim; the
+// label is the human-readable render ("side_table" → "Side table").
+const TEACH_SURFACE_TYPES = [
+  "desk", "table", "shelf", "counter", "nightstand", "side_table",
+  "coffee_table", "studio_desk", "floor", "rug", "couch", "wall", "door", "window",
+] as const;
+
+const teachTypeLabel = (t: string): string => {
+  const spaced = t.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+};
+
+// Same rule as the scanner's inferOrientation: walls/doors/windows are
+// vertical, everything else is horizontal.
+const teachOrientationFor = (t: string): "horizontal" | "vertical" =>
+  t === "wall" || t === "door" || t === "window" ? "vertical" : "horizontal";
+
+// True when the video can be played in-app via /api/video/:id/source.
+// We support local uploads + YT/IG/FB sources (downloaded on demand).
+function canPlayInApp(video: VideoWithScenes | null): boolean {
+  if (!video) return false;
+  if (video.filePath) return true;
+  const platform = video.platform?.toLowerCase();
+  const ytId = video.youtubeId;
+  if (platform === "youtube" && ytId && !ytId.includes(":") && !ytId.startsWith("upload-")) return true;
+  if ((platform === "instagram" || platform === "facebook") && ytId) return true;
+  // Generic yt-dlp platforms — sourceCache resolves these on demand.
+  if ((platform === "twitch" || platform === "tiktok" || platform === "twitter") && ytId) return true;
+  return false;
+}
+
+// Frame URLs from the DB may carry absolute Replit paths or ./public/
+// prefixes from older scans — normalize to a browser-servable root path.
+function normalizeFrameUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  let src = url;
+  src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+  src = src.replace(/^\.\/public\//, '/');
+  src = src.replace(/^public\//, '/');
+  src = src.replace(/\/\//g, '/');
+  if (!src.startsWith('/') && !src.startsWith('http')) src = '/' + src;
+  return src;
+}
+
+// Screen-time label for scene/surface headers: "23.4 min" above a minute,
+// plain seconds below it.
+function formatScreenTime(totalSec: number): string {
+  if (!Number.isFinite(totalSec) || totalSec <= 0) return "0s";
+  return totalSec >= 60 ? `${(totalSec / 60).toFixed(1)} min` : `${Math.round(totalSec)}s`;
+}
+
 export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVideo, onPlayFromTimestamp }: SceneAnalysisModalProps) {
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
@@ -77,6 +215,23 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   const [dbSurfaces, setDbSurfaces] = useState<DatabaseSurface[]>([]);
   const [isLoadingDbSurfaces, setIsLoadingDbSurfaces] = useState(false);
   const [hasDbSurfaces, setHasDbSurfaces] = useState(false);
+  // Scene-block inventory from the same surfaces response. Follows the
+  // exact staleness semantics of dbSurfaces: always overwritten together
+  // on a successful fetch, null whenever the scan didn't produce one.
+  const [sceneInventory, setSceneInventory] = useState<SceneInventory | null>(null);
+  // Which canonical surfaces have their per-frame detection rows expanded.
+  // Collapsed by default: the sidebar is narrow, and the surface card plus
+  // its approve-all action is the primary review unit — the frame rows are
+  // drill-down detail.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroupExpanded = (groupId: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
 
   // Server-side rescan state
   const [isServerScanning, setIsServerScanning] = useState(false);
@@ -86,9 +241,38 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // Frame loading state — tracks whether the main frame image has loaded
   const [frameLoaded, setFrameLoaded] = useState(false);
   const [frameError, setFrameError] = useState(false);
+  // Toggles between scene-frame view and the in-app video player streamed
+  // via /api/video/:id/source. First playback triggers a backend yt-dlp
+  // pull to a per-instance cache; subsequent plays within the TTL are
+  // instant. We surface the loading state to the user as a progress bar.
+  const [showEmbedPlayer, setShowEmbedPlayer] = useState(false);
+  const [playerLoadProgress, setPlayerLoadProgress] = useState(0); // 0–100
+  const [playerCanPlay, setPlayerCanPlay] = useState(false);
+  const [playerError, setPlayerError] = useState<string | null>(null);
 
   // Local scenes state — starts from video.scenes, rebuilt after server rescan
   const [localScenes, setLocalScenes] = useState<Scene[]>(video?.scenes || []);
+
+  // ── Teach-a-surface state ──
+  // Creator-drawn bbox teaching: armed → crosshair drag on the frame →
+  // compact type form → POST to the teach endpoint, which writes the
+  // surface into the set's room model so every future scan confirms it.
+  const [teachArmed, setTeachArmed] = useState(false);
+  const [teachDrag, setTeachDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [teachRect, setTeachRect] = useState<TeachRect | null>(null);
+  const [teachType, setTeachType] = useState<string>("");
+  const [isTeaching, setIsTeaching] = useState(false);
+  // Perceptual scene index shots passed through the surfaces response —
+  // the timestamp → scene-class mapping for frames without detection rows.
+  const [sceneIndexShots, setSceneIndexShots] = useState<SceneIndexShot[] | null>(null);
+  const { toast } = useToast();
+
+  const resetTeach = useCallback(() => {
+    setTeachArmed(false);
+    setTeachDrag(null);
+    setTeachRect(null);
+    setTeachType("");
+  }, []);
 
   // Sync localScenes when video prop changes or modal opens
   useEffect(() => {
@@ -99,6 +283,37 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       setFrameError(false);
     }
   }, [video?.id, video?.scenes, open]);
+
+  // Rebuild localScenes from freshly-fetched dbSurfaces. The video.scenes
+  // prop comes from Library at click time, which may be stale (e.g.,
+  // built when the user was unauthenticated and got 0 surfaces). Once the
+  // modal's own fetchDatabaseSurfaces returns real data, regenerate
+  // scenes by timestamp clusters so navigation arrows actually move
+  // through frames with content instead of one stale fallback scene.
+  useEffect(() => {
+    if (!video?.id) return;
+    if (dbSurfaces.length === 0) return;
+    const newScenes = buildScenesFromSurfaces(dbSurfaces, video.id);
+    if (newScenes.length === 0) return;
+    setLocalScenes(newScenes);
+    // Reset index if out of range; otherwise preserve user's navigation.
+    setCurrentSceneIndex(prev => prev >= newScenes.length ? 0 : prev);
+    // The rebuilt scene usually has the string-identical imageUrl (same
+    // endpoint feeds Library's builder), so the mounted <img> keeps its key
+    // AND src — React never remounts it and no new 'load' event can fire.
+    // Resetting frameLoaded=false here would then hide an already-loaded
+    // frame forever (onLoad is the only true-setter): the black-view bug.
+    // If the img is already complete, keep it visible and paint the fresh
+    // bboxes; only reset when a genuinely new load is coming.
+    const img = imageRef.current;
+    if (img && img.complete && img.naturalWidth > 0) {
+      setFrameLoaded(true);
+      setTimeout(() => drawDbSurfaces(), 100);
+    } else {
+      setFrameLoaded(false);
+      setFrameError(false);
+    }
+  }, [dbSurfaces, video?.id]);
   
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -127,6 +342,27 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       drawDbSurfaces();
     }
   }, [currentSceneIndex]);
+
+  // Teach mode is frame-anchored: anything that swaps what's on screen
+  // (scene nav, player toggle, another video, modal close) invalidates an
+  // in-progress draw — disarm instead of letting a stale box land on the
+  // wrong frame.
+  useEffect(() => {
+    resetTeach();
+  }, [open, video?.id, currentSceneIndex, showEmbedPlayer, resetTeach]);
+
+  // Escape disarms teach mode. Bubble phase + listbox guard so an open
+  // type dropdown consumes its own Escape first.
+  useEffect(() => {
+    if (!teachArmed) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (e.target instanceof HTMLElement && e.target.closest('[role="listbox"]')) return;
+      resetTeach();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [teachArmed, resetTeach]);
   
   // Fetch surfaces from database API
   const fetchDbSurfaces = async (videoId: number) => {
@@ -136,11 +372,13 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     console.log(`[SceneAnalysisModal] adminEmail prop:`, adminEmail);
     setIsLoadingDbSurfaces(true);
     try {
-      // Include admin_email for flexible auth if available
-      let url = `/api/video/${videoId}/surfaces`;
-      if (adminEmail) {
-        url += `?admin_email=${encodeURIComponent(adminEmail)}`;
-      }
+      // includeUnapproved=true: this modal is the creator's review surface,
+      // so we want every detected surface (approved + pending) with its
+      // approval state visible. The endpoint enforces that this only returns
+      // unapproved data when the requester owns the video.
+      const params = new URLSearchParams({ includeUnapproved: "true" });
+      if (adminEmail) params.set("admin_email", adminEmail);
+      const url = `/api/video/${videoId}/surfaces?${params.toString()}`;
       console.log(`[SceneAnalysisModal] Fetching: ${url}`);
       const res = await fetch(url, { credentials: "include" });
       console.log(`[SceneAnalysisModal] Response status: ${res.status}`);
@@ -149,6 +387,8 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
         console.log(`[SceneAnalysisModal] Surfaces from DB:`, data);
         setDbSurfaces(data.surfaces || []);
         setHasDbSurfaces((data.surfaces || []).length > 0);
+        setSceneInventory(data.sceneInventory ?? null);
+        setSceneIndexShots(Array.isArray(data.sceneIndex?.shots) ? data.sceneIndex.shots : null);
         console.log(`[SceneAnalysisModal] Loaded ${data.surfaces?.length || 0} surfaces, hasDbSurfaces: ${(data.surfaces || []).length > 0}`);
       } else {
         const errText = await res.text();
@@ -161,18 +401,40 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     }
   };
 
+  // Approve every frame of a canonical surface at once. Deliberately goes
+  // through the same per-row PATCH endpoint as the individual toggles —
+  // approval stays a per-row fact server-side, this is purely a client
+  // convenience. Optimistic like the single-row toggle; any row whose
+  // PATCH fails reverts individually so partial success sticks.
+  const approveGroupRows = async (rows: DatabaseSurface[]) => {
+    const pending = rows.filter(r => !r.creatorApproved);
+    if (pending.length === 0) return;
+    const pendingIds = new Set(pending.map(r => r.id));
+    setDbSurfaces(prev => prev.map(x =>
+      pendingIds.has(x.id) ? { ...x, creatorApproved: true } : x
+    ));
+    const results = await Promise.allSettled(pending.map(r =>
+      fetchWithTimeout(`/api/surface/${r.id}/approval`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ approved: true }),
+      }).then(res => {
+        if (!res.ok) throw new Error("approval failed");
+      })
+    ));
+    const failedIds = new Set(
+      pending.filter((_, i) => results[i].status === "rejected").map(r => r.id)
+    );
+    if (failedIds.size > 0) {
+      setDbSurfaces(prev => prev.map(x =>
+        failedIds.has(x.id) ? { ...x, creatorApproved: false } : x
+      ));
+    }
+  };
+
   // Helper: build scenes from surfaces data (same logic as Library.tsx handleVideoClick)
   const buildScenesFromSurfaces = (surfaces: any[], videoId: number): Scene[] => {
-    const normalizeFrameUrl = (url: string | null | undefined): string | null => {
-      if (!url) return null;
-      let src = url;
-      src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
-      src = src.replace(/^\.\/public\//, '/');
-      src = src.replace(/^public\//, '/');
-      src = src.replace(/\/\//g, '/');
-      if (!src.startsWith('/') && !src.startsWith('http')) src = '/' + src;
-      return src;
-    };
     const buildFrameUrl = (ts: number): string => {
       const roundedTs = Math.floor(Number(ts));
       return `/uploads/frames/${videoId}/frame_${roundedTs}s.jpg`;
@@ -189,6 +451,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
         return {
           id: `scene-${videoId}-${idx}`,
           timestamp: `${Math.floor(Number(ts) / 60)}:${String(Math.floor(Number(ts) % 60)).padStart(2, '0')}`,
+          rawTs: Number(ts) || 0,
           imageUrl: normalizeFrameUrl(surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url) || buildFrameUrl(ts),
           surfaces: surfacesAtTime.length,
           surfaceTypes: surfaceTypes as string[],
@@ -210,46 +473,40 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
 
     try {
       // Use admin-scan endpoint (synchronous, returns when scan completes)
-      const res = await fetch(`/api/admin-scan/${video.id}`, {
+      const res = await fetchWithTimeout(`/api/admin-scan/${video.id}`, {
         method: "POST",
         credentials: "include",
       });
 
       if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Scan failed (${res.status}): ${errText}`);
+        // Server now returns a JSON { error } on scan failure (incl. 422 when
+        // the scan ran but produced no usable source/surfaces). Surface the
+        // real, actionable message instead of raw response text.
+        let msg = `Scan failed (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) msg = body.error;
+        } catch {
+          const t = await res.text().catch(() => "");
+          if (t) msg = t;
+        }
+        throw new Error(msg);
       }
 
       const scanResult = await res.json();
       console.log(`[SceneAnalysisModal] Server scan complete:`, scanResult);
 
-      // Refetch surfaces from the API
-      const surfacesRes = await fetch(`/api/video/${video.id}/surfaces`, { credentials: "include" });
-      if (surfacesRes.ok) {
-        const data = await surfacesRes.json();
-        const surfaces = data.surfaces || [];
-        setDbSurfaces(surfaces);
-        setHasDbSurfaces(surfaces.length > 0);
-
-        // Rebuild scenes from fresh surface data
-        const newScenes = buildScenesFromSurfaces(surfaces, video.id);
-        if (newScenes.length > 0) {
-          setLocalScenes(newScenes);
-          setCurrentSceneIndex(0);
-        } else {
-          // Fallback: single scene from thumbnail
-          setLocalScenes([{
-            id: `scene-${video.id}-0`,
-            timestamp: "0:00",
-            imageUrl: `/uploads/frames/${video.id}/frame_0s.jpg`,
-            surfaces: scanResult.result?.surfacesDetected || 0,
-            surfaceTypes: [],
-            context: "Scan complete",
-            confidence: 0,
-          }]);
-          setCurrentSceneIndex(0);
-        }
-      }
+      // Refetch exactly as a fresh open does (includeUnapproved=true +
+      // admin_email). A rescan retires every prior-generation row and
+      // inserts the new ones unapproved, so the approved-only default view
+      // is empty right after a scan — the params are what make the fresh
+      // rows visible to the owner. The dbSurfaces rebuild effect then
+      // regenerates localScenes from the fresh rows — same code path as
+      // opening the modal. No 0-surface fallback needed: /api/admin-scan
+      // returns 422 when a scan yields nothing, which the error path above
+      // already handles.
+      await fetchDbSurfaces(video.id);
+      setCurrentSceneIndex(0);
     } catch (err) {
       console.error("[SceneAnalysisModal] Server rescan failed:", err);
       setServerScanError(err instanceof Error ? err.message : "Scan failed");
@@ -273,16 +530,19 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     canvas.height = rect.height;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Get current scene's timestamp (e.g., "00:05" -> 5)
+    // Get current scene's exact frame timestamp. Fall back to parsing the
+    // M:SS label for scenes built before rawTs existed (e.g. Library prop).
     const currentScene = localScenes[currentSceneIndex];
     const sceneTimestamp = currentScene?.timestamp || "00:00";
     const [mins, secs] = sceneTimestamp.split(":").map(Number);
-    const sceneSeconds = (mins || 0) * 60 + (secs || 0);
-    
-    // Filter surfaces for this timestamp (within 5 second window)
+    const sceneSeconds = currentScene?.rawTs ?? ((mins || 0) * 60 + (secs || 0));
+
+    // Draw ONLY surfaces detected on THIS frame. A wide window here overlaid
+    // other frames' surfaces onto the current image (floor boxes from a 0:34
+    // wide shot painted over a 0:29 close-up).
     const sceneSurfaces = dbSurfaces.filter(s => {
-      const surfaceTs = parseInt(s.timestamp) || 0;
-      return Math.abs(surfaceTs - sceneSeconds) <= 5;
+      const surfaceTs = parseFloat(s.timestamp) || 0;
+      return Math.abs(surfaceTs - sceneSeconds) < 0.75;
     });
     
     if (sceneSurfaces.length === 0) return;
@@ -304,16 +564,28 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       ctx.lineWidth = 3;
       ctx.strokeRect(x, y, w, h);
       
-      // Draw label background
-      const label = `${surface.surfaceType} (${confidence}%)`;
+      // Draw label. Canvas silently clips anything outside its bounds, so
+      // an unconditional band above the box vanishes for top-of-frame
+      // surfaces (walls have y ≈ 0 by construction). Flip inside the box's
+      // top edge when there's no headroom — safe even for full-height wall
+      // boxes where below-the-box would clip at the bottom — and clamp x /
+      // elide long text so the band never overflows the right edge.
+      const label = `${(surface as any).displayLabel || surface.surfaceType} (${confidence}%)`;
       ctx.font = "bold 14px Inter, sans-serif";
-      const textWidth = ctx.measureText(label).width;
+      const labelH = 24;
+      let text = label;
+      let textWidth = ctx.measureText(text).width;
+      const maxW = canvas.width - 8;
+      while (textWidth + 12 > maxW && text.length > 4) {
+        text = text.slice(0, -2) + "…";
+        textWidth = ctx.measureText(text).width;
+      }
+      const labelX = Math.max(0, Math.min(x, canvas.width - (textWidth + 12)));
+      const labelTop = y >= labelH ? y - labelH : Math.min(y + 2, canvas.height - labelH);
       ctx.fillStyle = color;
-      ctx.fillRect(x, y - 24, textWidth + 12, 24);
-      
-      // Draw label text
+      ctx.fillRect(labelX, labelTop, textWidth + 12, labelH);
       ctx.fillStyle = "#ffffff";
-      ctx.fillText(label, x + 6, y - 7);
+      ctx.fillText(text, labelX + 6, labelTop + 17);
     });
   }, [dbSurfaces, currentSceneIndex, video]);
 
@@ -472,17 +744,142 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     PLACEMENT_SURFACES.includes(d.class.toLowerCase())
   );
   
-  // Get current scene's timestamp for filtering database surfaces
+  // Get current scene's exact frame timestamp for filtering database surfaces
   const sceneTimestamp = currentScene?.timestamp || "00:00";
   const [mins, secs] = sceneTimestamp.split(":").map(Number);
-  const sceneSeconds = (mins || 0) * 60 + (secs || 0);
-  
-  // Filter database surfaces for current timestamp (within 5 second window)
+  const sceneSeconds = currentScene?.rawTs ?? ((mins || 0) * 60 + (secs || 0));
+
+  // Only the surfaces detected on the displayed frame — keeps the sidebar
+  // count/types in lockstep with the boxes actually drawn on the image
   const currentDbSurfaces = dbSurfaces.filter(s => {
-    const surfaceTs = parseInt(s.timestamp) || 0;
-    return Math.abs(surfaceTs - sceneSeconds) <= 5;
+    const surfaceTs = parseFloat(s.timestamp) || 0;
+    return Math.abs(surfaceTs - sceneSeconds) < 0.75;
   });
-  
+
+  // Scene class of the displayed frame — what the teach endpoint keys on.
+  // Detection rows on this frame carry the sceneId they were stamped with
+  // at scan time; a frame with zero rows (the teach case) falls back to
+  // locating its timestamp among the scene index's shots.
+  const teachSceneId = (() => {
+    const stamped = currentDbSurfaces.find(s => typeof s.sceneId === "number");
+    if (stamped) return stamped.sceneId as number;
+    if (sceneIndexShots && sceneIndexShots.length > 0) {
+      let best: SceneIndexShot | null = null;
+      let bestDist = Infinity;
+      for (const shot of sceneIndexShots) {
+        const dist = sceneSeconds < shot.tStart
+          ? shot.tStart - sceneSeconds
+          : sceneSeconds > shot.tEnd
+            ? sceneSeconds - shot.tEnd
+            : 0;
+        if (dist < bestDist) { bestDist = dist; best = shot; }
+      }
+      if (best && bestDist <= 1.5) return best.sceneId;
+    }
+    return null;
+  })();
+
+  // ── Teach-mode drag handlers ──
+  // Coordinates are captured against the frame img's rendered box (the
+  // overlay wrapper shrink-wraps to it) and normalized to 0-1 frame space
+  // at release time. Pointer capture keeps the drag alive when the cursor
+  // exits the frame; coords clamp to the box edges.
+  const teachFrameBox = () => imageRef.current?.getBoundingClientRect() ?? null;
+
+  const handleTeachPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!teachArmed || teachRect || isTeaching) return;
+    const box = teachFrameBox();
+    if (!box || box.width <= 0 || box.height <= 0) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const x = Math.max(0, Math.min(e.clientX - box.left, box.width));
+    const y = Math.max(0, Math.min(e.clientY - box.top, box.height));
+    setTeachDrag({ x0: x, y0: y, x1: x, y1: y });
+  };
+
+  const handleTeachPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!teachDrag) return;
+    const box = teachFrameBox();
+    if (!box) return;
+    const x = Math.max(0, Math.min(e.clientX - box.left, box.width));
+    const y = Math.max(0, Math.min(e.clientY - box.top, box.height));
+    setTeachDrag(prev => (prev ? { ...prev, x1: x, y1: y } : prev));
+  };
+
+  const handleTeachPointerUp = () => {
+    if (!teachDrag) return;
+    const drag = teachDrag;
+    setTeachDrag(null);
+    const box = teachFrameBox();
+    if (!box || box.width <= 0 || box.height <= 0) return;
+    const x = Math.min(drag.x0, drag.x1);
+    const y = Math.min(drag.y0, drag.y1);
+    const w = Math.abs(drag.x1 - drag.x0);
+    const h = Math.abs(drag.y1 - drag.y0);
+    // Stray-click guard: a real surface box is at least ~1.5% of the frame
+    // in both dimensions — anything smaller never opens the form.
+    if (w < box.width * 0.015 || h < box.height * 0.015) return;
+    setTeachRect({
+      x, y, w, h,
+      wrapW: box.width,
+      wrapH: box.height,
+      norm: {
+        x: Math.max(0, Math.min(1, x / box.width)),
+        y: Math.max(0, Math.min(1, y / box.height)),
+        w: Math.max(0, Math.min(1, w / box.width)),
+        h: Math.max(0, Math.min(1, h / box.height)),
+      },
+    });
+  };
+
+  const saveTaughtSurface = async () => {
+    if (!video?.id || teachSceneId == null || !teachRect || !teachType) return;
+    setIsTeaching(true);
+    try {
+      const res = await fetchWithTimeout(`/api/video/${video.id}/scenes/${teachSceneId}/teach`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          surfaceType: teachType,
+          orientation: teachOrientationFor(teachType),
+          bbox: teachRect.norm,
+        }),
+      });
+      if (!res.ok) {
+        let msg = `Teach failed (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) msg = body.error;
+        } catch {}
+        throw new Error(msg);
+      }
+      toast({ title: "Taught — this set will track it from now on" });
+      resetTeach();
+      await fetchDbSurfaces(video.id);
+    } catch (err) {
+      toast({
+        title: "Couldn't teach surface",
+        description: err instanceof Error ? err.message : "Request failed",
+        variant: "destructive",
+      });
+    } finally {
+      setIsTeaching(false);
+    }
+  };
+
+  // Rect to paint on the overlay: the live drag while the button is down,
+  // the finalized rect while the form is open.
+  const teachDrawRect = teachDrag
+    ? {
+        x: Math.min(teachDrag.x0, teachDrag.x1),
+        y: Math.min(teachDrag.y0, teachDrag.y1),
+        w: Math.abs(teachDrag.x1 - teachDrag.x0),
+        h: Math.abs(teachDrag.y1 - teachDrag.y0),
+      }
+    : teachRect;
+
+
   // Priority: Database surfaces (real scan) > TensorFlow live detections > NO FALLBACK (show empty state)
   // NEVER use demo/placeholder data - only show real scan results
   const displaySurfaces = hasDbSurfaces && currentDbSurfaces.length > 0
@@ -555,9 +952,96 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
 
             <div className="flex flex-col lg:flex-row overflow-hidden">
               <div className="flex-1 min-w-0 relative overflow-hidden">
+                {/* In-app playback toggle. Pulls the source via
+                    /api/video/:id/source (downloaded on demand to a per-instance
+                    temp cache, never persisted). Replaces the frame stack +
+                    bounding-box overlays with a native <video> player so
+                    creators stay in our UI — no leaving to YouTube/IG/FB. */}
+                {canPlayInApp(video) && (
+                  <Button
+                    size="sm"
+                    variant={showEmbedPlayer ? "default" : "secondary"}
+                    onClick={() => setShowEmbedPlayer(s => !s)}
+                    className="absolute top-4 left-4 z-20 gap-1.5"
+                    data-testid="button-toggle-inapp-player"
+                  >
+                    <Play className="w-4 h-4" />
+                    {showEmbedPlayer ? "Show scan view" : "Watch video"}
+                  </Button>
+                )}
+
                 <div className="relative overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '300px', maxHeight: '70vh' }}>
+                  {/* In-app player — streams from our backend. First load may
+                      take a few seconds while the source downloads to /tmp;
+                      subsequent loads within the cache TTL are instant.
+                      Surface buffering progress so the user knows what's
+                      happening instead of staring at a black box. */}
+                  {showEmbedPlayer && video?.id && canPlayInApp(video) && (
+                    <div className="relative w-full" style={{ background: "#000" }}>
+                      <video
+                        src={`/api/video/${video.id}/source`}
+                        controls
+                        autoPlay
+                        playsInline
+                        preload="auto"
+                        className="w-full max-h-[70vh] object-contain"
+                        data-testid="video-inapp-player"
+                        onProgress={(e) => {
+                          // HTMLMediaElement.buffered: TimeRanges of buffered segments.
+                          // Take the end of the last buffered range as % of duration.
+                          const v = e.currentTarget;
+                          if (v.duration > 0 && v.buffered.length > 0) {
+                            const bufferedEnd = v.buffered.end(v.buffered.length - 1);
+                            const pct = Math.min(100, Math.round((bufferedEnd / v.duration) * 100));
+                            setPlayerLoadProgress(pct);
+                          }
+                        }}
+                        onCanPlay={() => setPlayerCanPlay(true)}
+                        onError={(e) => {
+                          const v = e.currentTarget;
+                          const err = v.error;
+                          setPlayerError(err ? `Code ${err.code}: ${err.message || "playback error"}` : "Failed to load video");
+                        }}
+                        onWaiting={() => setPlayerCanPlay(false)}
+                        onPlaying={() => setPlayerCanPlay(true)}
+                      />
+
+                      {/* Loading overlay — visible until we have enough buffered to play */}
+                      {!playerCanPlay && !playerError && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 pointer-events-none">
+                          <Loader2 className="w-8 h-8 animate-spin text-emerald-400" />
+                          <div className="text-sm text-white">Loading video…</div>
+                          <div className="text-xs text-zinc-400">
+                            {playerLoadProgress > 0 ? `${playerLoadProgress}% buffered` : "Fetching from source"}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Error overlay */}
+                      {playerError && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/85 p-4 text-center">
+                          <Video className="w-8 h-8 text-red-400" />
+                          <div className="text-sm text-white">Couldn't load video</div>
+                          <div className="text-xs text-red-300 max-w-md">{playerError}</div>
+                        </div>
+                      )}
+
+                      {/* Persistent buffer-progress bar at the bottom — shows
+                          download progress beyond what's already played, so
+                          users can see how much is ready to seek to. */}
+                      {!playerError && playerLoadProgress > 0 && playerLoadProgress < 100 && (
+                        <div className="absolute bottom-0 left-0 right-0 h-1 bg-zinc-800/80 pointer-events-none">
+                          <div
+                            className="h-full bg-emerald-500/70 transition-[width] duration-300"
+                            style={{ width: `${playerLoadProgress}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Layer 1: For local videos, always show <video> as the reliable base layer */}
-                  {video?.filePath && (
+                  {!showEmbedPlayer && video?.filePath && (
                     <video
                       key={`video-base-${video.id}-${currentSceneIndex}`}
                       src={video.filePath.replace(/^\/home\/runner\/workspace\/public\//, '/').replace(/^\.\/public\//, '/').replace(/^public\//, '/').replace(/\/\//g, '/')}
@@ -573,43 +1057,149 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     />
                   )}
 
-                  {/* Layer 2: Frame image (preferred when available — enables bounding box overlays) */}
-                  <img
-                    ref={imageRef}
-                    key={`frame-${video?.id}-${currentSceneIndex}`}
-                    src={currentScene?.imageUrl || ''}
-                    alt={`Scene at ${currentScene?.timestamp || '0:00'}`}
-                    className={`max-w-full max-h-[70vh] object-contain ${frameLoaded ? '' : (video?.filePath ? 'absolute opacity-0' : '')}`}
-                    data-testid="img-scene-main"
-                    onLoad={() => {
-                      setFrameLoaded(true);
-                      setFrameError(false);
-                      // Draw database surfaces after image loads
-                      if (hasDbSurfaces && currentDbSurfaces.length > 0) {
-                        setTimeout(drawDbSurfaces, 100);
-                      }
-                    }}
-                    onError={(e) => {
-                      const img = e.currentTarget;
-                      const currentSrc = img.src;
-                      // Retry 1: Try on-demand frame generation endpoint
-                      if (video?.id && currentScene?.timestamp && !currentSrc.includes('/api/video/')) {
-                        const [m, s] = (currentScene.timestamp || '0:00').split(':').map(Number);
-                        const ts = (m || 0) * 60 + (s || 0);
-                        img.src = `/api/video/${video.id}/frame/${ts}`;
-                        return;
-                      }
-                      // All retries failed — keep video fallback visible
-                      setFrameError(true);
-                      if (!video?.filePath) {
-                        // No video file available either — show static fallback
-                        img.style.display = 'none';
-                      }
-                    }}
-                  />
+                  {/* Layer 2: Frame image (preferred when available — enables bounding box overlays).
+                      The wrapper shrink-wraps to the image so the absolutely-positioned canvas
+                      covers exactly the video content — NOT the container's letterbox bars.
+                      (Previously the canvas stretched across the full container, so normalized
+                      bbox coords spilled into the black bars on vertical video.) */}
+                  {!showEmbedPlayer && (
+                    <div className="relative max-w-full">
+                    <img
+                      ref={imageRef}
+                      key={`frame-${video?.id}-${currentSceneIndex}`}
+                      src={currentScene?.imageUrl || ''}
+                      alt={`Scene at ${currentScene?.timestamp || '0:00'}`}
+                      className={`max-w-full max-h-[70vh] object-contain ${frameLoaded ? '' : (video?.filePath ? 'absolute opacity-0' : '')}`}
+                      data-testid="img-scene-main"
+                      onLoad={() => {
+                        setFrameLoaded(true);
+                        setFrameError(false);
+                        // Draw database surfaces after image loads
+                        if (hasDbSurfaces && currentDbSurfaces.length > 0) {
+                          setTimeout(drawDbSurfaces, 100);
+                        }
+                      }}
+                      onError={(e) => {
+                        const img = e.currentTarget;
+                        const currentSrc = img.src;
+                        // Retry 1: Try on-demand frame generation endpoint
+                        if (video?.id && currentScene?.timestamp && !currentSrc.includes('/api/video/')) {
+                          const [m, s] = (currentScene.timestamp || '0:00').split(':').map(Number);
+                          const ts = (m || 0) * 60 + (s || 0);
+                          img.src = `/api/video/${video.id}/frame/${ts}`;
+                          return;
+                        }
+                        // All retries failed — keep video fallback visible
+                        setFrameError(true);
+                        if (!video?.filePath) {
+                          // No video file available either — show static fallback
+                          img.style.display = 'none';
+                        }
+                      }}
+                    />
+                    <canvas
+                      ref={canvasRef}
+                      className="absolute inset-0 w-full h-full pointer-events-none"
+                      data-testid="canvas-detections"
+                    />
+                    {/* Teach-mode draw layer — armed only. Covers exactly the
+                        frame image (the wrapper shrink-wraps to it) and
+                        captures the drag that defines the taught surface's
+                        bbox; the detection canvas below is pointer-events-none
+                        so it never competes. */}
+                    {teachArmed && (
+                      <div
+                        className="absolute inset-0 z-10 cursor-crosshair touch-none select-none"
+                        onPointerDown={handleTeachPointerDown}
+                        onPointerMove={handleTeachPointerMove}
+                        onPointerUp={handleTeachPointerUp}
+                        data-testid="overlay-teach-draw"
+                      >
+                        {teachDrawRect && (
+                          <div
+                            className="absolute border-2 border-dashed border-emerald-400 bg-emerald-400/10 pointer-events-none"
+                            style={{
+                              left: teachDrawRect.x,
+                              top: teachDrawRect.y,
+                              width: teachDrawRect.w,
+                              height: teachDrawRect.h,
+                            }}
+                            data-testid="teach-draw-rect"
+                          />
+                        )}
+                        {teachRect && (() => {
+                          // Anchor the form under the drawn box, clamped so it
+                          // stays inside the frame on edge draws.
+                          const formLeft = Math.max(4, Math.min(teachRect.x, teachRect.wrapW - 236));
+                          const formTop = Math.max(4, Math.min(teachRect.y + teachRect.h + 8, teachRect.wrapH - 132));
+                          const orientation = teachType ? teachOrientationFor(teachType) : "horizontal";
+                          return (
+                            <div
+                              className="absolute z-20 w-56 rounded-lg border border-white/15 bg-zinc-900/95 p-3 space-y-2 shadow-xl cursor-default"
+                              style={{ left: formLeft, top: formTop }}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              data-testid="form-teach-surface"
+                            >
+                              <Select value={teachType} onValueChange={setTeachType}>
+                                <SelectTrigger className="h-8 text-xs" data-testid="select-teach-type">
+                                  <SelectValue placeholder="Surface type" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {TEACH_SURFACE_TYPES.map((t) => (
+                                    <SelectItem key={t} value={t} className="text-xs">
+                                      {teachTypeLabel(t)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              {/* Orientation derives from the type (walls/doors/
+                                  windows vertical, everything else horizontal) —
+                                  shown, not editable, mirroring the scanner's
+                                  inferOrientation rule. */}
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] text-muted-foreground">Orientation</span>
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[10px] uppercase ${
+                                    orientation === "vertical"
+                                      ? "border-blue-500/40 text-blue-300"
+                                      : "border-amber-500/40 text-amber-300"
+                                  }`}
+                                >
+                                  {orientation}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <Button
+                                  size="sm"
+                                  className="h-7 flex-1 text-xs"
+                                  disabled={!teachType || isTeaching}
+                                  onClick={saveTaughtSurface}
+                                  data-testid="button-teach-save"
+                                >
+                                  {isTeaching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Save"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2.5 text-xs"
+                                  disabled={isTeaching}
+                                  onClick={resetTeach}
+                                  data-testid="button-teach-cancel"
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+                    </div>
+                  )}
 
                   {/* Layer 3: Static fallback only if no video file AND frame failed */}
-                  {frameError && !video?.filePath && (
+                  {!showEmbedPlayer && frameError && !video?.filePath && (
                     <div className="w-full flex items-center justify-center bg-zinc-900 text-zinc-500" style={{ minHeight: '300px' }}>
                       <div className="text-center">
                         <Video className="w-12 h-12 mx-auto mb-2 opacity-50" />
@@ -619,15 +1209,12 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     </div>
                   )}
                   
-                  <canvas
-                    ref={canvasRef}
-                    className="absolute inset-0 w-full h-full pointer-events-none"
-                    data-testid="canvas-detections"
-                  />
-                  
                   <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
                   
-                  <div className="absolute bottom-4 left-4 flex items-center gap-2">
+                  {/* While teach mode is armed the badges dim and stop
+                      catching pointers — they overlay the bottom-left of the
+                      frame, exactly where floor/rug boxes get drawn. */}
+                  <div className={`absolute bottom-4 left-4 flex items-center gap-2 ${teachArmed ? "pointer-events-none opacity-40" : ""}`}>
                     <Badge className="bg-primary/90 text-white">
                       <Clock className="w-3 h-3 mr-1" />
                       {currentScene?.timestamp || '0:00'}
@@ -677,6 +1264,35 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                 </div>
 
                 <div className="p-3 bg-black/50 border-t border-white/10 space-y-2">
+                  {/* Teach-a-surface — the creator's override for surfaces the
+                      detector keeps missing: draw one box, pick a type, and the
+                      set's room model tracks it on every future scan. Needs a
+                      scene class for the displayed frame (from its detection
+                      rows or the scene index), so it stays disabled until scan
+                      data can map the timestamp to one. */}
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={showEmbedPlayer || !frameLoaded || teachSceneId == null || isTeaching}
+                      onClick={() => (teachArmed ? resetTeach() : setTeachArmed(true))}
+                      className={`gap-1.5 h-7 px-2.5 text-xs ${
+                        teachArmed
+                          ? "text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20"
+                          : "text-zinc-300"
+                      }`}
+                      title={teachSceneId == null ? "Teaching needs a scene index — scan the video first" : undefined}
+                      data-testid="button-teach-surface"
+                    >
+                      <Crosshair className="w-3.5 h-3.5" />
+                      {teachArmed ? "Cancel teaching" : "Teach surface"}
+                    </Button>
+                    {teachArmed && !teachRect && (
+                      <span className="text-[11px] text-muted-foreground">
+                        Drag a box around the surface · Esc to cancel
+                      </span>
+                    )}
+                  </div>
                   {/* Surface-type hotkey buttons — jump to first scene with that surface */}
                   {(() => {
                     const surfaceTypeSet = new Set<string>();
@@ -734,7 +1350,25 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     ))}
                   </div>
                   <p className="text-xs text-muted-foreground text-center mt-2">
-                    Scene {currentSceneIndex + 1} of {totalScenes}
+                    {/* These cards are sampled FRAMES; "Scene A/B/C" in the
+                        sidebar are recurring camera setups that each own many
+                        frames. The badge bridges the two vocabularies: it
+                        names the scene class the displayed frame belongs to,
+                        using the inventory's own labels. */}
+                    Frame {currentSceneIndex + 1} of {totalScenes}
+                    {(() => {
+                      const cls = sceneInventory?.scenes?.find((sc) => sc.sceneId === teachSceneId);
+                      if (!cls?.label) return null;
+                      return (
+                        <span
+                          className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] align-middle"
+                          data-testid="badge-frame-scene-class"
+                        >
+                          {cls.label}
+                          {typeof cls.occurrences === "number" ? ` · ${cls.occurrences} shots` : ""}
+                        </span>
+                      );
+                    })()}
                   </p>
                 </div>
               </div>
@@ -894,6 +1528,298 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   })()}
                 </div>
 
+                {/* Surfaces review — scene-block inventory when the scan
+                    produced one (canonical surfaces grouped by recurring
+                    scene class), otherwise the flat all-surfaces list.
+                    Either way every detection row is visible and clickable
+                    to jump to its scene. Surfaces default to hidden from
+                    brands; creator approves to expose. */}
+                {hasDbSurfaces && dbSurfaces.length > 0 && (() => {
+                  const sortedSurfaces = [...dbSurfaces].sort(
+                    (a, b) => parseFloat(a.timestamp) - parseFloat(b.timestamp)
+                  );
+                  // Map surface timestamp → scene index so clicking jumps cleanly
+                  const tsToSceneIdx = new Map<number, number>();
+                  localScenes.forEach((scene, idx) => {
+                    const [m, s] = (scene.timestamp || "0:00").split(":").map(Number);
+                    const sec = (m || 0) * 60 + (s || 0);
+                    tsToSceneIdx.set(sec, idx);
+                  });
+                  const currentSceneTs = (() => {
+                    const scene = localScenes[currentSceneIndex];
+                    if (!scene) return -1;
+                    const [m, s] = scene.timestamp.split(":").map(Number);
+                    return (m || 0) * 60 + (s || 0);
+                  })();
+
+                  // One detection row with its approve/reject controls. Shared
+                  // between the scene-block view (nested under each canonical
+                  // surface) and the legacy flat list — behavior is identical
+                  // in both, only the grouping around the rows differs.
+                  const renderSurfaceRow = (s: DatabaseSurface) => {
+                          const isApproved = !!s.creatorApproved;
+                          const orientation = (s as any).orientation === "vertical" ? "vertical" : "horizontal";
+                          const confPct = Math.round(parseFloat(s.confidence) * 100);
+                          const ts = parseFloat(s.timestamp) || 0;
+                          const tsLabel = `${Math.floor(ts / 60)}:${String(Math.floor(ts % 60)).padStart(2, "0")}`;
+                          const isCurrentScene = Math.abs(ts - currentSceneTs) < 1;
+                          // Find nearest scene index for jump-on-click
+                          let nearestIdx = 0;
+                          let nearestDist = Infinity;
+                          tsToSceneIdx.forEach((idx, sceneTs) => {
+                            const d = Math.abs(sceneTs - ts);
+                            if (d < nearestDist) { nearestDist = d; nearestIdx = idx; }
+                          });
+                          return (
+                            <div
+                              key={s.id}
+                              className={`flex items-center justify-between gap-3 p-2 rounded-lg border transition-colors cursor-pointer hover:bg-white/5 ${
+                                isApproved
+                                  ? "bg-emerald-500/10 border-emerald-500/40"
+                                  : "bg-zinc-800/50 border-zinc-700"
+                              } ${isCurrentScene ? "ring-1 ring-primary/60" : ""}`}
+                              onClick={(e) => {
+                                // Don't jump if the user clicked the Approve button
+                                if ((e.target as HTMLElement).closest("button")) return;
+                                setCurrentSceneIndex(nearestIdx);
+                                setFrameLoaded(false);
+                              }}
+                              data-testid={`surface-row-${s.id}`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[10px] uppercase ${
+                                    orientation === "vertical"
+                                      ? "border-blue-500/40 text-blue-300"
+                                      : "border-amber-500/40 text-amber-300"
+                                  }`}
+                                >
+                                  {orientation}
+                                </Badge>
+                                <span className="text-sm font-medium text-white truncate">{s.surfaceType}</span>
+                                <span className="text-xs text-muted-foreground font-mono">{tsLabel}</span>
+                                <span className="text-xs text-muted-foreground">{confPct}%</span>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <Button
+                                  size="sm"
+                                  variant={isApproved ? "default" : "secondary"}
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    const next = !isApproved;
+                                    setDbSurfaces(prev => prev.map(x =>
+                                      x.id === s.id ? { ...x, creatorApproved: next } : x
+                                    ));
+                                    try {
+                                      const res = await fetchWithTimeout(`/api/surface/${s.id}/approval`, {
+                                        method: "PATCH",
+                                        headers: { "Content-Type": "application/json" },
+                                        credentials: "include",
+                                        body: JSON.stringify({ approved: next }),
+                                      });
+                                      if (!res.ok) throw new Error("approval failed");
+                                    } catch {
+                                      setDbSurfaces(prev => prev.map(x =>
+                                        x.id === s.id ? { ...x, creatorApproved: !next } : x
+                                      ));
+                                    }
+                                  }}
+                                  data-testid={`button-approve-surface-${s.id}`}
+                                >
+                                  {isApproved ? "Approved" : "Approve"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-8 w-8 p-0 text-zinc-400 hover:text-red-400 hover:bg-red-500/10"
+                                  title="Reject — remove this detection (wrong label or duplicate)"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    const removed = s;
+                                    // Optimistic removal — scenes/counts rebuild from dbSurfaces
+                                    setDbSurfaces(prev => prev.filter(x => x.id !== s.id));
+                                    try {
+                                      const res = await fetchWithTimeout(`/api/surface/${s.id}/reject`, {
+                                        method: "POST",
+                                        credentials: "include",
+                                      });
+                                      if (!res.ok) throw new Error("reject failed");
+                                    } catch {
+                                      setDbSurfaces(prev => [...prev, removed]);
+                                    }
+                                  }}
+                                  data-testid={`button-reject-surface-${s.id}`}
+                                >
+                                  <X className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                  };
+
+                  // Scene-block view — authoritative whenever the scan produced
+                  // an inventory. One section per recurring scene class, each
+                  // listing its canonical physical surfaces; the per-frame
+                  // detection rows nest under the surface they belong to so
+                  // approval stays per-row.
+                  // Zero-surface scene classes still render (below) with an
+                  // empty state — a recurring camera setup where every
+                  // candidate died in consensus is actionable information
+                  // ("rescan may find more"), not noise. Only the ENTRY
+                  // decision (inventory view vs legacy flat list) keys on
+                  // surface-bearing scenes.
+                  const allInvScenes = sceneInventory?.scenes || [];
+                  const invScenes = (sceneInventory?.scenes || []).filter(
+                    sc => Array.isArray(sc.surfaces) && sc.surfaces.length > 0
+                  );
+                  if (invScenes.length > 0) {
+                    const rowsByGroup = new Map<string, DatabaseSurface[]>();
+                    sortedSurfaces.forEach(s => {
+                      if (!s.surfaceGroupId) return;
+                      const list = rowsByGroup.get(s.surfaceGroupId);
+                      if (list) list.push(s);
+                      else rowsByGroup.set(s.surfaceGroupId, [s]);
+                    });
+                    const inventoryGroupIds = new Set<string>();
+                    invScenes.forEach(sc => sc.surfaces.forEach(surf => inventoryGroupIds.add(surf.groupId)));
+                    // Rows the inventory doesn't claim — legacy rows without a
+                    // groupId, or groups pruned after the inventory was built —
+                    // still need review controls, so they get a tail section
+                    // instead of silently disappearing.
+                    const ungroupedRows = sortedSurfaces.filter(
+                      s => !s.surfaceGroupId || !inventoryGroupIds.has(s.surfaceGroupId)
+                    );
+                    const totalCanonical = invScenes.reduce((sum, sc) => sum + sc.surfaces.length, 0);
+
+                    return (
+                      <div className="rounded-xl bg-white/5 border border-white/10">
+                        <div className="p-3 border-b border-white/10 sticky top-0 bg-zinc-900/95 z-10">
+                          <span className="text-sm font-medium text-white block">
+                            Scene inventory
+                            <span className="text-muted-foreground font-normal"> · {totalCanonical} surface{totalCanonical !== 1 ? "s" : ""} · {allInvScenes.length} scene{allInvScenes.length !== 1 ? "s" : ""}</span>
+                          </span>
+                          <span className="text-[11px] text-muted-foreground block mt-0.5">Approve to expose to brands · ✕ removes bad detections</span>
+                        </div>
+                        <div className="max-h-96 overflow-y-auto p-2 space-y-4">
+                          {allInvScenes.map((scene) => (
+                            <div key={scene.sceneId} data-testid={`scene-block-${scene.sceneId}`}>
+                              <div className="px-1 mb-1.5">
+                                <div className="flex items-center gap-1.5">
+                                  <Layers className="w-3.5 h-3.5 text-primary shrink-0" />
+                                  <span className="text-sm font-semibold text-white whitespace-nowrap">{scene.label}</span>
+                                  <span className="text-[11px] text-muted-foreground whitespace-nowrap truncate">
+                                    {scene.occurrences} shot{scene.occurrences !== 1 ? "s" : ""} · {formatScreenTime(scene.totalSec)}
+                                  </span>
+                                </div>
+                              </div>
+                              {scene.surfaces.length === 0 && (
+                                <div className="rounded-lg border border-dashed border-white/10 bg-zinc-900/40 p-2.5 text-[11px] text-muted-foreground">
+                                  No approved surfaces yet — a rescan may find more in this scene.
+                                </div>
+                              )}
+                              <div className="space-y-2">
+                                {scene.surfaces.map((surf) => {
+                                  const groupRows = rowsByGroup.get(surf.groupId) || [];
+                                  const unapprovedCount = groupRows.filter(r => !r.creatorApproved).length;
+                                  const thumbUrl = normalizeFrameUrl(surf.frameUrl);
+                                  const isExpanded = expandedGroups.has(surf.groupId);
+                                  return (
+                                    <div
+                                      key={surf.groupId}
+                                      className="rounded-lg border border-white/10 bg-zinc-900/60 overflow-hidden"
+                                      data-testid={`surface-group-${surf.groupId}`}
+                                    >
+                                      <div className="p-2 space-y-1.5">
+                                        <div className="flex items-center gap-2">
+                                          {thumbUrl && (
+                                            <img
+                                              src={thumbUrl}
+                                              alt={surf.surfaceType}
+                                              className="w-14 h-9 rounded object-cover shrink-0 border border-white/10"
+                                              onError={(e) => { e.currentTarget.style.display = "none"; }}
+                                            />
+                                          )}
+                                          <span className="text-sm font-medium text-white truncate min-w-0 flex-1">{surf.displayLabel || surf.surfaceType}</span>
+                                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/70 shrink-0">
+                                            {Math.round(surf.confidence * 100)}%
+                                          </span>
+                                        </div>
+                                        <div className="text-[11px] text-muted-foreground truncate">
+                                          {formatScreenTime(surf.screenTimeSec)} on screen · {surf.rowCount} frame{surf.rowCount !== 1 ? "s" : ""}
+                                        </div>
+                                        {groupRows.length > 0 && (
+                                          <div className="flex items-center gap-1.5">
+                                            <Button
+                                              size="sm"
+                                              variant={unapprovedCount === 0 ? "outline" : "secondary"}
+                                              className="h-7 px-2.5 text-xs flex-1 min-w-0"
+                                              disabled={unapprovedCount === 0}
+                                              onClick={() => approveGroupRows(groupRows)}
+                                              data-testid={`button-approve-group-${surf.groupId}`}
+                                            >
+                                              {unapprovedCount === 0 ? "Approved ✓" : `Approve all (${unapprovedCount})`}
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              variant="ghost"
+                                              className="h-7 px-2 text-xs text-muted-foreground shrink-0 gap-1"
+                                              onClick={() => toggleGroupExpanded(surf.groupId)}
+                                              data-testid={`button-expand-group-${surf.groupId}`}
+                                            >
+                                              {isExpanded
+                                                ? <ChevronDown className="w-3.5 h-3.5" />
+                                                : <ChevronRight className="w-3.5 h-3.5" />}
+                                              {groupRows.length}
+                                            </Button>
+                                          </div>
+                                        )}
+                                      </div>
+                                      {groupRows.length > 0 && isExpanded && (
+                                        <div className="px-2 pb-2 pt-1.5 space-y-1.5 border-t border-white/10 bg-black/20">
+                                          {groupRows.map(renderSurfaceRow)}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                          {ungroupedRows.length > 0 && (
+                            <div data-testid="section-ungrouped-detections">
+                              <div className="px-1 mb-1.5">
+                                <span className="text-sm font-semibold text-white block">Ungrouped detections</span>
+                                <span className="text-[11px] text-muted-foreground block">
+                                  {ungroupedRows.length} row{ungroupedRows.length !== 1 ? "s" : ""} without a canonical surface
+                                </span>
+                              </div>
+                              <div className="space-y-1.5">
+                                {ungroupedRows.map(renderSurfaceRow)}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // Legacy flat list — videos scanned before the inventory existed.
+                  return (
+                    <div className="rounded-xl bg-white/5 border border-white/10">
+                      <div className="flex items-center justify-between p-4 border-b border-white/10 sticky top-0 bg-zinc-900/95 z-10">
+                        <span className="text-sm font-medium text-white">
+                          All detected surfaces ({dbSurfaces.length})
+                        </span>
+                        <span className="text-xs text-muted-foreground">Approve to expose to brands · ✕ removes bad detections</span>
+                      </div>
+                      <div className="max-h-80 overflow-y-auto p-2 space-y-1.5">
+                        {sortedSurfaces.map(renderSurfaceRow)}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {hasDbSurfaces && dbSurfaces.length > 0 && (
                   <Button
                     className="w-full mt-6 gap-2"
@@ -905,13 +1831,6 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   </Button>
                 )}
 
-                <Button
-                  className="w-full mt-2"
-                  variant="outline"
-                  data-testid="button-view-opportunities"
-                >
-                  View Ad Opportunities
-                </Button>
               </div>
             </div>
           </motion.div>
@@ -927,7 +1846,10 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
           videoTitle={video.title}
           surfaces={dbSurfaces.map(s => ({
             id: s.id,
-            timestamp: parseInt(s.timestamp) || 0,
+            // parseFloat, not parseInt: truncating to whole seconds put any
+            // surface detected <1s after a cut into the PREVIOUS shot when
+            // the preview modal re-derived its scene — wrong scene gate.
+            timestamp: parseFloat(s.timestamp) || 0,
             surfaceType: s.surfaceType,
             confidence: parseFloat(s.confidence) || 0,
             frameUrl: s.frameUrl,
@@ -935,6 +1857,16 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
             boundingBoxY: parseFloat(s.boundingBoxY) || 0,
             boundingBoxWidth: parseFloat(s.boundingBoxWidth) || 0,
             boundingBoxHeight: parseFloat(s.boundingBoxHeight) || 0,
+            // Scene + canonical identity MUST survive this mapping: the
+            // preview's scene gate reads sceneId (else it guesses from the
+            // timestamp), and the scope checkboxes read surfaceGroupId
+            // (else every surface renders as unscopable "legacy").
+            sceneId: typeof (s as any).sceneId === "number" ? (s as any).sceneId : null,
+            sceneBlockId: typeof (s as any).sceneBlockId === "number" ? (s as any).sceneBlockId : null,
+            surfaceGroupId: (s as any).surfaceGroupId ?? null,
+            // Numbered fixture identity — the preview prefers this over the
+            // raw surfaceType wherever it names a surface ("Wall 2" > "wall").
+            displayLabel: s.displayLabel ?? null,
             sceneContext: (s as any).sceneContext || null,
             lightingDirection: (s as any).lightingDirection || null,
             lightingIntensity: (s as any).lightingIntensity ? parseFloat((s as any).lightingIntensity) : null,

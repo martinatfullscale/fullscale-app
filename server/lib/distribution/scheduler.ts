@@ -12,7 +12,7 @@
  */
 
 import { storage } from "../../storage";
-import { publishToPlaftorm, type PublishInput } from "./platformPublisher";
+import { publishToPlaftorm, resolvePublishAccessToken, type PublishInput } from "./platformPublisher";
 import { formatCaption } from "./captionFormatter";
 import * as path from "path";
 import * as fs from "fs";
@@ -53,10 +53,17 @@ const OPTIMAL_HOURS: Record<string, number[]> = {
 /**
  * Create a single scheduled post.
  */
-export async function schedulePost(input: ScheduleInput) {
+export async function schedulePost(input: ScheduleInput & { clipSource?: "remix" | "editorial" }) {
+  // Same split as published_posts: the id goes in the column whose foreign key
+  // can hold it. Writing an editorial clip's id into clip_id violates the FK
+  // to generated_clips, and would do so at SCHEDULE time — before the creator
+  // has any way to know the post will never fire.
+  const isEditorial = (input as any).clipSource === "editorial";
   const schedule = await storage.createPublishingSchedule({
     userId: input.userId,
-    clipId: input.clipId,
+    clipId: isEditorial ? null : input.clipId,
+    editorialClipId: isEditorial ? input.clipId : null,
+    clipSource: isEditorial ? "editorial" : "remix",
     profileId: input.profileId,
     platform: input.platform,
     scheduledFor: input.scheduledFor,
@@ -136,17 +143,50 @@ export async function processScheduledPosts(): Promise<number> {
 
     console.log(`[Scheduler] Processing ${pendingSchedules.length} pending scheduled posts...`);
 
+    // A post that came due while the scheduler was down shouldn't fire hours
+    // or days late — silently publishing stale content is worse than a missed
+    // slot. Anything past the grace window is marked failed instead.
+    const rawGrace = Number(process.env.SCHEDULER_MISFIRE_GRACE_HOURS);
+    const graceHours = Number.isFinite(rawGrace) && rawGrace >= 0 ? rawGrace : 24;
+    const misfireGraceMs = graceHours * 60 * 60 * 1000;
+
     for (const schedule of pendingSchedules) {
       try {
-        await storage.updateScheduleStatus(schedule.id, "processing");
+        if (Date.now() - new Date(schedule.scheduledFor).getTime() > misfireGraceMs) {
+          await storage.updateScheduleStatus(
+            schedule.id,
+            "failed",
+            undefined,
+            "Missed scheduling window (scheduler offline past grace period)",
+          );
+          continue;
+        }
 
-        // Get the clip
-        const clips = await storage.getClipsByVideo(0); // Need to find clip by ID
-        // Use the direct import approach like routes.ts findClipById
+        // Atomic claim: only one process wins the row. During Replit
+        // redeploys old+new processes overlap (reusePort) and both read the
+        // same pending list — without this CAS both would publish the post.
+        const claimed = await storage.claimSchedule(schedule.id);
+        if (!claimed) continue;
+
+        // Get the clip — from EITHER table.
+        //
+        // A schedule now carries clipId (remix) or editorialClipId, never
+        // both, because the two tables have independent serial ids. Reading
+        // generated_clips alone meant a scheduled editorial clip failed at
+        // fire time as "Clip not found", hours after the creator scheduled it
+        // and with no way to tell why.
         const { db } = await import("../../db");
-        const { generatedClips } = await import("../../../shared/schema");
+        const { generatedClips, editorialClips } = await import("../../../shared/schema");
         const { eq } = await import("drizzle-orm");
-        const [clip] = await db.select().from(generatedClips).where(eq(generatedClips.id, schedule.clipId)).limit(1);
+
+        let clip: any = null;
+        if (schedule.clipId != null) {
+          [clip] = await db.select().from(generatedClips).where(eq(generatedClips.id, schedule.clipId)).limit(1);
+        } else if ((schedule as any).editorialClipId != null) {
+          const [ec] = await db.select().from(editorialClips)
+            .where(eq(editorialClips.id, (schedule as any).editorialClipId)).limit(1);
+          clip = ec ?? null;
+        }
 
         if (!clip || !clip.exportPath) {
           await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Clip not found or not exported");
@@ -155,8 +195,23 @@ export async function processScheduledPosts(): Promise<number> {
 
         // Get the distribution profile
         const profile = await storage.getDistributionProfile(schedule.profileId);
-        if (!profile || !profile.accessToken) {
-          await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Distribution profile not found or no access token");
+        if (!profile) {
+          await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Distribution profile not found");
+          continue;
+        }
+        // Defense-in-depth: a schedule must publish through its own owner's
+        // profile. Route-level checks enforce this at creation; this guard
+        // catches rows created before those checks (or via any missed path).
+        if (profile.userId !== schedule.userId) {
+          await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Schedule/profile owner mismatch");
+          continue;
+        }
+
+        // Resolve the token at publish time — the one stored on the profile
+        // is typically expired by now (YouTube tokens live ~1 hour).
+        const accessToken = await resolvePublishAccessToken(profile);
+        if (!accessToken) {
+          await storage.updateScheduleStatus(schedule.id, "failed", undefined, "No usable access token for profile");
           continue;
         }
 
@@ -181,39 +236,85 @@ export async function processScheduledPosts(): Promise<number> {
           hashtags = formatted.hashtags;
         }
 
-        // Resolve clip path
-        const clipPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
-        if (!fs.existsSync(clipPath)) {
-          await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Clip file not found on disk");
-          continue;
+        // Resolve clip path. Mainline remix clips live in Object Storage
+        // (exportPath = /storage/...) with the local file deleted after
+        // upload — materialize those to a temp file first; without this,
+        // every scheduled publish of a storage-hosted clip failed with
+        // "Clip file not found on disk".
+        let clipPath: string;
+        let tempClipDir: string | null = null;
+        if (clip.exportPath.startsWith("/storage/")) {
+          const { downloadToTempFile, objectKeyFromServeUrl } = await import("../objectStorage");
+          tempClipDir = path.join("/tmp/remix-videos", `publish-${schedule.id}`);
+          clipPath = await downloadToTempFile(objectKeyFromServeUrl(clip.exportPath), tempClipDir);
+        } else {
+          clipPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+          if (!fs.existsSync(clipPath)) {
+            await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Clip file not found on disk");
+            continue;
+          }
         }
 
         // Publish
+        const publishMetadata: Record<string, any> = { ...(profile.metadata as Record<string, any> || {}) };
+        // Instagram's API pulls the video from a public URL instead of
+        // accepting an upload — point it at the clip's public export path.
+        if (schedule.platform.startsWith("instagram") && !publishMetadata.publicVideoUrl && clip.exportPath) {
+          const base = (process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "https://gofullscale.co").replace(/\/$/, "");
+          publishMetadata.publicVideoUrl = `${base}${clip.exportPath.startsWith("/") ? "" : "/"}${clip.exportPath}`;
+        }
         const result = await publishToPlaftorm(schedule.platform, {
           clipPath,
           caption,
           hashtags,
-          accessToken: profile.accessToken,
+          accessToken,
           accountId: profile.accountId || "",
-          metadata: profile.metadata as Record<string, any> || {},
+          metadata: publishMetadata,
         });
 
-        if (result.success) {
-          // Create published post record
-          const post = await storage.createPublishedPost({
-            clipId: schedule.clipId,
-            videoId: clip.videoId,
-            profileId: schedule.profileId,
-            platform: schedule.platform,
-            platformPostId: result.platformPostId,
-            postUrl: result.postUrl,
-            caption,
-            hashtags,
-            publishedAt: new Date(),
-            status: "published",
-          });
+        if (tempClipDir) {
+          try { fs.rmSync(tempClipDir, { recursive: true, force: true }); } catch {}
+        }
 
-          await storage.updateScheduleStatus(schedule.id, "completed", post.id);
+        if (result.success) {
+          // THE UPLOAD HAS HAPPENED — the schedule is completed no matter what
+          // happens next. Awaiting this insert bare meant a bookkeeping error
+          // fell through to the outer catch, which marked the schedule FAILED
+          // for a post that is live on the platform. A creator looking at a
+          // failed schedule republishes, and now there are two.
+          //
+          // The id also goes in the column whose foreign key can hold it: the
+          // read path above already resolves editorial clips, but this write
+          // put their id in clip_id, whose FK points at generated_clips. Every
+          // scheduled editorial clip therefore uploaded and then failed to
+          // record.
+          const isEditorial = schedule.clipId == null && (schedule as any).editorialClipId != null;
+          let post: any = null;
+          try {
+            // Dry runs are labeled so they never masquerade as real published
+            // posts in analytics/UI.
+            post = await storage.createPublishedPost({
+              clipId: isEditorial ? null : schedule.clipId,
+              editorialClipId: isEditorial ? (schedule as any).editorialClipId : null,
+              clipSource: isEditorial ? "editorial" : "remix",
+              videoId: clip.videoId,
+              profileId: schedule.profileId,
+              platform: schedule.platform,
+              platformPostId: result.platformPostId,
+              postUrl: result.postUrl,
+              caption,
+              hashtags,
+              publishedAt: new Date(),
+              status: (result as any).dryRun ? "dry_run" : "published",
+            });
+          } catch (recErr: any) {
+            console.error(
+              `[Scheduler] UPLOAD SUCCEEDED BUT WAS NOT RECORDED — ${schedule.platform} ` +
+              `postId=${result.platformPostId} url=${result.postUrl} schedule=${schedule.id}: ${recErr?.message}`,
+            );
+          }
+
+          await storage.updateScheduleStatus(schedule.id, "completed", post?.id);
           processed++;
         } else {
           await storage.updateScheduleStatus(schedule.id, "failed", undefined, result.error);
@@ -233,6 +334,19 @@ export async function processScheduledPosts(): Promise<number> {
 }
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
+let tickInFlight = false;
+
+function runTick() {
+  if (tickInFlight) return; // previous run still publishing — don't overlap
+  tickInFlight = true;
+  processScheduledPosts()
+    .catch(err => {
+      console.error("[Scheduler] Interval error:", err);
+    })
+    .finally(() => {
+      tickInFlight = false;
+    });
+}
 
 /**
  * Start the scheduler daemon (checks every 60 seconds).
@@ -244,11 +358,10 @@ export function startScheduler(intervalMs: number = 60000) {
   }
 
   console.log(`[Scheduler] Starting with ${intervalMs}ms interval`);
-  schedulerInterval = setInterval(() => {
-    processScheduledPosts().catch(err => {
-      console.error("[Scheduler] Interval error:", err);
-    });
-  }, intervalMs);
+  schedulerInterval = setInterval(runTick, intervalMs);
+  // Immediate first pass so posts that came due during a restart publish
+  // promptly (bounded by the misfire grace window) instead of waiting a tick.
+  runTick();
 }
 
 /**

@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -25,9 +26,12 @@ import {
   Play,
   Pause,
   Film,
+  Sparkles,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
@@ -59,6 +63,17 @@ interface Surface {
   lightingDirection?: string | null;  // left, right, top, top-left, top-right, ambient
   lightingIntensity?: number | null;  // 0.0-1.0
   cameraAngle?: string | null;       // eye-level, slightly-above, top-down, low-angle
+  // Scene cluster ID — surfaces with same sceneId are in the same physical
+  // scene (host shot returns 5x in a podcast). Drives same-scene placement
+  // continuity in the JUMP TO row and the placement auto-loader.
+  sceneId?: number | null;
+  // Per-shot block ID (legacy — pre-perceptual-clustering). Still emitted
+  // by the surfaces endpoint for backwards compat with the render filter.
+  sceneBlockId?: number | null;
+  // Stable fixture identity for display ("Wall 2", "Side Table 1").
+  // Derived server-side in the scene-inventory build; null for legacy
+  // videos. Rendered verbatim, falling back to surfaceType when absent.
+  displayLabel?: string | null;
 }
 
 interface PlacementPreviewModalProps {
@@ -72,6 +87,10 @@ interface PlacementPreviewModalProps {
     productId: number | null;
     transform: PlacementTransform;
     blend: PlacementBlend;
+    // Re-edit flow: preserve the creator's prior harmonize choice + URL
+    // so the modal opens in the same visual state as last saved.
+    isHarmonized?: boolean;
+    harmonizedImageUrl?: string | null;
   };
 }
 
@@ -367,6 +386,290 @@ function getFilterString(blend: PlacementBlend): string {
 }
 
 // ============================================================================
+// HARMONIZE PROGRESS ESTIMATION
+// ============================================================================
+//
+// The harmonize endpoint returns a single response when the entire pipeline
+// finishes — no SSE/streaming. We drive a determinate progress bar from
+// elapsed time vs an expected duration per mode, capping at 95% so we
+// never falsely claim completion. Stage labels rotate at expected
+// milestones so the user has a sense of what the server is currently
+// doing. If a run overshoots its expected duration, the bar crawls
+// 90→95 over the next half-duration instead of getting stuck at the cap.
+//
+// Tuned to typical observed durations from server logs:
+//   auto  (procedural):       ~12s  (bg removal → composite → lock → upload)
+//   ai-3d (TRELLIS/IC-Light):  ~60s  (bg → depth → lighting → 3D composite → lock → upload)
+type HarmonizeMode = "auto" | "ai-3d";
+
+const HARMONIZE_STAGE_PLAN: Record<HarmonizeMode, { expectedMs: number; stages: Array<{ untilT: number; label: string }> }> = {
+  auto: {
+    expectedMs: 12_000,
+    stages: [
+      { untilT: 0.20, label: "Removing background" },
+      { untilT: 0.70, label: "Compositing into scene" },
+      { untilT: 0.90, label: "Locking product detail" },
+      { untilT: 1.00, label: "Finalizing" },
+    ],
+  },
+  "ai-3d": {
+    expectedMs: 60_000,
+    stages: [
+      { untilT: 0.08, label: "Removing background" },
+      { untilT: 0.25, label: "Analyzing scene depth" },
+      { untilT: 0.40, label: "Analyzing scene lighting" },
+      { untilT: 0.85, label: "Compositing 3D-aware render" },
+      { untilT: 0.95, label: "Locking product detail" },
+      { untilT: 1.00, label: "Finalizing" },
+    ],
+  },
+};
+
+function computeHarmonizeProgress(mode: HarmonizeMode | null, elapsedMs: number, doneAt100: boolean): {
+  percent: number;
+  label: string;
+  isOvertime: boolean;
+} {
+  if (doneAt100) return { percent: 100, label: "Done", isOvertime: false };
+  if (!mode) return { percent: 0, label: "", isOvertime: false };
+  const plan = HARMONIZE_STAGE_PLAN[mode];
+  const t = elapsedMs / plan.expectedMs;
+  const isOvertime = t >= 1.0;
+  // 0 → 90 over expected duration, then crawl 90 → 95 over the next
+  // half-duration. Cap at 95 so we never preempt the real "done".
+  let percent: number;
+  if (t < 1.0) {
+    percent = Math.max(2, Math.min(90, t * 90));
+  } else {
+    const overshoot = Math.min(1.0, (t - 1.0) / 0.5); // 0→1 over the next 0.5× expected
+    percent = 90 + overshoot * 5;
+  }
+  // Find current stage label
+  const tClamped = Math.min(0.999, t);
+  const stage = plan.stages.find((s) => tClamped < s.untilT) || plan.stages[plan.stages.length - 1];
+  const label = isOvertime ? `${stage.label} (taking longer than usual)` : stage.label;
+  return { percent, label, isOvertime };
+}
+
+// ============================================================================
+// HARMONIZE HISTORY — RECENT RUNS PERSISTED LOCALLY
+// ============================================================================
+//
+// Keeps a short rolling log of successful harmonize runs in localStorage so
+// the user can re-apply a previous result without paying the 12-60s server
+// roundtrip again. Cap is HARMONIZE_HISTORY_LIMIT entries — newest first,
+// FIFO trim. Failures are not logged (they have nothing to reuse).
+//
+// We store the full URL set + transform + bbox so reuse is a pure client
+// op: set state, no network call. If the result URL has been GC'd from the
+// bucket (signed-URL expiry, manual cleanup), the <img> just fails to
+// load — the entry still functions as a transform-only recall via the
+// "Reuse settings" path.
+interface HarmonizeHistoryEntry {
+  id: string;
+  timestamp: number;
+  mode: HarmonizeMode;
+  surfaceId: number;
+  productImageUrl: string;
+  resultImageUrl: string;
+  flatCompositeUrl: string | null;
+  bbox: { x: number; y: number; width: number; height: number };
+  transform: { scale: number; offsetX: number; offsetY: number; rotation: number; flipH: boolean };
+  elapsedMs: number;
+  // Coarse fingerprint of the source video / image being placed onto.
+  // Used to badge "same scene" entries without requiring an exact match.
+  videoFingerprint: string | null;
+}
+
+const HARMONIZE_HISTORY_KEY = "harmonize-history-v1";
+const HARMONIZE_HISTORY_LIMIT = 20;
+
+function loadHarmonizeHistory(): HarmonizeHistoryEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(HARMONIZE_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e: any) =>
+        e &&
+        typeof e.id === "string" &&
+        typeof e.timestamp === "number" &&
+        typeof e.resultImageUrl === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveHarmonizeHistory(entries: HarmonizeHistoryEntry[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      HARMONIZE_HISTORY_KEY,
+      JSON.stringify(entries.slice(0, HARMONIZE_HISTORY_LIMIT)),
+    );
+  } catch {
+    // localStorage full or disabled — silent failure, history is non-critical
+  }
+}
+
+function appendHarmonizeHistory(entry: HarmonizeHistoryEntry): HarmonizeHistoryEntry[] {
+  const existing = loadHarmonizeHistory();
+  // Dedupe: if the same surface+product+mode just ran, replace the prior
+  // entry instead of stacking — keeps the log focused on "what I've
+  // tried" rather than "every time I clicked the button."
+  const filtered = existing.filter(
+    (e) =>
+      !(
+        e.surfaceId === entry.surfaceId &&
+        e.productImageUrl === entry.productImageUrl &&
+        e.mode === entry.mode &&
+        Date.now() - e.timestamp < 60_000
+      ),
+  );
+  const next = [entry, ...filtered].slice(0, HARMONIZE_HISTORY_LIMIT);
+  saveHarmonizeHistory(next);
+  return next;
+}
+
+function clearHarmonizeHistory(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(HARMONIZE_HISTORY_KEY);
+  } catch {}
+}
+
+// Short stable fingerprint of a video/image source URL for the "same
+// scene" badge. Hash isn't cryptographic — just needs to be consistent
+// across reloads for the same src.
+function fingerprintVideoSrc(src: string | null | undefined): string | null {
+  if (!src) return null;
+  let h = 0;
+  for (let i = 0; i < src.length; i++) {
+    h = (h * 31 + src.charCodeAt(i)) | 0;
+  }
+  return h.toString(36);
+}
+
+function formatHistoryTimestamp(ms: number): string {
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+// ============================================================================
+// COMPUTE ASPECT-CORRECT PLACEMENT BBOX (CLIENT → SERVER)
+// ============================================================================
+//
+// Single source of truth for "what bbox do we send to a server endpoint
+// that composites the product into a scene frame." Every harmonize /
+// composite endpoint MUST use this — do not roll your own normalized-
+// aspect math.
+//
+// Why this exists: surface bboxes are stored normalized 0-1 against
+// DIFFERENT axes (W against frame width, H against frame height). On a
+// non-square frame the ratio surfaceW/surfaceH is NOT visual aspect.
+// Naive "drawW = surfaceH * prodAspect" math collapses the product
+// width by frameW/frameH (e.g. 0.5625× on 9:16 → bottle reads as
+// skinny). Server-side compositors use sharp's fit:"fill" deliberately
+// (see harmonization.ts:443), so they stretch to whatever bbox the
+// client sends — meaning aspect drift here translates 1:1 to a
+// squished/stretched product in the output.
+//
+// This helper:
+//   1. Converts surface dims to canvas pixels first → real visual aspect
+//   2. Aspect-fits the product into the surface bbox (preserves prodAspect)
+//   3. Applies user transform (scale, offset)
+//   4. Safety-clamps the final normalized bbox so its visual aspect on
+//      the actual scene frame matches the product's natural aspect
+//      within 5% — guards against canvas vs frame dim drift
+//
+// Works for any combination of:
+//   - product aspect (tall, wide, square, ultra-thin)
+//   - frame aspect (9:16, 16:9, 1:1, 4:5, etc.)
+//   - canvas size, surface dims, user transform
+//
+// Returns null if inputs are insufficient (image not loaded, zero dims).
+function computeAspectCorrectPlacementBbox(args: {
+  surface: {
+    boundingBoxX: number;
+    boundingBoxY: number;
+    boundingBoxWidth: number;
+    boundingBoxHeight: number;
+  };
+  productImg: HTMLImageElement | null;
+  canvas: HTMLCanvasElement | null;
+  frameSource: { width: number; height: number };
+  transform: { scale: number; offsetX: number; offsetY: number };
+  logTag?: string;
+}): { x: number; y: number; width: number; height: number } | null {
+  const { surface, productImg, canvas, frameSource, transform } = args;
+  const logTag = args.logTag || "PlacementBbox";
+  if (!productImg || !canvas) return null;
+  if (!productImg.naturalWidth || !productImg.naturalHeight) return null;
+  if (!canvas.width || !canvas.height) return null;
+  const surfaceW = surface.boundingBoxWidth;
+  const surfaceH = surface.boundingBoxHeight;
+  if (surfaceW <= 0 || surfaceH <= 0) return null;
+
+  const prodAspect = productImg.naturalWidth / productImg.naturalHeight;
+  const surfaceVisualW = surfaceW * canvas.width;
+  const surfaceVisualH = surfaceH * canvas.height;
+  const surfaceVisualAspect = surfaceVisualW / surfaceVisualH;
+
+  // Aspect-fit product into surface bbox in pixel space, then convert
+  // back to normalized for the wire format.
+  let visualDrawW: number, visualDrawH: number;
+  if (prodAspect > surfaceVisualAspect) {
+    visualDrawW = surfaceVisualW * transform.scale;
+    visualDrawH = (surfaceVisualW / prodAspect) * transform.scale;
+  } else {
+    visualDrawH = surfaceVisualH * transform.scale;
+    visualDrawW = (surfaceVisualH * prodAspect) * transform.scale;
+  }
+  let drawW = visualDrawW / canvas.width;
+  let drawH = visualDrawH / canvas.height;
+
+  // Safety clamp — re-derive width if visual aspect on the actual
+  // scene frame has drifted >5% from the product's natural aspect.
+  // If frame source dims are unknown, canvas IS the frame, so no drift.
+  const frameW = frameSource.width || canvas.width;
+  const frameH = frameSource.height || canvas.height;
+  const visualAspectOnFrame = (drawW * frameW) / Math.max(1, drawH * frameH);
+  const aspectDriftRatio = visualAspectOnFrame / prodAspect;
+  if (frameW > 0 && frameH > 0 && (aspectDriftRatio < 0.95 || aspectDriftRatio > 1.05)) {
+    const correctedDrawW = (drawH * frameH * prodAspect) / frameW;
+    console.log(
+      `[${logTag}] ⚠️  ASPECT DRIFT: visual=${visualAspectOnFrame.toFixed(3)} natural=${prodAspect.toFixed(3)} drift=${((aspectDriftRatio - 1) * 100).toFixed(1)}% → drawW ${drawW.toFixed(4)} → ${correctedDrawW.toFixed(4)}`,
+    );
+    drawW = correctedDrawW;
+  }
+  console.log(
+    `[${logTag}] prodPNG ${productImg.naturalWidth}x${productImg.naturalHeight} (aspect ${prodAspect.toFixed(3)}) | canvas ${canvas.width}x${canvas.height} | frame ${frameW}x${frameH} | surface bbox ${surfaceW.toFixed(3)}x${surfaceH.toFixed(3)} | drawn bbox ${drawW.toFixed(4)}x${drawH.toFixed(4)} → frame px ${Math.round(drawW * frameW)}x${Math.round(drawH * frameH)} (visual aspect ${((drawW * frameW) / (drawH * frameH)).toFixed(3)})`,
+  );
+
+  const offsetXNorm = transform.offsetX / Math.max(1, canvas.width);
+  const offsetYNorm = transform.offsetY / Math.max(1, canvas.height);
+  const centerXNorm = surface.boundingBoxX + surfaceW / 2 + offsetXNorm;
+  const centerYNorm = surface.boundingBoxY + surfaceH / 2 + offsetYNorm;
+
+  // Two-sided clamp so the product cannot extend off the right/bottom
+  // edge of the frame. Previously we only clamped the top-left to [0,1]
+  // which let the bbox extend past the right/bottom edge (the "bottle
+  // clipped at the left of the frame" bug — user dragged toward the
+  // edge and we sent a bbox the server couldn't fully render).
+  const finalW = Math.max(0.01, Math.min(1, drawW));
+  const finalH = Math.max(0.01, Math.min(1, drawH));
+  const finalX = Math.max(0, Math.min(1 - finalW, centerXNorm - finalW / 2));
+  const finalY = Math.max(0, Math.min(1 - finalH, centerYNorm - finalH / 2));
+  return { x: finalX, y: finalY, width: finalW, height: finalH };
+}
+
+// ============================================================================
 // DRAW PRODUCT WITH FULL TRANSFORM + BLEND
 // ============================================================================
 
@@ -505,6 +808,22 @@ export default function PlacementPreviewModal({
   // Core state
   const [selectedSurface, setSelectedSurface] = useState<Surface | null>(null);
   const [productImage, setProductImage] = useState<string | null>(null);
+  // Provenance of the painted product: "user" = painted this session
+  // (catalog tile, drag-drop, or upload), "saved" = restored from a saved
+  // placement, null = nothing painted. The catalog auto-select only arms
+  // the picker — it never paints — so unplaced surfaces stay null and
+  // render the outline-only ghost.
+  const [productSource, setProductSource] = useState<"user" | "saved" | null>(null);
+  // Mirror for effects whose dep arrays deliberately exclude productSource —
+  // the surface-switch loader needs the CURRENT provenance without
+  // re-running on every provenance change.
+  const productSourceRef = useRef<"user" | "saved" | null>(null);
+  useEffect(() => { productSourceRef.current = productSource; }, [productSource]);
+  // Identity of the saved placement currently painted on the selected
+  // surface (null when the paint is an unsaved preview). source tells us
+  // whether this surface IS the anchor ("direct") or merely inherits the
+  // product through fixture scope — deleting is only offered on the anchor.
+  const [loadedPlacement, setLoadedPlacement] = useState<{ id: number; source: string } | null>(null);
   const [productFile, setProductFile] = useState<File | null>(null);
   const [productTab, setProductTab] = useState<"upload" | "catalog">("upload");
   const [selectedCatalogProduct, setSelectedCatalogProduct] = useState<CatalogProduct | null>(null);
@@ -515,6 +834,45 @@ export default function PlacementPreviewModal({
   const [blend, setBlend] = useState<PlacementBlend>({ ...DEFAULT_BLEND });
   const [showBoundingBox, setShowBoundingBox] = useState(true);
 
+  // Frame-by-frame keyframes for fine-grained placement editing. When the
+  // creator wants to pin the product to specific moments where motion
+  // tracking drifts, they capture the current transform at the current
+  // playback time. Render-time interpolation lerps between adjacent
+  // keyframes so the product moves smoothly across edits.
+  type Keyframe = { t: number; transform: PlacementTransform };
+  const [keyframes, setKeyframes] = useState<Keyframe[]>([]);
+
+  // Compute the effective transform at a given playback time. Returns the
+  // base transform when no keyframes, the keyframe value at exact match,
+  // or a linear interpolation between bracketing keyframes. Past the last
+  // keyframe, holds at the last value (no extrapolation — extrapolating
+  // a rotation can yield wildly off-screen products).
+  const effectiveTransformAt = useCallback((t: number): PlacementTransform => {
+    if (keyframes.length === 0) return transform;
+    if (keyframes.length === 1) return keyframes[0].transform;
+    // Sorted by t (server validates this; assume sorted on load).
+    if (t <= keyframes[0].t) return keyframes[0].transform;
+    if (t >= keyframes[keyframes.length - 1].t) return keyframes[keyframes.length - 1].transform;
+    // Find bracketing pair.
+    for (let i = 0; i < keyframes.length - 1; i++) {
+      const a = keyframes[i];
+      const b = keyframes[i + 1];
+      if (t >= a.t && t <= b.t) {
+        const span = b.t - a.t;
+        const u = span > 0 ? (t - a.t) / span : 0;
+        return {
+          offsetX: a.transform.offsetX + (b.transform.offsetX - a.transform.offsetX) * u,
+          offsetY: a.transform.offsetY + (b.transform.offsetY - a.transform.offsetY) * u,
+          scale: a.transform.scale + (b.transform.scale - a.transform.scale) * u,
+          rotation: a.transform.rotation + (b.transform.rotation - a.transform.rotation) * u,
+          // Boolean can't lerp — snap at midpoint.
+          flipH: u < 0.5 ? a.transform.flipH : b.transform.flipH,
+        };
+      }
+    }
+    return transform;
+  }, [keyframes, transform]);
+
   // Drag interaction state
   const [dragMode, setDragMode] = useState<DragMode>("none");
   const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -522,6 +880,12 @@ export default function PlacementPreviewModal({
 
   // Save state
   const [isSaving, setIsSaving] = useState(false);
+  // Placement scope — canonical surfaceGroupIds this placement applies to.
+  // Initialized to just the anchor's group whenever the anchor's identity
+  // changes; the strip's checkboxes add/remove other canonical surfaces.
+  // Surfaces without a groupId (legacy scans) can't be scoped — when the
+  // ANCHOR lacks one the save omits the field entirely (legacy behavior).
+  const [scopeGroupIds, setScopeGroupIds] = useState<Set<string>>(new Set());
   const [saveSuccess, setSaveSuccess] = useState(false);
   const { toast } = useToast();
 
@@ -549,6 +913,45 @@ export default function PlacementPreviewModal({
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [exportJobId, setExportJobId] = useState<number | null>(null);
   const [exportOutputUrl, setExportOutputUrl] = useState<string | null>(null);
+
+  // Harmonization preview state — shows a before/after dialog comparing
+  // the flat product overlay (current canvas behavior) with the procedurally
+  // harmonized version (server-side, scene-preserving via sharp).
+  const [showHarmonizeCompare, setShowHarmonizeCompare] = useState(false);
+  const [isHarmonizing, setIsHarmonizing] = useState(false);
+  const [harmonizeError, setHarmonizeError] = useState<string | null>(null);
+  const [harmonizeFlatUrl, setHarmonizeFlatUrl] = useState<string | null>(null);
+  const [harmonizeResultUrl, setHarmonizeResultUrl] = useState<string | null>(null);
+  // Progress tracking — the server endpoint isn't streamed so we drive a
+  // determinate bar from elapsed time vs expected duration. Caps at 95%
+  // so we never falsely claim "done"; snaps to 100% on completion.
+  // Stage labels rotate at expected milestones so the user sees what
+  // the server is roughly doing right now.
+  const [harmonizeMode, setHarmonizeMode] = useState<"auto" | "ai-3d" | null>(null);
+  const [harmonizeStartedAt, setHarmonizeStartedAt] = useState<number | null>(null);
+  const [harmonizeElapsedMs, setHarmonizeElapsedMs] = useState(0);
+  const [harmonizeDoneAt100, setHarmonizeDoneAt100] = useState(false);
+  // Rolling history of recent successful harmonize runs (localStorage-backed).
+  // Lets the user re-apply a previous result without re-running the server.
+  const [harmonizeHistory, setHarmonizeHistory] = useState<HarmonizeHistoryEntry[]>([]);
+  useEffect(() => {
+    setHarmonizeHistory(loadHarmonizeHistory());
+  }, []);
+
+  // Manual harmonize state — user explicitly clicks the Harmonize button
+  // (no auto-fire). Server preserves the user's exact placement+scale
+  // because we send the post-transform bbox derived from canvas state,
+  // not the raw surface bbox.
+  const [harmonizeEnabled, setHarmonizeEnabled] = useState(false);
+  const [liveHarmonizedUrl, setLiveHarmonizedUrl] = useState<string | null>(null);
+  // Track whether the user is actively dragging — we hide the harmonized
+  // overlay during interaction so they can manipulate the canvas freely.
+  const [isInteractingWithCanvas, setIsInteractingWithCanvas] = useState(false);
+  // Track whether the cursor is hovering over the canvas. When harmonized,
+  // we fade the overlay to ~25% on hover so the user can see the bbox
+  // handles to grab and adjust position/scale. Without this, the opaque
+  // overlay covers the handles and creators can't tell where to click.
+  const [isHoveringCanvas, setIsHoveringCanvas] = useState(false);
 
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -582,6 +985,9 @@ export default function PlacementPreviewModal({
     flowCanvas: HTMLCanvasElement;
     initialized: boolean;
     frameCounter: number;
+    // Shot block (per-cut index from sceneBoundaries) of the last rendered
+    // frame — tracking state must never survive a cut.
+    lastShotBlock: number | null;
   }>({
     prevFrameData: null,
     cumulativeOffsetX: 0,
@@ -595,19 +1001,82 @@ export default function PlacementPreviewModal({
     flowCanvas: typeof document !== "undefined" ? document.createElement("canvas") : null as any,
     initialized: false,
     frameCounter: 0,
+    lastShotBlock: null,
   });
 
-  // Fetch video details to get file path for playback
-  const { data: videoDetails } = useQuery<{ filePath: string | null }>({
+  // Smooths the product visibility transition when playback crosses
+  // scene boundaries. Without this the product hard-pops in/out on every
+  // cut, which the user described as "looks like it's being dropped in
+  // each time". 200ms ease-out feels natural — long enough to read as
+  // intentional, short enough to not lag the playback experience.
+  const sceneTransitionRef = useRef<{
+    targetOpacity: number;     // 1 if currently in scene, 0 if not
+    currentOpacity: number;    // animated value, eases toward target
+    lastFrameTime: number;     // for delta-time integration
+  }>({
+    targetOpacity: 1,
+    currentOpacity: 1,
+    lastFrameTime: 0,
+  });
+
+  // Fetch video details to get file path for playback + scene-cut boundaries
+  // + perceptual scene index (which clusters shots that revisit the same
+  // physical scene into a single sceneId).
+  const { data: videoDetails } = useQuery<{
+    filePath: string | null;
+    sceneBoundaries?: number[] | null;
+    sceneIndex?: { shots: Array<{ shotIdx: number; sceneId: number; tStart: number; tEnd: number }> } | null;
+  }>({
     queryKey: [`/api/video/${videoId}/details`],
     queryFn: async () => {
-      const res = await fetch(`/api/video/${videoId}/details`);
+      const res = await fetchWithTimeout(`/api/video/${videoId}/details`);
       if (!res.ok) return { filePath: null };
       return res.json();
     },
     enabled: open,
   });
   const videoSrc = resolveVideoSrc(videoDetails?.filePath);
+  // Scene-cut timestamps for this video (in seconds). Used to hide the
+  // placement when playback enters a different shot than the one the
+  // surface was detected in. Empty/undefined → single shot, no filtering.
+  const sceneBoundaries: number[] = Array.isArray(videoDetails?.sceneBoundaries)
+    ? (videoDetails!.sceneBoundaries as number[]).filter(t => typeof t === "number" && Number.isFinite(t))
+    : [];
+
+  // Same scene-block math as the server side so client + server agree on
+  // which shot a given timestamp belongs to.
+  const sceneBlockFor = useCallback((t: number): number => {
+    if (sceneBoundaries.length === 0 || t < 0) return 0;
+    for (let i = 0; i < sceneBoundaries.length; i++) {
+      if (t < sceneBoundaries[i]) return i;
+    }
+    return sceneBoundaries.length;
+  }, [sceneBoundaries]);
+
+  // Perceptual scene cluster lookup — same physical set across cuts gets
+  // the same sceneId. Used so a placement on the host's coffee table at
+  // :08 keeps rendering when the camera returns to the same set at :46
+  // (different shot block, but same sceneId).
+  const sceneIdFor = useCallback((t: number): number | null => {
+    const shots = videoDetails?.sceneIndex?.shots;
+    if (!Array.isArray(shots) || shots.length === 0) return null;
+    for (const shot of shots) {
+      if (t >= shot.tStart && t < shot.tEnd) return shot.sceneId;
+    }
+    return shots[shots.length - 1].sceneId;
+  }, [videoDetails?.sceneIndex]);
+
+  // The placement is bound to the surface's scene. Prefer the perceptual
+  // sceneId (carries across same-scene shot returns); fall back to per-shot
+  // sceneBlock for videos scanned before the scene index existed.
+  const placementBlockId = selectedSurface
+    ? sceneBlockFor(parseFloat(String((selectedSurface as any).timestamp ?? 0)) || 0)
+    : 0;
+  const placementSceneId = selectedSurface
+    ? (typeof (selectedSurface as any).sceneId === "number"
+        ? (selectedSurface as any).sceneId
+        : sceneIdFor(parseFloat(String((selectedSurface as any).timestamp ?? 0)) || 0))
+    : null;
 
   // Fetch dense surface keyframes for accurate motion tracking
   const { data: denseKeyframesData, refetch: refetchKeyframes } = useQuery<{
@@ -620,7 +1089,7 @@ export default function PlacementPreviewModal({
   }>({
     queryKey: [`/api/video/${videoId}/surface-keyframes`],
     queryFn: async () => {
-      const res = await fetch(`/api/video/${videoId}/surface-keyframes`);
+      const res = await fetchWithTimeout(`/api/video/${videoId}/surface-keyframes`);
       if (!res.ok) return { keyframes: {} };
       return res.json();
     },
@@ -643,7 +1112,7 @@ export default function PlacementPreviewModal({
     setIsMotionLoading(true);
     try {
       console.log(`[PlacementPreview] Requesting motion tracking for video ${videoId}, surface ${selectedSurface.id}${force ? " (forced re-fetch)" : ""}...`);
-      const res = await fetch(`/api/video/${videoId}/motion-track`, {
+      const res = await fetchWithTimeout(`/api/video/${videoId}/motion-track`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -696,7 +1165,7 @@ export default function PlacementPreviewModal({
       // ── Phase 1: Quick sparse scan (interval=2s) ──
       // Gets ~13 keyframes in ~1 minute → enough for spline interpolation
       console.log(`[PlacementPreview] Phase 1: Quick scan for video ${videoId} (interval=2s)...`);
-      const quickRes = await fetch(`/api/video/${videoId}/dense-scan`, {
+      const quickRes = await fetchWithTimeout(`/api/video/${videoId}/dense-scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -713,7 +1182,7 @@ export default function PlacementPreviewModal({
       // ── Phase 2: Dense refine scan (interval=0.5s, fire-and-forget) ──
       // Runs in background to improve tracking accuracy with 4x more keyframes
       console.log(`[PlacementPreview] Phase 2: Dense scan for video ${videoId} (interval=0.5s)...`);
-      const denseRes = await fetch(`/api/video/${videoId}/dense-scan`, {
+      const denseRes = await fetchWithTimeout(`/api/video/${videoId}/dense-scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -739,7 +1208,7 @@ export default function PlacementPreviewModal({
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
     queryKey: ["/api/brand-products/catalog"],
     queryFn: async () => {
-      const res = await fetch("/api/brand-products/catalog");
+      const res = await fetchWithTimeout("/api/brand-products/catalog");
       if (!res.ok) return [];
       return res.json();
     },
@@ -762,16 +1231,36 @@ export default function PlacementPreviewModal({
     if (!open || !selectedSurface) return;
     const loadExistingPlacement = async () => {
       try {
-        const res = await fetch(`/api/video/${videoId}/surface/${selectedSurface.id}/placement`, {
+        const res = await fetchWithTimeout(`/api/video/${videoId}/surface/${selectedSurface.id}/placement`, {
           credentials: "include",
         });
         if (!res.ok) return;
         const data = await res.json();
+        if (!data.placement) {
+          // No saved placement on THIS surface. Two provenances, two fates:
+          //   - A product the creator picked THIS SESSION stays on screen —
+          //     carrying your own pick from surface to surface while you
+          //     decide is the point of the preview.
+          //   - A product that arrived via auto-load from a SAVED row is
+          //     cleared. It used to be kept and relabeled "user", which put
+          //     someone else's old test placement on every surface the
+          //     creator clicked — reported as "it identifies the nightstand
+          //     and drops in a logo I never placed". A saved row earns
+          //     exactly its own surfaces, nothing more.
+          if (productSourceRef.current === "saved") {
+            setProductImage(null);
+            setProductSource(null);
+          }
+          setLoadedPlacement(null);
+          return;
+        }
         if (data.placement) {
           const p = data.placement;
+          setLoadedPlacement(typeof p.id === "number" ? { id: p.id, source: data.source } : null);
           // Restore product image
           if (p.productImageUrl) {
             setProductImage(p.productImageUrl);
+            setProductSource("saved");
           }
           // Restore transform
           if (p.transform) {
@@ -798,6 +1287,12 @@ export default function PlacementPreviewModal({
               contrast: p.blend.contrast ?? 0,
             });
           }
+          // Restore keyframes if any are saved on this placement.
+          if (Array.isArray((p as any).keyframes)) {
+            setKeyframes((p as any).keyframes);
+          } else {
+            setKeyframes([]);
+          }
           console.log(`[PlacementPreview] Auto-loaded placement (${data.source}) for surface ${selectedSurface.id}`);
         }
       } catch (err) {
@@ -813,12 +1308,15 @@ export default function PlacementPreviewModal({
     if (!open) {
       setSelectedSurface(null);
       setProductImage(null);
+      setProductSource(null);
+      setLoadedPlacement(null);
       setProductFile(null);
       setProductTab("upload");
       setSelectedCatalogProduct(null);
       setToolPanel("product");
       setTransform({ ...DEFAULT_TRANSFORM });
       setBlend({ ...DEFAULT_BLEND });
+      setKeyframes([]);
       setDragMode("none");
       setIsSaving(false);
       setSaveSuccess(false);
@@ -846,13 +1344,48 @@ export default function PlacementPreviewModal({
     }
   }, [open]);
 
+  // Invalidate cached harmonization when inputs change. Auto-trigger
+  // removed per product spec — user clicks Harmonize button to refresh
+  // the result. We just clear the stale URL so the canvas shows the flat
+  // overlay until they manually re-harmonize.
+  useEffect(() => {
+    setLiveHarmonizedUrl(null);
+    if (harmonizeEnabled) setHarmonizeEnabled(false);
+    // intentionally not depending on harmonizeEnabled (avoid loop)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSurface?.id, productImage, transform.offsetX, transform.offsetY, transform.scale, transform.rotation]);
+
+  // Harmonize progress timer — drives the determinate progress bar from
+  // elapsed time while a harmonize request is in flight. Updates every
+  // 200ms which is smooth enough for a progress bar without thrashing.
+  useEffect(() => {
+    if (!isHarmonizing || !harmonizeStartedAt) {
+      setHarmonizeElapsedMs(0);
+      return;
+    }
+    const tick = () => setHarmonizeElapsedMs(Date.now() - harmonizeStartedAt);
+    tick();
+    const id = window.setInterval(tick, 200);
+    return () => window.clearInterval(id);
+  }, [isHarmonizing, harmonizeStartedAt]);
+
   // Apply initialPlacement when modal opens with pre-loaded data (re-edit flow)
   useEffect(() => {
     if (!open || !initialPlacement) return;
     setProductImage(initialPlacement.productImageUrl);
+    setProductSource("saved");
     setTransform({ ...initialPlacement.transform });
     setBlend({ ...initialPlacement.blend });
     setToolPanel("transform");
+    // Restore the creator's prior harmonize choice. If they had isHarmonized
+    // saved, default the toggle to that state and seed the cached URL so the
+    // overlay shows immediately without waiting for a re-fetch.
+    if (typeof initialPlacement.isHarmonized === "boolean") {
+      setHarmonizeEnabled(initialPlacement.isHarmonized);
+    }
+    if (initialPlacement.harmonizedImageUrl) {
+      setLiveHarmonizedUrl(initialPlacement.harmonizedImageUrl);
+    }
     // If from catalog, pre-select the catalog product
     if (initialPlacement.productId && catalogProducts) {
       const match = catalogProducts.find((p: CatalogProduct) => p.id === initialPlacement.productId);
@@ -991,6 +1524,23 @@ export default function PlacementPreviewModal({
 
       if (useVideo && videoEl) {
         const tracking = trackingRef.current;
+        // Optical-flow state is only meaningful WITHIN a shot. Correlating
+        // across a cut produces a confident garbage offset (two similarly
+        // lit shots match easily) that shoves the accumulator and visibly
+        // slides the product onto a different region — the "hops from
+        // surface to surface" bug. Key on the per-cut shot block, not the
+        // scene class: two adjacent shots of the same class are still a
+        // cut, and cross-cut flow is equally garbage there.
+        const nowShotBlock = sceneBlockFor(videoEl.currentTime);
+        if (tracking.lastShotBlock !== null && nowShotBlock !== tracking.lastShotBlock) {
+          tracking.prevFrameData = null;
+          tracking.cumulativeOffsetX = 0;
+          tracking.cumulativeOffsetY = 0;
+          tracking.velocityX = 0;
+          tracking.velocityY = 0;
+          tracking.initialized = false;
+        }
+        tracking.lastShotBlock = nowShotBlock;
         const hasGeminiData = motionData?.available && motionData.source === "gemini-keyframes" && motionData.transforms.length > 0;
 
         if (hasGeminiData) {
@@ -1003,9 +1553,14 @@ export default function PlacementPreviewModal({
           const clampedIndex = Math.min(frameIndex, motionData!.transforms.length - 1);
           const pos = motionData!.transforms[clampedIndex];
 
-          // Scene-change detection: if position is null, surface is not visible at this time
+          // Null transform = the motion track has no data for this frame —
+          // NOT proof the surface is invisible. Track coverage can be
+          // sparse or mis-sized (a wrong duration once nulled every frame
+          // past 30s and hid the overlay for entire videos). Fall back to
+          // the static detection bbox and let the scene gate below own
+          // visibility — it has the actual scene data.
           if (!pos) {
-            bx = -9999; by = -9999; bw = 0; bh = 0;
+            bx = baseBX; by = baseBY; bw = baseBW; bh = baseBH;
           } else {
 
           // Anchor-lock: track the top-right corner of the bbox as the fixed reference point
@@ -1141,30 +1696,147 @@ export default function PlacementPreviewModal({
 
       const hasProduct = !!productImgRef.current;
 
+      // Chrome (outline / drop ghost) obeys the same scene authority as the
+      // product: never draw it while the playhead is outside the surface's
+      // own shots. It used to render unconditionally BEFORE the gate was
+      // even computed, so the dashed box hopped through every scene.
+      const chromeInScene = !useVideo || placementSceneId === null ||
+        sceneIdFor(videoRef.current?.currentTime ?? 0) === placementSceneId;
+
       // Bounding box outline (hidden when toggle is off)
-      if (showBoundingBox) {
+      if (showBoundingBox && chromeInScene) {
         ctx.strokeStyle = hasProduct ? "rgba(16, 185, 129, 0.6)" : "rgba(139, 92, 246, 0.8)";
         ctx.lineWidth = 2;
         ctx.setLineDash(hasProduct ? [4, 4] : [6, 4]);
         ctx.strokeRect(bx, by, bw, bh);
         ctx.setLineDash([]);
 
-        // Surface label
+        // Surface label — headroom-aware. Drawing above the box at
+        // negative y is silently clipped, so top-of-frame surfaces
+        // (walls especially) lost their tag entirely; fall back to the
+        // box's inside-top edge when there's no headroom. X-clamped and
+        // elided so long labels can't overflow past the canvas edge.
         if (!hasProduct) {
           ctx.font = "bold 11px Inter, system-ui, sans-serif";
-          const label = selectedSurface.surfaceType;
-          const tw = ctx.measureText(label).width;
+          let label = selectedSurface.displayLabel || selectedSurface.surfaceType;
+          let tw = ctx.measureText(label).width;
+          const maxW = canvas.width - 8;
+          while (tw + 10 > maxW && label.length > 4) {
+            label = label.slice(0, -2) + "…";
+            tw = ctx.measureText(label).width;
+          }
+          const labelH = 18;
+          const labelX = Math.max(0, Math.min(bx, canvas.width - (tw + 10)));
+          const labelTop = by >= labelH ? by - labelH : by;
           ctx.fillStyle = "rgba(139, 92, 246, 0.85)";
-          ctx.fillRect(bx, by - 18, tw + 10, 18);
+          ctx.fillRect(labelX, labelTop, tw + 10, labelH);
           ctx.fillStyle = "#fff";
-          ctx.fillText(label, bx + 5, by - 5);
+          ctx.fillText(label, labelX + 5, labelTop + 13);
         }
       }
 
-      // Draw product if loaded (always renders regardless of toggle)
+      // Scene gate: during playback, hide the placement when the current
+      // playhead is in a different SCENE than the surface was detected in.
+      // PREDICTIVE LOOK-AHEAD: peek 150ms ahead and gate on the FUTURE
+      // playhead's sceneId. This makes the 200ms fade-out start BEFORE
+      // the actual cut, so the product is fully invisible by the time
+      // the cut paints. Was previously gating on currentTime only, which
+      // means the fade started AT the cut and the product remained
+      // visible for ~100ms past the cut while easing to opacity 0.
+      const LOOK_AHEAD_MS = 150;
+      let inOriginalShot: boolean;
+      if (useVideo && placementSceneId !== null) {
+        const lookAheadT = videoEl!.currentTime + LOOK_AHEAD_MS / 1000;
+        const playbackSceneId = sceneIdFor(lookAheadT);
+        if (playbackSceneId !== null) {
+          inOriginalShot = playbackSceneId === placementSceneId;
+        } else {
+          // Optimistic fallback: scene data not loaded → assume same scene.
+          // Better to briefly show a stale placement than to flash hide it.
+          inOriginalShot = true;
+        }
+      } else {
+        // Same predictive look-ahead for the legacy shot-block path.
+        // videoEl can be unmounted in static mode (no videoSrc) — a bare
+        // dereference here threw mid-rAF and killed the product draw.
+        const tNow = videoRef.current?.currentTime ?? 0;
+        const tForGate = useVideo ? tNow + LOOK_AHEAD_MS / 1000 : tNow;
+        const playbackBlockId = useVideo ? sceneBlockFor(tForGate) : placementBlockId;
+        inOriginalShot = playbackBlockId === placementBlockId;
+      }
+
+      // Smooth opacity transition between in-scene/out-of-scene states.
+      // Updates targetOpacity from the gate decision, then eases the
+      // currentOpacity toward it using delta-time integration so the
+      // transition feels consistent regardless of frame rate.
+      const ts = sceneTransitionRef.current;
+      const newTarget = inOriginalShot ? 1 : 0;
+      if (ts.targetOpacity !== newTarget) {
+        ts.targetOpacity = newTarget;
+      }
+      const now = performance.now();
+      const dt = ts.lastFrameTime ? Math.min(0.1, (now - ts.lastFrameTime) / 1000) : 0;
+      ts.lastFrameTime = now;
+      // Exponential ease toward the target. At rate 20/s the 0.05 draw
+      // threshold is crossed in ~150ms — inside the LOOK_AHEAD window, so
+      // the fade COMPLETES before the cut lands. The old rate of 5/s took
+      // ~600ms to cross: the product ghosted almost half a second into
+      // every foreign scene and materialized late on re-entry ("doesn't
+      // know the beginning or end of a scene").
+      const FADE_RATE_PER_SEC = 20;
+      const delta = (ts.targetOpacity - ts.currentOpacity) * FADE_RATE_PER_SEC * dt;
+      ts.currentOpacity = Math.max(0, Math.min(1, ts.currentOpacity + delta));
+      // Hard clamp on the CURRENT playhead (no look-ahead): whatever the
+      // easing is doing, the product never paints outside its surface's
+      // own shots. This is also what contains the static-fallback position
+      // and the motion track's ±2s edge bleed — they can propose
+      // coordinates, but not visibility.
+      if (useVideo && placementSceneId !== null) {
+        const nowT = videoRef.current?.currentTime ?? 0;
+        if (sceneIdFor(nowT) !== placementSceneId) {
+          ts.currentOpacity = 0;
+        }
+      }
+      const sceneOpacity = ts.currentOpacity;
+
+      // "Placement hidden" badge — fades in inversely with the product
+      // (when product is fully invisible, badge is fully visible). Same
+      // 200ms ease so they cross over smoothly.
+      const badgeOpacity = 1 - sceneOpacity;
+      if (useVideo && badgeOpacity > 0.05 && hasProduct) {
+        const badgeText = "Placement hidden — different scene";
+        ctx.font = "11px Inter, system-ui, sans-serif";
+        const tw = ctx.measureText(badgeText).width;
+        const padX = 10, padY = 6;
+        const badgeW = tw + padX * 2;
+        const badgeH = 22;
+        const badgeX = canvas.width - badgeW - 12;
+        const badgeY = 12;
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.75 * badgeOpacity})`;
+        ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
+        ctx.fillStyle = `rgba(251, 191, 36, ${0.95 * badgeOpacity})`;
+        ctx.fillText(badgeText, badgeX + padX, badgeY + padY + 9);
+      }
+
+      // Draw product if loaded AND scene-fade hasn't fully hidden it.
+      // Use sceneOpacity (0..1, eased) to crossfade smoothly across cuts
+      // — pure on/off pop felt like the product was being "dropped in
+      // each time" per the user's report. We draw whenever opacity > 0.05
+      // (avoids paying the draw cost when essentially invisible) and
+      // wrap drawProduct in a globalAlpha so the existing blend logic
+      // is preserved without a parameter-passing rewrite.
       const prodImg = productImgRef.current;
-      if (prodImg && prodImg.complete && bw > 0 && bh > 0) {
-        drawProduct(ctx, prodImg, bx, by, bw, bh, transform, blend);
+      if (prodImg && prodImg.complete && bw > 0 && bh > 0 && sceneOpacity > 0.05) {
+        ctx.save();
+        ctx.globalAlpha = sceneOpacity;
+        // Use keyframe-interpolated transform during playback so frame-by-
+        // frame edits actually take effect. When paused (or when there are
+        // no keyframes) this reduces to the base `transform` constant.
+        const renderTransform = useVideo
+          ? effectiveTransformAt(videoEl!.currentTime)
+          : transform;
+        drawProduct(ctx, prodImg, bx, by, bw, bh, renderTransform, blend);
+        ctx.restore();
 
         // Draw resize handles + rotation handle (hidden when toggle is off)
         if (showBoundingBox) {
@@ -1202,7 +1874,7 @@ export default function PlacementPreviewModal({
       }
 
       // "Drop product here" text if no product (hidden when toggle is off)
-      if (!hasProduct && showBoundingBox) {
+      if (!hasProduct && showBoundingBox && chromeInScene) {
         ctx.fillStyle = "rgba(139, 92, 246, 0.15)";
         ctx.fillRect(bx, by, bw, bh);
 
@@ -1217,7 +1889,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend, isVideoMode, motionData, showBoundingBox]);
+  }, [selectedSurface, transform, blend, isVideoMode, motionData, showBoundingBox, sceneBlockFor, placementBlockId, sceneIdFor, placementSceneId, keyframes, effectiveTransformAt]);
 
   // Start/stop render loop
   useEffect(() => {
@@ -1419,6 +2091,10 @@ export default function PlacementPreviewModal({
 
     const placementData = [{
       surfaceType,
+      // Anchor surface identity — the server keys harmonized-composite
+      // substitution on this (product image alone is ambiguous when the
+      // same product sits on two surfaces).
+      surfaceId: selectedSurface.id,
       productImageUrl: productImage,
       transform,
       blend,
@@ -1438,7 +2114,7 @@ export default function PlacementPreviewModal({
       setExportProgress(0);
       setExportOutputUrl(null);
 
-      const res = await fetch(`/api/video/${videoId}/export`, {
+      const res = await fetchWithTimeout(`/api/video/${videoId}/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1480,7 +2156,7 @@ export default function PlacementPreviewModal({
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/exports/${exportJobId}`, { credentials: "include" });
+        const res = await fetchWithTimeout(`/api/exports/${exportJobId}`, { credentials: "include" });
         if (!res.ok) return;
         const data = await res.json();
 
@@ -1490,7 +2166,7 @@ export default function PlacementPreviewModal({
         if (data.status === "complete") {
           setExportOutputUrl(data.outputUrl);
           setIsExporting(false);
-          toast({ title: "Video export complete!", description: "Your video with product placement is ready to download." });
+          toast({ title: "Preview export complete", description: "This is your placement preview for reference — the final polished render is produced by our team after review." });
           clearInterval(interval);
         } else if (data.status === "failed") {
           setIsExporting(false);
@@ -1513,6 +2189,7 @@ export default function PlacementPreviewModal({
     if (!selectedSurface || !productImgRef.current) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+    setIsInteractingWithCanvas(true);
 
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -1597,6 +2274,7 @@ export default function PlacementPreviewModal({
 
   const handleCanvasMouseUp = useCallback(() => {
     setDragMode("none");
+    setIsInteractingWithCanvas(false);
   }, []);
 
   // ============================================================================
@@ -1637,11 +2315,54 @@ export default function PlacementPreviewModal({
       const reader = new FileReader();
       reader.onload = () => {
         setProductImage(reader.result as string);
+        setProductSource("user");
       };
       reader.readAsDataURL(file);
     },
     []
   );
+
+  // Re-apply a previously logged harmonize entry. Pure client op — sets
+  // the result URLs + transform back into local state. No server call.
+  // The "Reuse settings" path restores only the transform (useful when the
+  // result image has 404'd from the bucket).
+  const reuseHarmonizeEntry = useCallback(
+    (entry: HarmonizeHistoryEntry, opts: { transformOnly?: boolean } = {}) => {
+      setTransform({
+        scale: entry.transform.scale,
+        offsetX: entry.transform.offsetX,
+        offsetY: entry.transform.offsetY,
+        rotation: entry.transform.rotation,
+        flipH: entry.transform.flipH,
+      });
+      if (!opts.transformOnly) {
+        setHarmonizeFlatUrl(entry.flatCompositeUrl);
+        setHarmonizeResultUrl(entry.resultImageUrl);
+        setLiveHarmonizedUrl(entry.resultImageUrl);
+        setHarmonizeEnabled(true);
+        setHarmonizeError(null);
+        setShowHarmonizeCompare(true);
+        toast({
+          title: "Reused previous harmonize",
+          description: `${entry.mode === "ai-3d" ? "3D" : "Procedural"} • ${formatHistoryTimestamp(entry.timestamp)}`,
+        });
+      } else {
+        toast({
+          title: "Reused placement settings",
+          description: "Transform restored — click Harmonize to regenerate.",
+        });
+      }
+    },
+    [toast],
+  );
+
+  const removeHarmonizeEntry = useCallback((id: string) => {
+    setHarmonizeHistory((prev) => {
+      const next = prev.filter((e) => e.id !== id);
+      saveHarmonizeHistory(next);
+      return next;
+    });
+  }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -1653,6 +2374,7 @@ export default function PlacementPreviewModal({
     const reader = new FileReader();
     reader.onload = () => {
       setProductImage(reader.result as string);
+      setProductSource("user");
     };
     reader.readAsDataURL(file);
   }, []);
@@ -1660,13 +2382,30 @@ export default function PlacementPreviewModal({
   const selectCatalogProduct = useCallback((product: CatalogProduct) => {
     setSelectedCatalogProduct(product);
     setProductImage(product.imageUrl);
+    setProductSource("user");
     setProductFile(null);
     setTransform({ ...DEFAULT_TRANSFORM });
     setBlend({ ...DEFAULT_BLEND });
   }, []);
 
+  // Auto-select arms the catalog PICKER only — it must never paint.
+  // Painting here (via selectCatalogProduct) put catalog[0] on every
+  // surface the modal landed on, and formed a loop with the
+  // different-scene switch: its clear re-satisfied `!productImage` and
+  // catalog[0] instantly re-painted onto the new scene — products showed
+  // up in scenes the user never placed anything in, and Reset couldn't
+  // stick. Guarding on !selectedCatalogProduct breaks that loop; the
+  // draw loop renders the outline-only ghost until a real paint path
+  // (tile click, drag-drop, upload, or a saved placement) sets the image.
+  useEffect(() => {
+    if (open && !selectedCatalogProduct && !initialPlacement && catalogProducts && catalogProducts.length > 0) {
+      setSelectedCatalogProduct(catalogProducts[0]);
+    }
+  }, [open, selectedCatalogProduct, initialPlacement, catalogProducts]);
+
   const resetPreview = () => {
     setProductImage(null);
+    setProductSource(null);
     setProductFile(null);
     setSelectedCatalogProduct(null);
     setTransform({ ...DEFAULT_TRANSFORM });
@@ -1674,6 +2413,44 @@ export default function PlacementPreviewModal({
     setToolPanel("product");
     productImgRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  // Remove the SAVED placement painted on this surface. On the anchor
+  // surface ("direct") this deletes the row — the product disappears from
+  // every shot of this fixture. On an inheriting surface the row lives on
+  // another fixture, so we only clear the local paint and say where the
+  // product actually comes from.
+  const deleteSavedPlacement = async () => {
+    if (!loadedPlacement) return;
+    if (loadedPlacement.source !== "direct") {
+      resetPreview();
+      setLoadedPlacement(null);
+      toast({
+        title: "Product comes from another fixture",
+        description:
+          "This surface inherits it from a placement saved elsewhere. Delete that placement in Saved Placements to remove it everywhere.",
+      });
+      return;
+    }
+    try {
+      const res = await fetchWithTimeout(`/api/placements/${loadedPlacement.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(`delete failed (${res.status})`);
+      resetPreview();
+      setLoadedPlacement(null);
+      toast({
+        title: "Placement removed",
+        description: "This fixture no longer has a saved product.",
+      });
+    } catch (err) {
+      toast({
+        title: "Couldn't remove placement",
+        description: err instanceof Error ? err.message : "Try again from Saved Placements.",
+        variant: "destructive",
+      });
+    }
   };
 
   // ============================================================================
@@ -1722,12 +2499,17 @@ export default function PlacementPreviewModal({
   // SAVE PLACEMENT
   // ============================================================================
 
+  const anchorGroupId = (selectedSurface as any)?.surfaceGroupId as string | undefined | null;
+  useEffect(() => {
+    setScopeGroupIds(new Set(anchorGroupId ? [anchorGroupId] : []));
+  }, [anchorGroupId]);
+
   const savePlacement = useCallback(async () => {
     if (!selectedSurface || !productImage) return;
     setIsSaving(true);
     setSaveSuccess(false);
     try {
-      const res = await fetch("/api/placements", {
+      const res = await fetchWithTimeout("/api/placements", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1738,6 +2520,20 @@ export default function PlacementPreviewModal({
           productImageUrl: productImage,
           transform,
           blend,
+          // Persist the creator's harmonize choice + the URL for the brand
+          // preview. Render pipeline (Commit 3) will regenerate harmonization
+          // per-frame when isHarmonized=true; this URL is the still preview.
+          isHarmonized: harmonizeEnabled,
+          harmonizedImageUrl: harmonizeEnabled ? liveHarmonizedUrl : null,
+          // Frame-by-frame keyframes — only sent when the creator added
+          // any. Empty array → backend stores null which falls back to
+          // the constant `transform` at render time.
+          keyframes: keyframes.length > 0 ? keyframes : null,
+          // Explicit scope — exactly the canonical surfaces this placement
+          // applies to. Omitted (legacy) when the anchor has no groupId.
+          ...(anchorGroupId
+            ? { appliesToGroupIds: Array.from(new Set([anchorGroupId, ...Array.from(scopeGroupIds)])) }
+            : {}),
         }),
       });
       if (!res.ok) {
@@ -1753,12 +2549,18 @@ export default function PlacementPreviewModal({
       }
       const result = await res.json().catch(() => ({}));
       setSaveSuccess(true);
+      // The painted product is now a persisted placement — reflect that
+      // in the provenance badge.
+      setProductSource("saved");
       const propagated = result.propagatedCount || 0;
+      const scopeCount = anchorGroupId ? new Set([anchorGroupId, ...Array.from(scopeGroupIds)]).size : 0;
       toast({
         title: "Placement saved",
-        description: propagated > 0
+        description: anchorGroupId
+          ? `Applies to exactly ${scopeCount} surface${scopeCount === 1 ? "" : "s"} — nowhere else.`
+          : propagated > 0
           ? `Saved and auto-applied to ${propagated} matching scene${propagated > 1 ? 's' : ''} across the video.`
-          : "Your placement has been saved and can be viewed in Saved Placements.",
+          : "Placement submitted! Our team reviews every placement and produces the final polished render — track its status in Saved Placements.",
       });
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
@@ -1767,7 +2569,7 @@ export default function PlacementPreviewModal({
     } finally {
       setIsSaving(false);
     }
-  }, [selectedSurface, productImage, videoId, selectedCatalogProduct, transform, blend, toast]);
+  }, [selectedSurface, productImage, videoId, selectedCatalogProduct, transform, blend, toast, anchorGroupId, scopeGroupIds]);
 
   const surfacesWithFrames = surfaces.filter((s) => s.frameUrl);
   const hasProduct = !!productImage;
@@ -1837,6 +2639,265 @@ export default function PlacementPreviewModal({
                       <Download className="w-3.5 h-3.5" />
                       <span className="hidden sm:inline">Export Frame</span>
                     </Button>
+                    {/* Harmonize: server-side compositing with scene-aware
+                        lighting + contact shadow. Flat overlay (canvas) stays
+                        as the baseline; this opens a side-by-side dialog. */}
+                    {/* Remove Harmonize — visible when a harmonized result is
+                        active. Lets the creator disable the harmonized overlay
+                        so they can adjust position/scale on the flat canvas,
+                        then re-click Harmonize to refresh, then Save to commit.
+                        Round-trip flow: harmonize → review → remove → adjust
+                        → harmonize → save. */}
+                    {(harmonizeEnabled || liveHarmonizedUrl) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5 text-xs sm:text-sm h-8 border-amber-600/50 text-amber-300 hover:bg-amber-950/40 hover:text-amber-200"
+                        onClick={() => {
+                          setHarmonizeEnabled(false);
+                          setLiveHarmonizedUrl(null);
+                          setHarmonizeError(null);
+                        }}
+                        data-testid="button-remove-harmonize"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Remove Harmonize</span>
+                        <span className="sm:hidden">Revert</span>
+                      </Button>
+                    )}
+                    {/* Two harmonize buttons:
+                        - "Harmonize" (procedural, ~2s): scene-matched
+                          brightness + contact shadow on the flat product
+                          image. Fast iteration.
+                        - "3D Harmonize" (ai-3d, ~30-90s): runs the product
+                          image through TRELLIS to generate a 3D-aware render,
+                          then layers procedural lighting on top. Use when
+                          you want the product to read as a 3D object that
+                          belongs in the room rather than a flat sticker. */}
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="gap-1.5 text-xs sm:text-sm h-8"
+                      disabled={!selectedSurface || !productImage || isHarmonizing}
+                      onClick={async () => {
+                        if (!selectedSurface || !productImage) return;
+                        setIsHarmonizing(true);
+                        setHarmonizeError(null);
+                        setHarmonizeFlatUrl(null);
+                        setHarmonizeResultUrl(null);
+                        setShowHarmonizeCompare(true);
+                        // Progress bar bookkeeping — start timer at click,
+                        // clear the prior "done" state.
+                        setHarmonizeMode("auto");
+                        setHarmonizeStartedAt(Date.now());
+                        setHarmonizeDoneAt100(false);
+
+                        // Build the bbox we send to the harmonize endpoint.
+                        // Routed through the shared helper so this can never
+                        // drift from the 3D Harmonize path or any future
+                        // composite-by-bbox endpoint.
+                        const productPlacementBbox = computeAspectCorrectPlacementBbox({
+                          surface: selectedSurface,
+                          productImg: productImgRef.current,
+                          canvas: canvasRef.current,
+                          frameSource: {
+                            width: videoRef.current?.videoWidth || frameImgRef.current?.naturalWidth || 0,
+                            height: videoRef.current?.videoHeight || frameImgRef.current?.naturalHeight || 0,
+                          },
+                          transform,
+                          logTag: "Harmonize/client",
+                        });
+
+                        try {
+                          const res = await fetchWithTimeout("/api/placement/harmonize", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            credentials: "include",
+                            body: JSON.stringify({
+                              surfaceId: selectedSurface.id,
+                              productImageUrl: productImage,
+                              productPlacementBbox,
+                              // Default to "flat" — the bare composite the
+                              // user already sees in the placement preview.
+                              // No brightness/tint/shadow processing. User
+                              // testing showed flat looks BETTER than any
+                              // procedural or generative path so far (the
+                              // procedural added a visible dark rectangle,
+                              // generative regenerated wrong content).
+                              // The 3D Harmonize button is the experimental
+                              // AI path until Kontext is debugged.
+                              mode: "flat",
+                            }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok || !data.success) {
+                            throw new Error(data.error || "Harmonization failed");
+                          }
+                          setHarmonizeFlatUrl(data.flatCompositeUrl || null);
+                          setHarmonizeResultUrl(data.imageUrl || null);
+                          // Seed the live overlay AND enable it so the canvas
+                          // shows the harmonized result immediately.
+                          setLiveHarmonizedUrl(data.imageUrl || null);
+                          if (data.imageUrl) setHarmonizeEnabled(true);
+                          // Append to rolling history so the user can re-apply
+                          // this exact result later without rerunning.
+                          if (data.imageUrl && productPlacementBbox) {
+                            const next = appendHarmonizeHistory({
+                              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                              timestamp: Date.now(),
+                              mode: "auto",
+                              surfaceId: selectedSurface.id,
+                              productImageUrl: productImage,
+                              resultImageUrl: data.imageUrl,
+                              flatCompositeUrl: data.flatCompositeUrl || null,
+                              bbox: productPlacementBbox,
+                              transform: {
+                                scale: transform.scale,
+                                offsetX: transform.offsetX,
+                                offsetY: transform.offsetY,
+                                rotation: transform.rotation,
+                                flipH: transform.flipH,
+                              },
+                              elapsedMs: typeof data.elapsedMs === "number" ? data.elapsedMs : 0,
+                              videoFingerprint: fingerprintVideoSrc(videoSrc),
+                            });
+                            setHarmonizeHistory(next);
+                          }
+                          // Surface fallback warnings — the user asked for
+                          // generative but Kontext failed; toast lets them
+                          // know the better path didn't run and what they
+                          // see is the procedural fallback.
+                          if (data.fellBack && data.warning) {
+                            toast({
+                              title: "Fell back to procedural",
+                              description: data.warning,
+                              variant: "destructive",
+                            });
+                          } else if (data.mode === "generative") {
+                            toast({
+                              title: "Generative harmonize complete",
+                              description: `FLUX Kontext, ${(data.elapsedMs / 1000).toFixed(1)}s`,
+                            });
+                          }
+                        } catch (err: any) {
+                          setHarmonizeError(err.message || "Harmonization failed");
+                        } finally {
+                          // Briefly show 100% so the bar visibly completes
+                          // before the result panel takes over.
+                          setHarmonizeDoneAt100(true);
+                          setIsHarmonizing(false);
+                          setHarmonizeStartedAt(null);
+                          window.setTimeout(() => setHarmonizeMode(null), 600);
+                        }
+                      }}
+                      data-testid="button-harmonize"
+                    >
+                      {isHarmonizing ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span className="hidden sm:inline">{isHarmonizing ? "Harmonizing…" : "Harmonize"}</span>
+                    </Button>
+                    {/* 3D Harmonize: TRELLIS image→3D mesh + procedural lighting.
+                        Slower (~30-90s) but produces a 3D-aware product render
+                        that reads as belonging in the scene rather than pasted on. */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 text-xs sm:text-sm h-8 border-violet-500/50 text-violet-300 hover:bg-violet-950/40 hover:text-violet-200"
+                      disabled={!selectedSurface || !productImage || isHarmonizing}
+                      onClick={async () => {
+                        if (!selectedSurface || !productImage) return;
+                        setIsHarmonizing(true);
+                        setHarmonizeError(null);
+                        setHarmonizeFlatUrl(null);
+                        setHarmonizeResultUrl(null);
+                        setShowHarmonizeCompare(true);
+                        // 3D mode has a much longer expected duration — the
+                        // progress bar tunes its pace from this mode tag.
+                        setHarmonizeMode("ai-3d");
+                        setHarmonizeStartedAt(Date.now());
+                        setHarmonizeDoneAt100(false);
+
+                        // 3D Harmonize bbox — same shared helper as the
+                        // regular Harmonize button. Single source of truth
+                        // so neither path can drift from the other again.
+                        const productPlacementBbox = computeAspectCorrectPlacementBbox({
+                          surface: selectedSurface,
+                          productImg: productImgRef.current,
+                          canvas: canvasRef.current,
+                          frameSource: {
+                            width: videoRef.current?.videoWidth || frameImgRef.current?.naturalWidth || 0,
+                            height: videoRef.current?.videoHeight || frameImgRef.current?.naturalHeight || 0,
+                          },
+                          transform,
+                          logTag: "Harmonize3D/client",
+                        });
+
+                        try {
+                          const res = await fetchWithTimeout("/api/placement/harmonize", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            credentials: "include",
+                            body: JSON.stringify({
+                              surfaceId: selectedSurface.id,
+                              productImageUrl: productImage,
+                              productPlacementBbox,
+                              mode: "ai-3d",
+                            }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok || !data.success) {
+                            throw new Error(data.error || "3D Harmonization failed");
+                          }
+                          setHarmonizeFlatUrl(data.flatCompositeUrl || null);
+                          setHarmonizeResultUrl(data.imageUrl || null);
+                          setLiveHarmonizedUrl(data.imageUrl || null);
+                          if (data.imageUrl) setHarmonizeEnabled(true);
+                          // Append to rolling history — same shape as the
+                          // regular Harmonize button, just mode="ai-3d".
+                          if (data.imageUrl && productPlacementBbox) {
+                            const next = appendHarmonizeHistory({
+                              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                              timestamp: Date.now(),
+                              mode: "ai-3d",
+                              surfaceId: selectedSurface.id,
+                              productImageUrl: productImage,
+                              resultImageUrl: data.imageUrl,
+                              flatCompositeUrl: data.flatCompositeUrl || null,
+                              bbox: productPlacementBbox,
+                              transform: {
+                                scale: transform.scale,
+                                offsetX: transform.offsetX,
+                                offsetY: transform.offsetY,
+                                rotation: transform.rotation,
+                                flipH: transform.flipH,
+                              },
+                              elapsedMs: typeof data.elapsedMs === "number" ? data.elapsedMs : 0,
+                              videoFingerprint: fingerprintVideoSrc(videoSrc),
+                            });
+                            setHarmonizeHistory(next);
+                          }
+                        } catch (err: any) {
+                          setHarmonizeError(err.message || "3D Harmonization failed");
+                        } finally {
+                          setHarmonizeDoneAt100(true);
+                          setIsHarmonizing(false);
+                          setHarmonizeStartedAt(null);
+                          window.setTimeout(() => setHarmonizeMode(null), 600);
+                        }
+                      }}
+                      data-testid="button-harmonize-3d"
+                      title="Generate a 3D mesh of the product (TRELLIS) and composite it with scene lighting. Takes ~30-90s but reads as a real 3D object in the room."
+                    >
+                      {isHarmonizing ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span className="hidden sm:inline">{isHarmonizing ? "3D…" : "3D Harmonize"}</span>
+                    </Button>
                     {videoSrc && (
                       exportStatus === "complete" && exportOutputUrl ? (
                         <a href={`/api/exports/${exportJobId}/download`} download>
@@ -1884,6 +2945,8 @@ export default function PlacementPreviewModal({
                   style={{ minHeight: "200px" }}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDrop}
+                  onMouseEnter={() => setIsHoveringCanvas(true)}
+                  onMouseLeave={() => setIsHoveringCanvas(false)}
                 >
                   <canvas
                     ref={canvasRef}
@@ -1898,6 +2961,73 @@ export default function PlacementPreviewModal({
                     onMouseLeave={handleCanvasMouseUp}
                     style={isVideoMode ? { pointerEvents: "none" } : undefined}
                   />
+
+                  {/* Live-harmonized overlay. When the toggle is on AND we have
+                      a fresh harmonized result AND the user isn't actively
+                      dragging, show this image stretched to match the canvas.
+                      We deliberately let it sit OVER the canvas (not replace it)
+                      so the underlying canvas still receives interaction
+                      events for drag/scale/rotate — pointer-events:none on the
+                      overlay routes clicks to the canvas underneath.
+                      Three opacity tiers so the user can both SEE the
+                      harmonized result and FIND the bbox handles:
+                        • full opacity when idle (mouse not over canvas)
+                        • ~25% on hover (handles + bbox visible underneath)
+                        • 0 during active drag (clean adjustment) */}
+                  {harmonizeEnabled && liveHarmonizedUrl && !isVideoMode && (
+                    <img
+                      src={liveHarmonizedUrl}
+                      alt="Harmonized placement preview"
+                      className={cn(
+                        "absolute inset-0 m-auto max-w-full max-h-full rounded-lg pointer-events-none transition-opacity duration-150",
+                        isInteractingWithCanvas || dragMode !== "none" ? "opacity-0" :
+                        isHoveringCanvas ? "opacity-25" : "opacity-100",
+                      )}
+                      style={{ objectFit: "contain" }}
+                      data-testid="img-harmonized-overlay"
+                    />
+                  )}
+
+                  {/* Hover hint when harmonized — tells the creator they can
+                      drag/scale to adjust, then re-harmonize. */}
+                  {harmonizeEnabled && liveHarmonizedUrl && !isVideoMode && isHoveringCanvas && dragMode === "none" && (
+                    <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 pointer-events-none rounded-md bg-black/70 backdrop-blur px-3 py-1 text-xs text-zinc-200">
+                      Drag the box to adjust — re-click <span className="text-emerald-300 font-medium">Harmonize</span> to refresh
+                    </div>
+                  )}
+
+                  {/* Subtle harmonize-status pill in the bottom-left of the
+                      canvas. Tells the user what they're looking at without
+                      taking up button-bar space. */}
+                  {hasProduct && (
+                    <div className="absolute bottom-2 left-2 z-10 flex items-center gap-2 rounded-md bg-black/70 backdrop-blur px-2 py-1">
+                      <button
+                        type="button"
+                        onClick={() => setHarmonizeEnabled(v => !v)}
+                        className={cn(
+                          "flex items-center gap-1.5 text-xs font-medium transition-colors",
+                          harmonizeEnabled ? "text-emerald-300" : "text-zinc-400 hover:text-zinc-200"
+                        )}
+                        data-testid="button-toggle-live-harmonize"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        {harmonizeEnabled ? "Harmonized" : "Flat"}
+                      </button>
+                      {harmonizeEnabled && isHarmonizing && (
+                        <div className="flex items-center gap-1.5 text-emerald-300">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          <span className="text-[10px] tabular-nums">
+                            {Math.round(
+                              computeHarmonizeProgress(harmonizeMode, harmonizeElapsedMs, harmonizeDoneAt100).percent,
+                            )}%
+                          </span>
+                        </div>
+                      )}
+                      {harmonizeEnabled && harmonizeError && (
+                        <span className="text-xs text-red-300" title={harmonizeError}>!</span>
+                      )}
+                    </div>
+                  )}
 
                     {/* Hidden video element for playback mode */}
                   {videoSrc && (
@@ -2036,6 +3166,116 @@ export default function PlacementPreviewModal({
                   )}
                 </div>
 
+                {/* Frame-by-frame keyframe timeline. Visible during video
+                    playback when a product is loaded. Lets the creator pin
+                    the product to specific moments for accuracy when motion
+                    tracking drifts. Diamond markers represent keyframes;
+                    drag to reposition in time, click to seek. */}
+                {isVideoMode && videoDuration > 0 && productImage && (
+                  <div className="mt-3 p-3 bg-black/30 rounded-lg">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs text-muted-foreground">
+                        Frame-by-frame edit
+                        {keyframes.length > 0 && (
+                          <span className="ml-1 text-white/70">
+                            · {keyframes.length} keyframe{keyframes.length !== 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </p>
+                      <div className="flex gap-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-[10px] px-2 gap-1"
+                          onClick={() => {
+                            // Capture current transform at current playback time
+                            const t = videoCurrentTime;
+                            const exists = keyframes.find((k) => Math.abs(k.t - t) < 0.05);
+                            if (exists) {
+                              // Update existing keyframe at this time
+                              setKeyframes((prev) =>
+                                prev.map((k) =>
+                                  Math.abs(k.t - t) < 0.05
+                                    ? { t, transform: { ...transform } }
+                                    : k,
+                                ).sort((a, b) => a.t - b.t),
+                              );
+                              toast({ title: "Keyframe updated", description: `at ${t.toFixed(2)}s` });
+                            } else {
+                              setKeyframes((prev) =>
+                                [...prev, { t, transform: { ...transform } }].sort((a, b) => a.t - b.t),
+                              );
+                              toast({ title: "Keyframe added", description: `at ${t.toFixed(2)}s` });
+                            }
+                          }}
+                        >
+                          + Keyframe
+                        </Button>
+                        {keyframes.length > 0 && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 text-[10px] px-2 text-muted-foreground"
+                            onClick={() => {
+                              setKeyframes([]);
+                              toast({ title: "Keyframes cleared" });
+                            }}
+                          >
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    {/* Timeline strip */}
+                    <div
+                      className="relative h-6 bg-black/40 rounded cursor-pointer overflow-hidden"
+                      onClick={(e) => {
+                        if (!videoRef.current) return;
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const u = (e.clientX - rect.left) / rect.width;
+                        const t = Math.max(0, Math.min(videoDuration, u * videoDuration));
+                        videoRef.current.currentTime = t;
+                        setVideoCurrentTime(t);
+                      }}
+                    >
+                      {/* Playhead */}
+                      <div
+                        className="absolute top-0 bottom-0 w-px bg-white/80 pointer-events-none"
+                        style={{ left: `${(videoCurrentTime / videoDuration) * 100}%` }}
+                      />
+                      {/* Keyframe diamond markers */}
+                      {keyframes.map((kf, i) => (
+                        <div
+                          key={i}
+                          className="absolute top-1/2 w-3 h-3 bg-amber-400 rotate-45 -translate-x-1/2 -translate-y-1/2 ring-1 ring-black/60 hover:bg-amber-300 cursor-pointer"
+                          style={{ left: `${(kf.t / videoDuration) * 100}%` }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Single click = seek to this keyframe
+                            if (videoRef.current) {
+                              videoRef.current.currentTime = kf.t;
+                              setVideoCurrentTime(kf.t);
+                            }
+                          }}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            // Double click = delete this keyframe
+                            setKeyframes((prev) => prev.filter((_, j) => j !== i));
+                            toast({ title: "Keyframe removed", description: `at ${kf.t.toFixed(2)}s` });
+                          }}
+                          title={`Keyframe @ ${kf.t.toFixed(2)}s — click to seek, double-click to delete`}
+                        />
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1 leading-tight">
+                      Pause, drag the product into position, then click <span className="text-amber-400">+ Keyframe</span> to pin
+                      it. Playback interpolates between keyframes for smooth motion. Click a diamond to seek; double-click to delete.
+                    </p>
+                  </div>
+                )}
+
                 {/* Surface selector strip */}
                 {surfacesWithFrames.length > 1 && (
                   <div className="mt-3 p-2 bg-black/30 rounded-lg">
@@ -2045,11 +3285,47 @@ export default function PlacementPreviewModal({
                         <button
                           key={surface.id}
                           onClick={() => {
+                            // FIXTURE model: the working product belongs to
+                            // ONE fixture, not to the scene. Keep it only
+                            // when jumping between rows of the SAME fixture
+                            // (same surfaceGroupId — e.g. Wall 4 at :08 and
+                            // Wall 4 at :46). Jumping to a DIFFERENT fixture
+                            // — even in the same scene — clears everything;
+                            // the old same-scene keep is exactly how a wall's
+                            // product got painted onto the nightstand the
+                            // user never placed on. Legacy rows without
+                            // fixture identity (both gids null) keep the old
+                            // same-scene behavior so pre-fixture videos don't
+                            // lose the unsaved drop while browsing a scene.
+                            const prevGid = (selectedSurface as any)?.surfaceGroupId ?? null;
+                            const nextGid = (surface as any)?.surfaceGroupId ?? null;
+                            const sameFixture = !!prevGid && !!nextGid && prevGid === nextGid;
+                            const prevSceneId = (selectedSurface as any)?.sceneId;
+                            const nextSceneId = (surface as any)?.sceneId;
+                            const legacySameScene =
+                              !prevGid &&
+                              !nextGid &&
+                              typeof prevSceneId === "number" &&
+                              typeof nextSceneId === "number" &&
+                              prevSceneId === nextSceneId;
+
                             setSelectedSurface(surface);
-                            // Reset transform for new surface
-                            setTransform({ ...DEFAULT_TRANSFORM });
-                            // Auto-populate blend from lighting data
-                            setBlend(getAutoBlendDefaults(surface));
+                            if (!sameFixture && !legacySameScene) {
+                              setProductImage(null);
+                              setProductSource(null);
+                              setProductFile(null);
+                              setSelectedCatalogProduct(null);
+                              productImgRef.current = null;
+                              setTransform({ ...DEFAULT_TRANSFORM });
+                              setBlend(getAutoBlendDefaults(surface));
+                              setKeyframes([]);
+                              setLoadedPlacement(null);
+                            }
+                            // The loadExistingPlacement effect runs next
+                            // (driven by selectedSurface.id change) and
+                            // restores any saved scene_match for the new
+                            // surface — so a previously SAVED placement on
+                            // this scene reloads automatically.
                           }}
                           className={`relative flex-shrink-0 w-20 h-14 rounded-md overflow-hidden border-2 transition-all ${
                             selectedSurface?.id === surface.id
@@ -2059,15 +3335,82 @@ export default function PlacementPreviewModal({
                         >
                           <img
                             src={surface.frameUrl!}
-                            alt={`Surface ${surface.surfaceType}`}
+                            alt={`Surface ${surface.displayLabel || surface.surfaceType}`}
                             className="w-full h-full object-cover"
                           />
-                          <span className="absolute bottom-0 left-0 right-0 bg-black/70 text-[8px] text-white text-center py-0.5">
-                            {surface.surfaceType}
+                          {/* Scope checkbox — is this canonical surface in
+                              the placement's applies-to list? The anchor's
+                              own group is always included (disabled+checked);
+                              legacy surfaces without a groupId can't be
+                              scoped. stopPropagation so toggling doesn't
+                              also switch the editing anchor. */}
+                          {(() => {
+                            const gid = (surface as any).surfaceGroupId as string | undefined | null;
+                            const isAnchorGroup = !!gid && gid === anchorGroupId;
+                            const checked = !!gid && (scopeGroupIds.has(gid) || isAnchorGroup);
+                            const fixtureName = surface.displayLabel || surface.surfaceType;
+                            return (
+                              <span
+                                role="checkbox"
+                                aria-checked={checked}
+                                title={!gid ? "Legacy detection — cannot be scoped" : isAnchorGroup ? `${fixtureName} — anchor surface, always included` : checked ? `${fixtureName} — included in placement scope` : `${fixtureName} — excluded from placement scope`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (!gid || isAnchorGroup) return;
+                                  setScopeGroupIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(gid)) next.delete(gid);
+                                    else next.add(gid);
+                                    return next;
+                                  });
+                                }}
+                                className={`absolute top-1 right-1 w-3.5 h-3.5 rounded-sm border flex items-center justify-center text-[9px] leading-none ${
+                                  !gid
+                                    ? "border-white/20 bg-black/40 text-transparent cursor-not-allowed"
+                                    : checked
+                                    ? "border-emerald-400 bg-emerald-500/90 text-black"
+                                    : "border-white/50 bg-black/50 text-transparent"
+                                } ${isAnchorGroup ? "opacity-70" : "cursor-pointer"}`}
+                                data-testid={`scope-checkbox-${surface.id}`}
+                              >
+                                ✓
+                              </span>
+                            );
+                          })()}
+                          {/* Scene indicator dot — color cycles per sceneId
+                              so the user can see at a glance which thumbs
+                              belong to the same physical scene. Click into
+                              same-color dots = placement persists. Click
+                              into a different color = product clears (the
+                              "different scene" rule the data layer
+                              enforces). */}
+                          {typeof (surface as any).sceneId === "number" && (
+                            <span
+                              className="absolute top-1 left-1 w-2.5 h-2.5 rounded-full ring-1 ring-black/60"
+                              style={{
+                                backgroundColor: [
+                                  "#a78bfa", // purple — scene 0
+                                  "#34d399", // green  — scene 1
+                                  "#fbbf24", // amber  — scene 2
+                                  "#f87171", // red    — scene 3
+                                  "#60a5fa", // blue   — scene 4
+                                  "#f472b6", // pink   — scene 5
+                                ][((surface as any).sceneId as number) % 6],
+                              }}
+                              title={`Scene ${(surface as any).sceneId}`}
+                            />
+                          )}
+                          <span className="absolute bottom-0 left-0 right-0 bg-black/70 text-[8px] text-white text-center py-0.5 truncate px-0.5">
+                            {surface.displayLabel || surface.surfaceType}
                           </span>
                         </button>
                       ))}
                     </div>
+                    {anchorGroupId && (
+                      <p className="text-[10px] text-muted-foreground mt-1.5">
+                        Product applies to {new Set([anchorGroupId, ...Array.from(scopeGroupIds)]).size} checked surface{new Set([anchorGroupId, ...Array.from(scopeGroupIds)]).size === 1 ? "" : "s"} — check others to include them, e.g. the same table in another scene.
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -2132,7 +3475,7 @@ export default function PlacementPreviewModal({
                           </div>
                           <div className="flex flex-wrap gap-1.5">
                             <Badge variant="secondary" className="text-xs">
-                              {selectedSurface.surfaceType}
+                              {selectedSurface.displayLabel || selectedSurface.surfaceType}
                             </Badge>
                             <Badge variant="outline" className="text-xs">
                               <Clock className="w-3 h-3 mr-1" />
@@ -2211,6 +3554,14 @@ export default function PlacementPreviewModal({
                                 {selectedCatalogProduct.name}
                               </p>
                             )}
+                            <p
+                              className={`text-[10px] mt-1 ${
+                                productSource === "saved" ? "text-emerald-400" : "text-amber-400/80"
+                              }`}
+                              data-testid="product-provenance-badge"
+                            >
+                              {productSource === "saved" ? "Saved placement" : "Preview — not saved"}
+                            </p>
                             <div className="flex gap-2 mt-2">
                               <Button
                                 size="sm"
@@ -2236,6 +3587,18 @@ export default function PlacementPreviewModal({
                                 Reset
                               </Button>
                             </div>
+                            {productSource === "saved" && loadedPlacement && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="w-full mt-1 text-xs text-red-400 hover:text-red-300"
+                                onClick={deleteSavedPlacement}
+                                data-testid="delete-saved-placement"
+                              >
+                                <Trash2 className="w-3 h-3 mr-1" />
+                                Remove saved placement
+                              </Button>
+                            )}
                           </div>
                         ) : productTab === "upload" ? (
                           <div
@@ -2257,7 +3620,13 @@ export default function PlacementPreviewModal({
                             {!catalogProducts || catalogProducts.length === 0 ? (
                               <div className="p-4 text-center">
                                 <Package className="w-6 h-6 text-muted-foreground mx-auto mb-1.5" />
-                                <p className="text-xs text-muted-foreground">No products in catalog</p>
+                                <div className="text-xs text-muted-foreground space-y-1">
+                                  <p className="font-medium text-foreground">No brands available yet</p>
+                                  <p className="leading-snug">
+                                    You'll see brands that selected you, brands open to any creator,
+                                    and any partnership you upload yourself.
+                                  </p>
+                                </div>
                                 <p className="text-[10px] text-muted-foreground/60 mt-0.5">
                                   Brands can upload products in Product Catalog
                                 </p>
@@ -2300,7 +3669,7 @@ export default function PlacementPreviewModal({
                             <li>Upload your product or brand image</li>
                             <li>Drag to reposition, resize, and rotate</li>
                             <li>Adjust blend, shadow, and lighting</li>
-                            <li>Export the final mockup</li>
+                            <li>Save it — our team reviews your placement and produces the final render</li>
                           </ol>
                         </div>
                       )}
@@ -2580,6 +3949,281 @@ export default function PlacementPreviewModal({
                   )}
                 </div>
               </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+
+      {/* Harmonization compare dialog — opens on Harmonize button click,
+          shows flat composite vs harmonized result side-by-side. */}
+      {showHarmonizeCompare && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[60] bg-black/85 flex items-center justify-center p-4"
+          onClick={() => setShowHarmonizeCompare(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.95, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.95, opacity: 0 }}
+            className="bg-zinc-900 border border-white/10 rounded-xl max-w-6xl w-full max-h-[90vh] overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-white/10">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-base font-semibold text-white">Placement comparison</h3>
+              </div>
+              <button
+                onClick={() => setShowHarmonizeCompare(false)}
+                className="p-1.5 rounded-full bg-black/50 hover:bg-black/70 text-white"
+                data-testid="button-close-harmonize"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4">
+              {isHarmonizing && (() => {
+                const { percent, label, isOvertime } = computeHarmonizeProgress(
+                  harmonizeMode,
+                  harmonizeElapsedMs,
+                  harmonizeDoneAt100,
+                );
+                const elapsedSec = (harmonizeElapsedMs / 1000).toFixed(1);
+                const expectedSec = harmonizeMode
+                  ? Math.round(HARMONIZE_STAGE_PLAN[harmonizeMode].expectedMs / 1000)
+                  : null;
+                return (
+                  <div className="flex flex-col items-center justify-center py-12 gap-4 max-w-md mx-auto">
+                    <div className="flex items-center gap-2 text-emerald-300">
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span className="text-sm font-medium">
+                        {harmonizeMode === "ai-3d" ? "3D Harmonize" : "Harmonize"}
+                      </span>
+                    </div>
+                    <Progress
+                      value={percent}
+                      className={cn(
+                        "h-2 w-full",
+                        isOvertime ? "[&>div]:bg-amber-400" : "[&>div]:bg-emerald-400",
+                      )}
+                      data-testid="harmonize-progress"
+                    />
+                    <div className="flex items-center justify-between w-full text-xs text-muted-foreground">
+                      <span data-testid="harmonize-stage">{label || "Starting…"}</span>
+                      <span className="tabular-nums">
+                        {Math.round(percent)}%
+                        {expectedSec !== null && (
+                          <span className="text-muted-foreground/60 ml-2">
+                            {elapsedSec}s / ~{expectedSec}s
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    {isOvertime && (
+                      <p className="text-[11px] text-amber-300/80 text-center">
+                        Taking longer than usual — still running, hang tight.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {!isHarmonizing && harmonizeError && (
+                <div className="py-8 px-4 rounded-lg bg-red-500/10 border border-red-500/40">
+                  <p className="text-sm text-red-300">Harmonization failed: {harmonizeError}</p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    The flat overlay on the main canvas is unaffected — this is a preview tool only.
+                  </p>
+                </div>
+              )}
+
+              {!isHarmonizing && !harmonizeError && (harmonizeFlatUrl || harmonizeResultUrl) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-white">Flat overlay</span>
+                      <Badge variant="outline" className="text-[10px]">baseline</Badge>
+                    </div>
+                    {harmonizeFlatUrl ? (
+                      <img
+                        src={harmonizeFlatUrl}
+                        alt="Flat composite"
+                        className="w-full rounded-lg border border-white/10"
+                      />
+                    ) : (
+                      <div className="w-full aspect-video rounded-lg border border-white/10 bg-zinc-800 flex items-center justify-center text-xs text-muted-foreground">
+                        Not available
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-foreground mt-1.5">
+                      Product pasted at bbox without lighting adjustment.
+                    </p>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-white">Saved composite (review reference)</span>
+                      <Badge className="text-[10px] bg-emerald-500/20 text-emerald-300 border-emerald-500/40">
+                        what brands see
+                      </Badge>
+                    </div>
+                    {harmonizeResultUrl ? (
+                      <img
+                        src={harmonizeResultUrl}
+                        alt="Saved composite"
+                        className="w-full rounded-lg border border-emerald-500/40"
+                      />
+                    ) : (
+                      <div className="w-full aspect-video rounded-lg border border-white/10 bg-zinc-800 flex items-center justify-center text-xs text-muted-foreground">
+                        Not available
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-foreground mt-1.5">
+                      The flat composite — same image rendered in the preview.
+                      Click "3D Harmonize" (purple) to try the experimental AI
+                      path that generates scene-native pixels.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Recent harmonize history — local-only rolling log so the
+                  user can re-apply a prior result without burning another
+                  12-60s server roundtrip. Same-context entries get badges
+                  so the most relevant runs surface visually. */}
+              {!isHarmonizing && harmonizeHistory.length > 0 && (
+                <div className="mt-6 pt-4 border-t border-white/10">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium text-white">
+                        Recent harmonizes
+                      </span>
+                      <Badge variant="outline" className="text-[10px] h-4 px-1.5">
+                        {harmonizeHistory.length}
+                      </Badge>
+                    </div>
+                    <button
+                      onClick={() => {
+                        clearHarmonizeHistory();
+                        setHarmonizeHistory([]);
+                        toast({ title: "Cleared harmonize history" });
+                      }}
+                      className="text-[10px] text-muted-foreground hover:text-white transition-colors"
+                      data-testid="button-clear-harmonize-history"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
+                    {harmonizeHistory.map((entry) => {
+                      const sameSurface = selectedSurface?.id === entry.surfaceId;
+                      const sameProduct = productImage === entry.productImageUrl;
+                      const sameScene =
+                        entry.videoFingerprint != null &&
+                        entry.videoFingerprint === fingerprintVideoSrc(videoSrc);
+                      return (
+                        <div
+                          key={entry.id}
+                          className="group relative flex-shrink-0 w-28 rounded-md border border-white/10 bg-zinc-900/60 overflow-hidden hover:border-emerald-400/60 transition-colors"
+                          data-testid={`history-entry-${entry.id}`}
+                        >
+                          <button
+                            onClick={() => reuseHarmonizeEntry(entry)}
+                            className="block w-full"
+                            title={`Reuse: ${entry.mode === "ai-3d" ? "3D Harmonize" : "Harmonize"} • ${formatHistoryTimestamp(entry.timestamp)}`}
+                          >
+                            <div className="aspect-video bg-black flex items-center justify-center">
+                              <img
+                                src={entry.resultImageUrl}
+                                alt={`Harmonize from ${formatHistoryTimestamp(entry.timestamp)}`}
+                                className="w-full h-full object-cover"
+                                loading="lazy"
+                                onError={(e) => {
+                                  // Result image was GC'd — show a fallback
+                                  // tile so the entry still functions for
+                                  // transform recall.
+                                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                                  (e.currentTarget.nextSibling as HTMLElement | null)?.classList.remove("hidden");
+                                }}
+                              />
+                              <span className="hidden text-[10px] text-muted-foreground px-2 text-center">
+                                Image expired
+                              </span>
+                            </div>
+                            <div className="p-1.5 flex flex-col gap-1">
+                              <div className="flex items-center justify-between gap-1">
+                                <Badge
+                                  variant="outline"
+                                  className={cn(
+                                    "text-[9px] h-3.5 px-1 leading-none",
+                                    entry.mode === "ai-3d"
+                                      ? "border-violet-400/50 text-violet-300"
+                                      : "border-emerald-400/50 text-emerald-300",
+                                  )}
+                                >
+                                  {entry.mode === "ai-3d" ? "3D" : "Auto"}
+                                </Badge>
+                                <span className="text-[9px] text-muted-foreground">
+                                  {formatHistoryTimestamp(entry.timestamp)}
+                                </span>
+                              </div>
+                              {(sameSurface || sameProduct || sameScene) && (
+                                <div className="flex flex-wrap gap-0.5">
+                                  {sameSurface && (
+                                    <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-300 leading-none">
+                                      surface
+                                    </span>
+                                  )}
+                                  {sameProduct && (
+                                    <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-300 leading-none">
+                                      product
+                                    </span>
+                                  )}
+                                  {sameScene && !sameSurface && (
+                                    <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-300 leading-none">
+                                      scene
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </button>
+                          <div className="absolute top-1 right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                reuseHarmonizeEntry(entry, { transformOnly: true });
+                              }}
+                              className="p-0.5 rounded bg-black/60 hover:bg-black/90 text-white"
+                              title="Restore transform only (re-run server)"
+                            >
+                              <RotateCcw className="w-2.5 h-2.5" />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeHarmonizeEntry(entry.id);
+                              }}
+                              className="p-0.5 rounded bg-black/60 hover:bg-red-600 text-white"
+                              title="Remove from history"
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-2">
+                    Click a tile to re-apply that result instantly. Hover for
+                    "transform only" (re-run with the same placement) or remove.
+                  </p>
+                </div>
+              )}
             </div>
           </motion.div>
         </motion.div>

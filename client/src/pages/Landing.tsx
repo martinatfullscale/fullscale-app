@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2, Briefcase, MousePointerClick } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2, Briefcase, MousePointerClick, CalendarCheck } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
+// Mighty Capital logo lives in client/public/partner-logos/mighty-capital.png so
+// the build doesn't fail if the file isn't saved yet. <img onError> falls back
+// to styled brand-name text if the PNG is missing.
 import { SmithFamilyCircleLogo } from "@/components/SmithFamilyCircleLogo";
 import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
 import heroVideoMobile from "@assets/generated_videos/creator_studio_cinematic_loop_mobile.mp4";
@@ -18,6 +21,7 @@ import beautyFrame from "@assets/generated_images/beauty_vlog_frame.png";
 import travelFrame from "@assets/generated_images/travel_vlog_frame.png";
 import gamingFrame from "@assets/generated_images/gaming_stream_frame.png";
 import { Footer } from "@/components/Footer";
+import { LogoCloud } from "@/components/ui/logo-cloud-4";
 import { Slider } from "@/components/ui/slider";
 import { SceneComparisonSlider } from "@/components/SceneComparisonSlider";
 
@@ -45,6 +49,29 @@ import demoBeautyAugmented from "@assets/generated_images/brands_beauty_augmente
 // SURFACE ENGINE - REAL COMPUTER VISION LOGIC FOR VERTICAL VIDEO TRACKING
 // Implements: Camera intrinsics, ROI filtering, adaptive thresholds, homography
 // ============================================================================
+
+// "Already used by Best in the Game" logo cloud — brand customers shown
+// under the hero. Logo files live at client/public/brand-logos/<slug>.png
+// and are served at /brand-logos/<slug>.png.
+//
+// To add/replace a brand:
+//   1. Drop a transparent PNG (or SVG) into client/public/brand-logos/
+//      Recommended size: ~200px tall, transparent background, light/white
+//      wordmark so the `dark:invert` style in LogoCloud renders correctly.
+//   2. Add or edit an entry below — `src` points at the file path,
+//      `alt` is the brand name (used as graceful text fallback if the
+//      image fails to load).
+//
+// If a logo PNG is missing, the LogoCloud renders the `alt` as styled
+// text instead of a broken-image icon (see logo-cloud-4.tsx onError).
+const partnerLogos = [
+  { src: "/brand-logos/just-water.png",     alt: "JUST Water" },
+  { src: "/brand-logos/mizzou.png",         alt: "Mizzou" },
+  { src: "/brand-logos/naturade.png",       alt: "Naturade" },
+  { src: "/brand-logos/shinju.png",         alt: "Shinju Japanese Whisky" },
+  { src: "/brand-logos/vegan-smart.png",    alt: "VeganSmart" },
+  { src: "/brand-logos/seto-holdings.png",  alt: "SETO Holdings" },
+];
 
 // Camera intrinsics configuration
 const CAMERA_CONFIG = {
@@ -1216,8 +1243,6 @@ export default function Landing() {
   const [showBetaModal, setShowBetaModal] = useState(false);
   const [showDemoModal, setShowDemoModal] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
-  const [showSignInOptions, setShowSignInOptions] = useState(false);
-  const [signInDest, setSignInDest] = useState<"dashboard" | "studio">("dashboard");
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
@@ -1305,10 +1330,6 @@ export default function Landing() {
     setShowBetaModal(true);
   };
 
-  const handleActualLogin = () => {
-    const redirect = signInDest === "studio" ? "/studio/waitlist" : "/dashboard";
-    window.location.href = `/api/auth/google?redirect=${encodeURIComponent(redirect)}`;
-  };
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col relative">
@@ -1344,31 +1365,44 @@ export default function Landing() {
           style={{ paddingTop: 'env(safe-area-inset-top)' }}
         >
           <div className="flex items-center">
-            <img 
-              src={logoUrl} 
-              alt="FullScale Creator Portal" 
-              className="h-8 md:h-10 w-auto" 
-              data-testid="img-landing-logo" 
+            <img
+              src={logoUrl}
+              alt="FullScale Creator Portal"
+              className="h-7 sm:h-8 md:h-10 w-auto"
+              data-testid="img-landing-logo"
             />
-            <span className="ml-3 pl-3 border-l border-white/20 text-[10px] font-medium tracking-[0.2em] uppercase text-white/50 hidden sm:inline">FullScale Creator Portal</span>
+            {/* The app's name, visible at every width.
+                This was `hidden sm:inline` — display:none below 640px — so on
+                a phone the only thing naming the app was the logo artwork. A
+                Google OAuth reviewer recorded the name as absent from the page
+                for exactly that reason.
+                It cannot simply be un-hidden: at 375px the left group has 219px
+                and the full string needs 195.7px after a 110px logo and 25px of
+                chrome, so it silently wraps to three lines. Instead the logo
+                (itself the "FullScale" wordmark) carries the brand on phones
+                and the text supplies "Creator Portal"; the full string switches
+                on at 460px, where it measurably fits on one line.
+                white/50 was also a real contrast failure, not just a
+                visibility one — the nav sits over an autoplaying video behind
+                only a black/70 gradient, so on a bright frame it fell to
+                3.87:1 against the 4.5:1 AA floor that applies at 10px. */}
+            <span
+              className="hidden min-[354px]:inline ml-2 pl-2 md:ml-3 md:pl-3 border-l border-white/30 text-[10px] md:text-[11px] font-semibold tracking-[0.08em] md:tracking-[0.15em] uppercase text-white/90 whitespace-nowrap [text-shadow:0_1px_2px_rgb(0_0_0/0.8)]"
+              aria-hidden="true"
+              data-testid="text-landing-wordmark"
+            >
+              <span className="hidden min-[460px]:inline">FullScale </span>Creator Portal
+            </span>
           </div>
           
-          {/* Desktop Navigation - visible at 600px and above */}
+          {/* Desktop Navigation - visible at 600px and above.
+              FullScale Creates / Studio were moved to the footer (see
+              Footer.tsx > Products section). Header now carries only the
+              two top-of-funnel CTAs: "For Brands" → /brands marketing
+              landing (which has its own "Sign Up Now" CTAs that go to
+              /brand-signup, the approval-gated form), and "Sign In"
+              for returning users. */}
           <div className="hidden min-[600px]:flex items-center gap-3">
-            <a
-              href="/creates"
-              className="px-5 py-2 rounded-lg font-medium text-sm border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] flex items-center"
-              data-testid="link-nav-creates"
-            >
-              FullScale Creates
-            </a>
-            <a
-              href="/studio"
-              className="px-5 py-2 rounded-lg font-medium text-sm border border-purple-500/30 bg-purple-500/10 backdrop-blur-sm hover:bg-purple-500/20 transition-colors text-purple-200 min-h-[44px] flex items-center"
-              data-testid="link-nav-studio"
-            >
-              FullScale Studio
-            </a>
             <a
               href="/brands"
               className="px-5 py-2 rounded-lg font-medium text-sm border border-emerald-400/40 text-emerald-300 bg-emerald-400/5 backdrop-blur-sm hover:bg-emerald-400/15 transition-colors min-h-[44px] flex items-center gap-2"
@@ -1377,7 +1411,7 @@ export default function Landing() {
               <Briefcase className="w-4 h-4" />
               For Brands
             </a>
-            <button 
+            <button
               onClick={handleLoginClick}
               className="px-5 py-2 rounded-lg font-medium text-sm border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] flex items-center"
               data-testid="button-nav-signin"
@@ -1387,23 +1421,10 @@ export default function Landing() {
           </div>
 
           {/* Mobile Icon Buttons - visible below 600px with 1.5rem spacing from logo */}
-          <div className="flex min-[600px]:hidden items-center gap-3 ml-6">
-            <a
-              href="/creates"
-              className="p-2 rounded-lg border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] min-w-[44px] flex items-center justify-center"
-              data-testid="button-mobile-creates"
-              aria-label="FullScale Creates"
-            >
-              <Film className="w-5 h-5" />
-            </a>
-            <a
-              href="/studio"
-              className="p-2 rounded-lg border border-purple-500/30 bg-purple-500/10 backdrop-blur-sm hover:bg-purple-500/20 transition-colors text-purple-200 min-h-[44px] min-w-[44px] flex items-center justify-center"
-              data-testid="button-mobile-studio"
-              aria-label="FullScale Studio"
-            >
-              <Wand2 className="w-5 h-5" />
-            </a>
+          {/* ml-6 -> ml-2: justify-between already separates the two groups, so
+              the extra 16px bought nothing visually and was the last of the
+              budget the wordmark needed to stay on one line down to 354px. */}
+          <div className="flex min-[600px]:hidden items-center gap-3 ml-2">
             <a
               href="/brands"
               className="p-2 rounded-lg border border-emerald-400/40 text-emerald-300 bg-emerald-400/5 backdrop-blur-sm hover:bg-emerald-400/15 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
@@ -1490,6 +1511,25 @@ export default function Landing() {
         </motion.div>
       </section>
 
+      {/* "Already used by Best in the Game" logo cloud — social proof
+          slot directly under the hero. No background color (inherits
+          page bg). The marquee fades in/out at both edges via
+          ProgressiveBlur. Edit the `partnerLogos` array near the top
+          of this file to add/replace brands. */}
+      <section className="py-10 md:py-16 relative">
+        <div className="container mx-auto px-4">
+          <h2 className="mb-6 md:mb-8 text-center">
+            <span className="block font-medium text-xl md:text-2xl text-muted-foreground">
+              Already used by
+            </span>
+            <span className="block font-black text-2xl md:text-3xl text-primary tracking-tight">
+              Best in the Game
+            </span>
+          </h2>
+          <LogoCloud logos={partnerLogos} />
+        </div>
+      </section>
+
       {/* Reality vs Augmented Section - compact on mobile */}
       <section className="py-10 md:py-24 relative overflow-hidden">
         <div className="absolute top-1/2 left-0 w-[600px] h-[600px] bg-primary/10 rounded-full blur-[200px] -translate-y-1/2 pointer-events-none" />
@@ -1552,6 +1592,22 @@ export default function Landing() {
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
                   <SmithFamilyCircleLogo className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                </div>
+                <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
+                  <img
+                    src="/partner-logos/mighty-capital.png"
+                    alt="Mighty Capital"
+                    loading="lazy"
+                    className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity"
+                    onError={(e) => {
+                      // Graceful fallback if PNG isn't saved yet
+                      const img = e.currentTarget;
+                      const fallback = document.createElement("span");
+                      fallback.className = "text-xs md:text-sm font-bold tracking-tight text-white/70 px-2";
+                      fallback.textContent = "MIGHTY CAPITAL";
+                      img.replaceWith(fallback);
+                    }}
+                  />
                 </div>
               </div>
             ))}
@@ -1679,10 +1735,80 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* App Name & Legal Links for Google Verification - Bot-crawlable section */}
-      <section className="py-6 bg-background border-t border-white/5">
-        <div className="container mx-auto px-6 text-center">
-          <p className="text-lg font-semibold text-white mb-2">FullScale Creator Portal</p>
+      {/* App Name, Purpose & Legal Links for Google Verification.
+          Bot-crawlable, and deliberately plain.
+
+          Google's OAuth review found that this page "does not explain the
+          purpose of your app", and they were right: every other section
+          describes AI product placement and brand revenue, so a reviewer
+          assessing youtube.upload had nothing to connect the requested
+          permissions to. Rather than rewrite the marketing above, the
+          explanation lives here in the section that already exists for this
+          audience.
+
+          Every sentence below was checked against the code that actually runs.
+          Do not add a capability claim here without verifying it — this text is
+          submitted to Google, and a statement the product does not back is a
+          worse finding than a vague one. */}
+      <section className="py-10 bg-background border-t border-white/5">
+        <div className="container mx-auto px-6 max-w-3xl">
+          <p className="text-lg font-semibold text-white mb-3 text-center">FullScale Creator Portal</p>
+
+          <p className="text-sm text-muted-foreground leading-relaxed mb-6 text-center">
+            FullScale is a tool for video creators. It connects to a creator's own YouTube
+            channel, reads their long-form videos, uses AI to find the strongest moments
+            inside them, and turns those moments into short clips. The creator reviews and
+            edits each clip — trimming it, restyling the captions, adding b-roll — and can
+            then publish it to their own channel from inside FullScale.
+          </p>
+
+          <h3 className="text-sm font-semibold text-white mb-3 text-center">
+            How FullScale uses your Google account
+          </h3>
+          <dl className="text-sm text-muted-foreground space-y-3 mb-6">
+            <div>
+              <dt className="text-white/90 font-medium">Viewing your YouTube account</dt>
+              <dd className="leading-relaxed">
+                Identifies the channel you connected and lists the videos on it, so you can
+                confirm the right account and choose which of your videos to work from. We
+                also read each video's public statistics, and viewer comments on your videos
+                to summarise audience response.
+              </dd>
+            </div>
+            <div>
+              <dt className="text-white/90 font-medium">Viewing your YouTube Analytics</dt>
+              <dd className="leading-relaxed">
+                Reads views, watch time, retention and audience demographics for your own
+                channel, shown to you in FullScale and summarised on the media-kit page you
+                can share with brands.
+              </dd>
+            </div>
+            <div>
+              <dt className="text-white/90 font-medium">Managing your YouTube videos</dt>
+              <dd className="leading-relaxed">
+                Used only to upload a finished clip to your channel, and only when you press
+                Publish or schedule that clip yourself. You choose whether each upload is
+                private, unlisted or public. FullScale never edits, retitles, re-tags,
+                re-describes or deletes a video already on your channel, and never changes
+                your playlists.
+              </dd>
+            </div>
+          </dl>
+
+          <p className="text-xs text-muted-foreground/70 leading-relaxed mb-6 text-center">
+            FullScale's use of information received from Google APIs adheres to the{" "}
+            <a
+              href="https://developers.google.com/terms/api-services-user-data-policy"
+              className="underline hover:text-white transition-colors"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Google API Services User Data Policy
+            </a>
+            , including the Limited Use requirements. You can disconnect your Google account
+            at any time from Settings, which removes our access.
+          </p>
+
           <div className="flex items-center justify-center gap-4 text-sm text-muted-foreground">
             <a href="/privacy" className="hover:text-white transition-colors underline">Privacy Policy</a>
             <span>|</span>
@@ -1712,7 +1838,7 @@ export default function Landing() {
               onClick={(e) => e.stopPropagation()}
             >
               <button
-                onClick={() => { setShowBetaModal(false); setAccessError(null); setShowSignInOptions(false); }}
+                onClick={() => { setShowBetaModal(false); setAccessError(null); }}
                 className="absolute top-4 right-4 text-muted-foreground hover:text-white transition-colors"
                 data-testid="button-modal-close"
               >
@@ -1759,52 +1885,17 @@ export default function Landing() {
                     Sign Up Now
                   </a>
 
-                  {!showSignInOptions ? (
-                    <button
-                      onClick={() => setShowSignInOptions(true)}
-                      className="mt-6 text-sm text-muted-foreground/60 hover:text-white transition-colors underline underline-offset-4"
-                      data-testid="button-modal-partner-signin"
-                    >
-                      Already a Partner? Sign In
-                    </button>
-                  ) : (
-                    <div className="mt-6 space-y-3">
-                      <p className="text-xs text-muted-foreground uppercase tracking-wider">Sign in to</p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setSignInDest("dashboard")}
-                          className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-all ${
-                            signInDest === "dashboard"
-                              ? "border-primary bg-primary/10 text-white"
-                              : "border-white/10 text-muted-foreground hover:border-white/20 hover:text-white"
-                          }`}
-                          data-testid="button-signin-dest-portal"
-                        >
-                          Creator Portal
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSignInDest("studio")}
-                          className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-all ${
-                            signInDest === "studio"
-                              ? "border-primary bg-primary/10 text-white"
-                              : "border-white/10 text-muted-foreground hover:border-white/20 hover:text-white"
-                          }`}
-                          data-testid="button-signin-dest-studio"
-                        >
-                          Studio
-                        </button>
-                      </div>
-                      <button
-                        onClick={handleActualLogin}
-                        className="w-full px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-sm transition-colors border border-white/20"
-                        data-testid="button-modal-signin-go"
-                      >
-                        Sign In with Google
-                      </button>
-                    </div>
-                  )}
+                  {/* "Already a Partner? Sign In" → routes to /auth?mode=login,
+                      which gives both email/password AND Google as options.
+                      Previously this expanded inline into a Google-only flow,
+                      forcing partners without Google accounts into a dead end. */}
+                  <a
+                    href="/auth?mode=login"
+                    className="mt-6 inline-block text-sm text-muted-foreground/60 hover:text-white transition-colors underline underline-offset-4"
+                    data-testid="button-modal-partner-signin"
+                  >
+                    Already a Partner? Sign In
+                  </a>
                 </>
               )}
             </motion.div>
@@ -2032,12 +2123,14 @@ export default function Landing() {
                       Get a personalized walkthrough of the platform, see the AI in action, and discuss partnership opportunities directly with our founder.
                     </p>
                     <a
-                      href="mailto:fullscale_info@gofullscale.co?subject=FullScale Demo Request - Founding Cohort"
+                      href="https://airtable.com/appW0JuWDr1mcpCtN/pagUoOCii6OPMWPZd/form"
+                      target="_blank"
+                      rel="noopener noreferrer"
                       className="inline-flex items-center gap-2 px-10 py-4 rounded-xl bg-primary hover:bg-primary/90 text-white font-bold text-lg shadow-lg shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
-                      data-testid="button-email-demo"
+                      data-testid="button-request-demo"
                     >
-                      <Mail className="w-5 h-5" />
-                      Email our team for a demo
+                      <CalendarCheck className="w-5 h-5" />
+                      Request a Founders Tour
                     </a>
                     <p className="mt-4 text-sm text-muted-foreground">
                       Limited spots available in the Founding Cohort

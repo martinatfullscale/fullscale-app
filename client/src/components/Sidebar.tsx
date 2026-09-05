@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2 } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2, Inbox, Library as LibraryIcon, BarChart3, Database, Boxes, PackageOpen, UserCheck, ClipboardCheck, FlaskConical, Clapperboard, Bookmark } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -41,11 +41,63 @@ export function Sidebar() {
     switchRoleMutation.mutate("brand");
   };
 
+  // Pending placement requests count — shows as a badge on the Inbox link.
+  // Polls every 60s so creators see new requests without manually refreshing.
+  const { data: inboxCountData } = useQuery<{ count: number }>({
+    queryKey: ["/api/creator/placements/inbox/count"],
+    refetchInterval: 60_000,
+  });
+  const inboxCount = inboxCountData?.count ?? 0;
+
+  // Undownloaded finished renders — the badge is the nudge that finished
+  // work is waiting, which is what keeps the publish→measure loop moving.
+  const { data: deliveriesData } = useQuery<{ deliveries: Array<{ downloadedAt: string | null; publishedAt: string | null }> }>({
+    queryKey: ["/api/deliveries"],
+    refetchInterval: 120_000,
+  });
+  const deliveryCount = (deliveriesData?.deliveries ?? []).filter(
+    (d) => !d.downloadedAt && !d.publishedAt,
+  ).length;
+
+  // View-as options — admins get every user with library content, others
+  // get just the libraries they've been granted via LIBRARY_VIEW_GRANTS.
+  // Used to render the "Other Libraries" dropdown in the creator sidebar
+  // so admins can hop into another user's library to test remix engine /
+  // distribution against real content (e.g. Scott + Juan testing against
+  // Martin's library).
+  const { data: viewAsData } = useQuery<{
+    mode: string;
+    grants: Array<{ email: string; firstName: string | null; lastName: string | null; videoCount?: number }>;
+  }>({
+    queryKey: ["/api/me/view-as-options"],
+  });
+
+  // Ordered the way the work flows: your content, then the placement
+  // pipeline in the order a request moves through it (an Opportunity → the
+  // Inbox → a Saved Placement → a Delivery), then the numbers.
+  //
   const links = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/library", label: "My Library", icon: FolderOpen },
+    // The flagship output finally has a home: every clip and reel, across videos.
+    { href: "/clips", label: "Clips & Reels", icon: Clapperboard },
     { href: "/opportunities", label: "Opportunities", icon: Zap },
+    { href: "/inbox", label: "Inbox", icon: Inbox, badge: inboxCount },
+    // Creators land here from every placement-review notification; it had no
+    // way in from the nav.
+    { href: "/saved-placements", label: "Saved Placements", icon: Bookmark },
+    { href: "/deliveries", label: "Deliveries", icon: PackageOpen, badge: deliveryCount },
+    { href: "/analytics", label: "Analytics", icon: BarChart3 },
     { href: "/earnings", label: "Earnings", icon: DollarSign },
+    ...(userTypeData?.isAdmin
+      ? [
+          { href: "/admin/signups", label: "Signups", icon: UserCheck },
+          { href: "/admin/placements", label: "Review Queue", icon: ClipboardCheck },
+          { href: "/admin/measurement", label: "Measurement", icon: FlaskConical },
+          { href: "/admin/creators", label: "Creator Intel", icon: Database },
+          { href: "/admin/data-inventory", label: "Data Inventory", icon: Boxes },
+        ]
+      : []),
     { href: "/settings", label: "Settings", icon: Settings },
   ];
 
@@ -55,22 +107,66 @@ export function Sidebar() {
         <img src={logoUrl} alt="FullScale" className="h-10 w-auto cursor-pointer" />
       </Link>
 
-      <nav className="flex-1 space-y-2">
+      {/* min-h-0 + overflow-y-auto: lets the nav scroll when the combined
+          height of links + "Other Libraries" + portfolio exceeds the
+          available space between the logo (top) and bottom buttons.
+          Without min-h-0 the flex-1 child won't actually shrink below
+          its content height in a flex column, so scroll never engages. */}
+      <nav className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
         {links.map((link) => {
           const Icon = link.icon;
           const isActive = location === link.href;
+          const badge = (link as any).badge as number | undefined;
           return (
             <Link
               key={link.href}
               href={link.href}
-              className={cn("sidebar-link", isActive && "active")}
+              className={cn("sidebar-link relative", isActive && "active")}
               data-testid={`link-${link.label.toLowerCase().replace(/\s/g, "-")}`}
             >
               <Icon className={cn("w-5 h-5", isActive ? "stroke-[2.5px]" : "stroke-2")} />
-              {link.label}
+              <span className="flex-1">{link.label}</span>
+              {badge !== undefined && badge > 0 && (
+                <span
+                  className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold bg-emerald-500 text-white"
+                  data-testid={`badge-${link.label.toLowerCase()}`}
+                >
+                  {badge > 99 ? "99+" : badge}
+                </span>
+              )}
             </Link>
           );
         })}
+
+        {/* "Other Libraries" — view-as dropdown. Admins see every user with
+            content; non-admins with LIBRARY_VIEW_GRANTS entries see just
+            those granters. Hidden when empty. Each option links to
+            /library?as=<email> which the server gates via admin OR grant. */}
+        {viewAsData?.grants && viewAsData.grants.length > 0 && (
+          <div className="pt-4 mt-4 border-t border-border/40">
+            <div className="px-4 pb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+              Other Libraries{viewAsData.mode === "admin-all" ? " (Admin)" : ""}
+            </div>
+            {/* Cap to 8 entries to keep the sidebar compact. If more exist,
+                they're reachable via /library?as=<email> direct URL. */}
+            {viewAsData.grants.slice(0, 8).map((g) => {
+              const friendly = [g.firstName, g.lastName].filter(Boolean).join(" ") || g.email;
+              const labelCount = typeof g.videoCount === "number" && g.videoCount > 0 ? ` (${g.videoCount})` : "";
+              return (
+                <a
+                  key={g.email}
+                  href={`/library?as=${encodeURIComponent(g.email)}`}
+                  className="sidebar-link"
+                  data-testid={`link-view-as-${g.email}`}
+                  title={g.email}
+                >
+                  <LibraryIcon className="w-5 h-5 stroke-2" />
+                  <span className="truncate">{friendly}{labelCount}</span>
+                </a>
+              );
+            })}
+          </div>
+        )}
 
         {/* Portfolio link */}
         <div className="pt-4 mt-4 border-t border-border/50">

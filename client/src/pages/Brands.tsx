@@ -65,6 +65,11 @@ import sceneGamerAugmented from "@assets/generated_images/brands_gamer_augmented
  * videoFailed fallback, window.matchMedia breakpoint switching).
  */
 
+// (BRAND_PARTNERS marquee removed — landing page now carries the single
+// canonical logo cloud at Landing.tsx > partnerLogos. Brand logos for
+// JUST Water / Naturade / Shinju / VeganSmart / SETO remain available at
+// client/public/brand-logos/{slug}.png if a future section needs them.)
+
 const FRICTION_TRADITIONAL = [
   { icon: Clock, text: "Spend weeks sourcing and vetting creator talent" },
   { icon: DollarSign, text: "Negotiate rates, contracts, and exclusivity terms" },
@@ -253,9 +258,14 @@ export default function Brands() {
               <Briefcase className="w-3 h-3 mr-1" />
               For Brands
             </Badge>
-            <a href="/auth?mode=signup&userType=brand" data-testid="link-brands-header-signup">
+            <a
+              href="https://airtable.com/app9YlRgIcR9M29p6/pag6tzECkzzXYQoti/form"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="link-brands-header-signup"
+            >
               <Button size="sm" className="gap-1.5 bg-emerald-500 hover:bg-emerald-500/90 text-white">
-                Sign Up Now
+                Apply for Access
                 <ArrowRight className="w-3.5 h-3.5" />
               </Button>
             </a>
@@ -304,12 +314,17 @@ export default function Brands() {
               Drop your product into podcast desks, DJ booths, gaming setups, and creator studios — without the heavy friction of finding talent, negotiating rates, or chasing reshoots. Test creator-product associations before you commit the big budget.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-              <a href="/auth?mode=signup&userType=brand" data-testid="link-brands-hero-signup">
+              <a
+                href="https://airtable.com/app9YlRgIcR9M29p6/pag6tzECkzzXYQoti/form"
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="link-brands-hero-signup"
+              >
                 <Button
                   size="lg"
                   className="gap-2 bg-emerald-500 hover:bg-emerald-500/90 text-white shadow-2xl shadow-emerald-500/20"
                 >
-                  Sign Up Now
+                  Apply for Access
                   <ArrowRight className="w-4 h-4" />
                 </Button>
               </a>
@@ -441,6 +456,10 @@ export default function Brands() {
           </motion.div>
         </div>
       </section>
+
+      {/* (Brand Partner Strip removed — the single canonical logo cloud
+          now lives on the landing page only, so this page no longer
+          duplicates the "trusted by" surface.) */}
 
       {/* Section 3 — "See it in action" — 3-scene Reality-vs-Augmented slider showcase */}
       <section className="relative overflow-hidden py-20">
@@ -721,17 +740,22 @@ export default function Brands() {
               Sign up and our team walks you through a brief tailored to your brand, budget, and audience. Pick a creator, test a placement, see the numbers — before you commit.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-              <a href="/auth?mode=signup&userType=brand" data-testid="link-brands-final-signup">
+              <a
+                href="https://airtable.com/app9YlRgIcR9M29p6/pag6tzECkzzXYQoti/form"
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="link-brands-final-signup"
+              >
                 <Button
                   size="lg"
                   className="gap-2 bg-emerald-500 hover:bg-emerald-500/90 text-white shadow-2xl shadow-emerald-500/25 px-8"
                 >
-                  Sign Up Now
+                  Apply for Access
                   <ArrowRight className="w-4 h-4" />
                 </Button>
               </a>
               <a
-                href="mailto:hello@gofullscale.co?subject=Brand%20Interest%20%E2%80%94%20FullScale"
+                href="mailto:martin@gofullscale.co?subject=Brand%20Interest%20%E2%80%94%20FullScale"
                 data-testid="link-brands-final-talk"
               >
                 <Button

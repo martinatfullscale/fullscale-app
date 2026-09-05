@@ -13,6 +13,7 @@
  */
 
 import { spawn } from "child_process";
+import { withRenderSlot } from "./remix/renderQueue";
 import * as fs from "fs";
 import * as path from "path";
 import sharp from "sharp";
@@ -29,6 +30,14 @@ interface SurfaceKeyframe {
 
 interface ExportPlacementData {
   surfaceType: string;
+  // Placement scoping — all optional and additive. Legacy payloads omit every
+  // field here and keep today's behavior end-to-end. Routes passes the client
+  // payload through verbatim, so these arrive whenever the client sends them.
+  surfaceId?: number | null; // Target surface this entry renders on (detected_surfaces.id)
+  surfaceGroupId?: string | null; // Target surface's canonical group id (opaque string)
+  anchorSurfaceId?: number | null; // Saved placement row's anchor surface id
+  appliesToGroupIds?: string[] | null; // Saved row's explicit scope; null/absent = legacy fan-out
+  sceneId?: number | null; // Anchor surface's scene cluster id (matches sceneIndex shots)
   productImageUrl: string;
   transform: {
     offsetX: number;
@@ -244,6 +253,9 @@ async function tryFastExport(
 
   const overlayPaths: string[] = [];
   const overlayPositions: Array<{ x: number; y: number }> = [];
+  // Parallel to overlayPaths — placements can be skipped mid-loop (failed
+  // image loads), so overlay index i is NOT placement index pi.
+  const overlayPlacements: ExportPlacementData[] = [];
 
   for (let pi = 0; pi < placements.length; pi++) {
     const placement = placements[pi];
@@ -378,6 +390,7 @@ async function tryFastExport(
     const top = Math.max(0, Math.round(centerY - renderedH / 2));
 
     overlayPositions.push({ x: left, y: top });
+    overlayPlacements.push(placement);
     console.log(`[VideoExporter] Fast path: placement ${pi} "${placement.surfaceType}" at (${left}, ${top}), size ${renderedW}x${renderedH}`);
   }
 
@@ -398,15 +411,54 @@ async function tryFastExport(
     inputs.push("-i", op);
   }
 
-  // Build filter_complex chain with static x:y positions
+  // Visibility windows from the placement's keyframe track. The bare
+  // overlay stamped the product on EVERY frame of the video — during other
+  // scenes it painted Scene A's coordinates over whatever pixels Scene B
+  // had there (the "product on the wall" bug). Keyframes tell us exactly
+  // when the surface is on screen: contiguous runs (gaps <= the scene-cut
+  // threshold) become between(t,...) windows, padded slightly so a product
+  // doesn't pop a frame early/late. Placements with no keyframes keep the
+  // legacy full-duration behavior, loudly.
+  const enableExprFor = (placement: ExportPlacementData): string | null => {
+    const kfs = (placement.keyframes || [])
+      .map((k) => k.timestamp)
+      .filter((t) => Number.isFinite(t))
+      .sort((a, b) => a - b);
+    if (kfs.length === 0) return null;
+    const PAD = 0.75;
+    const windows: Array<[number, number]> = [];
+    let start = kfs[0];
+    let prev = kfs[0];
+    for (let i = 1; i < kfs.length; i++) {
+      if (kfs[i] - prev > GAP_THRESHOLD_SECONDS * 2) {
+        windows.push([start, prev]);
+        start = kfs[i];
+      }
+      prev = kfs[i];
+    }
+    windows.push([start, prev]);
+    const clauses = windows
+      .slice(0, 32)
+      .map(([a, b]) => `between(t,${Math.max(0, a - PAD).toFixed(2)},${Math.min(duration, b + PAD).toFixed(2)})`);
+    if (windows.length > 32) {
+      console.warn(`[VideoExporter] Placement has ${windows.length} visibility windows — capping at 32`);
+    }
+    return `'${clauses.join("+")}'`;
+  };
+
+  // Build filter_complex chain with static x:y positions gated by visibility
   let filterChain = "";
   for (let i = 0; i < overlayPaths.length; i++) {
     const srcLabel = i === 0 ? "[0]" : `[tmp${i}]`;
     const overlayLabel = `[${i + 1}]`;
     const outLabel = i === overlayPaths.length - 1 ? "" : `[tmp${i + 1}]`;
     const pos = overlayPositions[i];
+    const enable = enableExprFor(overlayPlacements[i]);
+    if (!enable) {
+      console.warn(`[VideoExporter] Placement ${i} has no keyframes — overlay runs full duration (legacy)`);
+    }
 
-    filterChain += `${srcLabel}${overlayLabel}overlay=${pos.x}:${pos.y}:format=auto${outLabel}`;
+    filterChain += `${srcLabel}${overlayLabel}overlay=${pos.x}:${pos.y}:format=auto${enable ? `:enable=${enable}` : ""}${outLabel}`;
     if (i < overlayPaths.length - 1) filterChain += ";";
   }
 
@@ -908,6 +960,21 @@ export async function processVideoExport(
   placements: ExportPlacementData[],
   exportCtx: ExportContext = { canvasWidth: 640, canvasHeight: 360 },
 ): Promise<void> {
+  // Whole-video re-encodes are the heaviest renders in the app; run them
+  // through the shared render queue so concurrent exports can't stack with
+  // clip renders and starve the box (the queue was built for exactly this,
+  // but this module bypassed it).
+  return withRenderSlot(`export:${exportId}`, () =>
+    processVideoExportInner(exportId, videoPath, placements, exportCtx),
+  );
+}
+
+async function processVideoExportInner(
+  exportId: number,
+  videoPath: string,
+  placements: ExportPlacementData[],
+  exportCtx: ExportContext = { canvasWidth: 640, canvasHeight: 360 },
+): Promise<void> {
   const tempDir = path.join("./public/exports", `export_${exportId}`);
   const framesDir = path.join(tempDir, "frames");
   const compositedDir = path.join(tempDir, "composited");
@@ -942,6 +1009,23 @@ export async function processVideoExport(
     if (duration <= 0) {
       throw new Error("Could not determine video duration");
     }
+
+    // Placement scoping (applies to BOTH export paths): an entry whose saved
+    // row carries an explicit appliesToGroupIds list only renders on
+    // surfaces inside that scope (or on its own anchor). Legacy entries
+    // (null/absent scope) pass through untouched.
+    const inScope = (p: ExportPlacementData): boolean => {
+      const scope = p.appliesToGroupIds;
+      if (scope == null) return true;
+      if (p.surfaceId != null && p.anchorSurfaceId != null && p.surfaceId === p.anchorSurfaceId) return true;
+      if (p.surfaceGroupId && scope.includes(p.surfaceGroupId)) return true;
+      return false;
+    };
+    const scoped = placements.filter(inScope);
+    if (scoped.length !== placements.length) {
+      console.log(`[VideoExporter] Scope filter: ${placements.length - scoped.length} placement(s) excluded by appliesToGroupIds`);
+    }
+    placements = scoped;
 
     console.log(`[VideoExporter] Starting export ${exportId}: ${duration.toFixed(1)}s video, ${placements.length} placements`);
     console.log(`[VideoExporter] Preview canvas: ${exportCtx.canvasWidth}×${exportCtx.canvasHeight}`);

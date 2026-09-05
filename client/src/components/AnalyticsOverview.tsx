@@ -116,13 +116,16 @@ export function AnalyticsOverview() {
             color="bg-red-500/10 border-red-500/20 text-red-400"
           />
         )}
-        <StatCard
-          icon={Sparkles}
-          label="Story Clips"
-          value={String(summary.totalEditorialClips)}
-          subValue={`${summary.videosWithEditorial} videos processed`}
-          color="bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
-        />
+        {/* Clickable: this stat announced clips existed and then went nowhere. */}
+        <a href="/clips" className="block rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/50" title="Open your clips">
+          <StatCard
+            icon={Sparkles}
+            label="Story Clips"
+            value={String(summary.totalEditorialClips)}
+            subValue={`${summary.videosWithEditorial} videos processed`}
+            color="bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+          />
+        </a>
       </div>
 
       {/* Per-Video Table */}
@@ -156,7 +159,13 @@ export function AnalyticsOverview() {
                 {/* Editorial status */}
                 <div className="w-16 text-right flex-shrink-0">
                   {video.editorialClipCount > 0 ? (
-                    <span className="text-xs text-emerald-400">{video.editorialClipCount} clips</span>
+                    <a
+                      href={`/clips?video=${video.videoId}`}
+                      className="text-xs text-emerald-400 underline decoration-emerald-500/40 underline-offset-2 hover:text-emerald-300"
+                      title="Open these clips"
+                    >
+                      {video.editorialClipCount} clips
+                    </a>
                   ) : video.editorialStatus === "rendering" ? (
                     <span className="text-xs text-yellow-400">Rendering</span>
                   ) : (

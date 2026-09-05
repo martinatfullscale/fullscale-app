@@ -206,7 +206,7 @@ export default function FullScaleCreates() {
               We build and curate content for audiences that demand something real. AI accelerates the craft — but the creator drives the story. That partnership is where the magic lands.
             </p>
             <div className="flex items-center justify-center gap-4">
-              <a href="mailto:fullscale_info@gofullscale.co">
+              <a href="mailto:martin@gofullscale.ai">
                 <Button size="lg" className="gap-2">
                   Work With Us
                   <ArrowRight className="w-4 h-4" />

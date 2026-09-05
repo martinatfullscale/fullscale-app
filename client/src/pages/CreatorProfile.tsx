@@ -35,7 +35,7 @@ import {
   X,
 } from "lucide-react";
 import { useLocation } from "wouter";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, fetchWithTimeout } from "@/lib/queryClient";
 import fullscaleLogo from "@assets/fullscale-logo_1767679525676.png";
 
 interface Surface {
@@ -116,7 +116,37 @@ interface CreatorData {
     categories: string[];
   };
   socialStats: SocialStats | null;
+  socialAccounts: SocialAccount[];
   videos: VideoData[];
+}
+
+interface SocialAccount {
+  id: string;
+  platform: "instagram" | "facebook" | "youtube" | "twitch" | string;
+  accountType: "business" | "personal" | string;
+  handle: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  followers: number | null;
+  totalViews: number | null;
+  audienceData: AudienceData | null;
+  audienceSyncedAt: string | null;
+}
+
+interface AudienceData {
+  age_distribution?: Record<string, number> | null;
+  gender_distribution?: Record<string, number> | null;
+  top_countries?: Array<{ code: string; percent: number }> | null;
+  top_cities?: Array<{ name: string; percent: number }> | null;
+  engagement?: {
+    follower_count?: number | null;
+    reach?: number | null;
+    total_interactions?: number | null;
+    estimated_minutes_watched?: number | null;
+    average_view_duration?: number | null;
+    subscribers_gained?: number | null;
+  } | null;
+  errors?: Record<string, string>;
 }
 
 function formatNumber(num: number): string {
@@ -138,6 +168,137 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
+// ─── Audience / media kit components ───────────────────────────────────
+
+const PLATFORM_LABELS: Record<string, string> = {
+  instagram: "Instagram",
+  facebook: "Facebook",
+  youtube: "YouTube",
+  twitch: "Twitch",
+};
+
+const PLATFORM_COLORS: Record<string, string> = {
+  instagram: "from-pink-500/20 to-orange-500/20 border-pink-500/30",
+  facebook: "from-blue-600/20 to-blue-800/20 border-blue-500/30",
+  youtube: "from-red-600/20 to-red-800/20 border-red-500/30",
+  twitch: "from-purple-600/20 to-purple-800/20 border-purple-500/30",
+};
+
+function topEntry(dist: Record<string, number> | null | undefined): { key: string; pct: number } | null {
+  if (!dist) return null;
+  const entries = Object.entries(dist);
+  if (entries.length === 0) return null;
+  entries.sort(([, a], [, b]) => b - a);
+  return { key: entries[0][0], pct: entries[0][1] };
+}
+
+function pctUnder21(age: Record<string, number> | null | undefined): number | null {
+  // Approximation: 13-17 fully under 21, ~half of 18-24 under 21.
+  if (!age) return null;
+  const teen = age["13-17"] || 0;
+  const young = age["18-24"] || 0;
+  return teen + young * 0.5;
+}
+
+function AudienceCard({ account }: { account: SocialAccount }) {
+  const a = account.audienceData;
+  const platformLabel = PLATFORM_LABELS[account.platform] || account.platform;
+  const colorClass = PLATFORM_COLORS[account.platform] || "from-gray-600/20 to-gray-800/20 border-gray-500/30";
+
+  const topAge = topEntry(a?.age_distribution);
+  const topGender = topEntry(a?.gender_distribution);
+  const topCountry = a?.top_countries?.[0];
+  const under21 = pctUnder21(a?.age_distribution);
+  const followers = account.followers ?? a?.engagement?.follower_count ?? null;
+
+  return (
+    <div className={`rounded-xl border bg-gradient-to-br ${colorClass} p-5`}>
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="text-xs uppercase tracking-wider text-muted-foreground">{platformLabel}</p>
+          <p className="text-base font-semibold text-foreground truncate">
+            {account.handle || account.displayName || account.platform}
+          </p>
+        </div>
+        {followers != null && (
+          <div className="text-right">
+            <p className="text-2xl font-bold text-foreground leading-none">{formatNumber(followers)}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">followers</p>
+          </div>
+        )}
+      </div>
+
+      {/* Demographic summary — only show if we actually have data */}
+      {(topAge || topGender || topCountry) && (
+        <div className="space-y-1.5 text-sm pt-2 border-t border-white/5">
+          {topAge && (
+            <div className="flex justify-between text-muted-foreground">
+              <span>Top age</span>
+              <span className="text-foreground font-medium">{topAge.key} <span className="text-muted-foreground">({Math.round(topAge.pct * 100)}%)</span></span>
+            </div>
+          )}
+          {topGender && (
+            <div className="flex justify-between text-muted-foreground">
+              <span>Top gender</span>
+              <span className="text-foreground font-medium capitalize">{topGender.key} <span className="text-muted-foreground">({Math.round(topGender.pct * 100)}%)</span></span>
+            </div>
+          )}
+          {topCountry && (
+            <div className="flex justify-between text-muted-foreground">
+              <span>Top country</span>
+              <span className="text-foreground font-medium">{topCountry.code} <span className="text-muted-foreground">({Math.round(topCountry.percent * 100)}%)</span></span>
+            </div>
+          )}
+          {under21 != null && under21 > 0 && (
+            <div className="flex justify-between text-muted-foreground pt-1.5 mt-1.5 border-t border-white/5">
+              <span title="Approximate. 13-17 + half of 18-24 bucket.">Under 21 (est)</span>
+              <span className={`font-medium ${under21 > 0.2 ? "text-amber-400" : "text-foreground"}`}>{Math.round(under21 * 100)}%</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Demographic-unavailable message — set by the fetcher when API doesn't expose it */}
+      {!topAge && !topGender && !topCountry && a?.errors?.demographics && (
+        <p className="text-xs text-muted-foreground/70 italic mt-2">
+          Audience demographics not available on this platform.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function AudienceSection({ accounts }: { accounts: SocialAccount[] }) {
+  if (accounts.length === 0) return null;
+
+  const business = accounts.filter(a => a.accountType === "business");
+  const personal = accounts.filter(a => a.accountType === "personal");
+
+  return (
+    <section className="max-w-6xl mx-auto px-6 pt-12" id="audience">
+      {business.length > 0 && (
+        <div className="mb-10">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-foreground">Business Audience</h2>
+            <p className="text-xs text-muted-foreground">For brand campaign evaluation</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {business.map(a => <AudienceCard key={a.id} account={a} />)}
+          </div>
+        </div>
+      )}
+      {personal.length > 0 && (
+        <div className="mb-10">
+          <h2 className="text-xl font-bold text-foreground mb-4">Personal Audience</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {personal.map(a => <AudienceCard key={a.id} account={a} />)}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function CreatorProfile() {
   const { slug } = useParams<{ slug: string }>();
   const { toast } = useToast();
@@ -145,6 +306,8 @@ export default function CreatorProfile() {
   const [previewVideo, setPreviewVideo] = useState<VideoData | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [platformFilter, setPlatformFilter] = useState<string>("all");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [formData, setFormData] = useState({
     brandName: "",
     brandEmail: "",
@@ -155,7 +318,7 @@ export default function CreatorProfile() {
   const { data, isLoading, error } = useQuery<CreatorData>({
     queryKey: ["/api/public/creator", slug],
     queryFn: async () => {
-      const res = await fetch(`/api/public/creator/${slug}`);
+      const res = await fetchWithTimeout(`/api/public/creator/${slug}`);
       if (!res.ok) throw new Error("Creator not found");
       return res.json();
     },
@@ -234,6 +397,29 @@ export default function CreatorProfile() {
   }
 
   const { creator, stats, socialStats, videos } = data;
+
+  // Platform filter state. Tabs: all / youtube / instagram / facebook / fullscale (uploads).
+  // Counts are derived from videos so we always show the live tally per source.
+  const platformCounts = videos.reduce<Record<string, number>>((acc, v) => {
+    const key = (v.platform || "fullscale").toLowerCase();
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  // Category counts derived from the actual videos. Only categories that
+  // appear at least once on this creator's portfolio surface as filter options.
+  const categoryCounts = videos.reduce<Record<string, number>>((acc, v) => {
+    if (v.category) acc[v.category] = (acc[v.category] || 0) + 1;
+    return acc;
+  }, {});
+  const availableCategories = Object.keys(categoryCounts).sort();
+
+  // Apply both filters; "all" passes through.
+  const filteredVideos = videos.filter(v => {
+    const platformMatch = platformFilter === "all" || (v.platform || "fullscale").toLowerCase() === platformFilter;
+    const categoryMatch = categoryFilter === "all" || v.category === categoryFilter;
+    return platformMatch && categoryMatch;
+  });
 
   return (
     <div className="min-h-screen bg-background">
@@ -501,6 +687,9 @@ export default function CreatorProfile() {
         </section>
       )}
 
+      {/* ── Audience media kit cards ── */}
+      <AudienceSection accounts={data.socialAccounts || []} />
+
       {/* ── Video portfolio grid ── */}
       <main className="max-w-6xl mx-auto px-6 py-12" id="video-portfolio">
         <div className="flex items-center justify-between mb-8">
@@ -532,8 +721,58 @@ export default function CreatorProfile() {
             </CardContent>
           </Card>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {videos.map((video) => (
+          <>
+            {/* Filters — platform tabs + category dropdown so brand viewers
+                can scope by source (YouTube / IG / Uploads) and content type
+                (Podcast / Tech / Lifestyle / etc.) independently. */}
+            <div className="flex flex-wrap items-center gap-3 mb-6">
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { key: "all", label: "All", count: videos.length },
+                  { key: "youtube", label: "YouTube", count: platformCounts.youtube || 0 },
+                  { key: "instagram", label: "Instagram", count: platformCounts.instagram || 0 },
+                  { key: "facebook", label: "Facebook", count: platformCounts.facebook || 0 },
+                  { key: "fullscale", label: "Uploads", count: platformCounts.fullscale || 0 },
+                ]
+                  .filter(tab => tab.key === "all" || tab.count > 0)
+                  .map(tab => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setPlatformFilter(tab.key)}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        platformFilter === tab.key
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                      }`}
+                      data-testid={`filter-${tab.key}`}
+                    >
+                      {tab.label} ({tab.count})
+                    </button>
+                  ))}
+              </div>
+
+              {/* Category filter — uses a select since there can be many
+                  categories and they shouldn't dominate the layout. Only
+                  surfaces when at least one video has a category set. */}
+              {availableCategories.length > 0 && (
+                <select
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  className="ml-auto px-3 py-2 rounded-lg text-sm bg-muted text-foreground border border-border hover:border-primary/50 transition-colors"
+                  data-testid="filter-category"
+                >
+                  <option value="all">All categories ({videos.length})</option>
+                  {availableCategories.map(cat => (
+                    <option key={cat} value={cat}>
+                      {cat} ({categoryCounts[cat]})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredVideos.map((video) => (
               <Card
                 key={video.id}
                 className="overflow-hidden group border border-border/50 hover:border-primary/30 transition-all duration-300 hover:shadow-lg"
@@ -590,6 +829,15 @@ export default function CreatorProfile() {
                   <Badge className="absolute top-3 right-3 text-xs capitalize" variant="secondary">
                     {video.platform}
                   </Badge>
+
+                  {/* Category badge — surfaces the AI-derived category
+                      (or creator override) so brands can scan a portfolio
+                      and immediately see what kind of content each video is. */}
+                  {video.category && (
+                    <Badge className="absolute top-3 left-3 text-xs bg-primary/90 text-primary-foreground border-0">
+                      {video.category}
+                    </Badge>
+                  )}
 
                   {/* Surface count overlay */}
                   {video.surfaceCount > 0 && (
@@ -662,7 +910,8 @@ export default function CreatorProfile() {
                 </CardContent>
               </Card>
             ))}
-          </div>
+            </div>
+          </>
         )}
       </main>
 

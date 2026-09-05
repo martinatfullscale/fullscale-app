@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation } from "wouter";
+import { Switch, Route, Redirect, useLocation } from "wouter";
 import { useEffect } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
@@ -20,6 +20,10 @@ import AuthPage from "@/pages/AuthPage";
 import WaitlistPage from "@/pages/WaitlistPage";
 import Dashboard from "@/pages/Dashboard";
 import Library from "@/pages/Library";
+import ClipsAndReels from "@/pages/ClipsAndReels";
+import Story from "@/pages/Story";
+import ReelEditor from "@/pages/ReelEditor";
+import Earnings from "@/pages/Earnings";
 import Opportunities from "@/pages/Opportunities";
 import BrandMarketplace from "@/pages/BrandMarketplace";
 import Campaigns from "@/pages/Campaigns";
@@ -29,12 +33,22 @@ import Terms from "@/pages/Terms";
 import CreatorProfile from "@/pages/CreatorProfile";
 import BrandProducts from "@/pages/BrandProducts";
 import SavedPlacements from "@/pages/SavedPlacements";
+import PlacementInbox from "@/pages/PlacementInbox";
+import BrandClipsBrowser from "@/pages/BrandClipsBrowser";
+import BrandPlacementRequests from "@/pages/BrandPlacementRequests";
+import CreatorAnalytics from "@/pages/CreatorAnalytics";
+import AdminCreatorIntelligence from "@/pages/AdminCreatorIntelligence";
+import AdminSignups from "@/pages/AdminSignups";
+import AdminPlacements from "@/pages/AdminPlacements";
+import AdminMeasurement from "@/pages/AdminMeasurement";
+import Deliveries from "@/pages/Deliveries";
+import AdminDataInventory from "@/pages/AdminDataInventory";
 import RemixEngine from "@/components/RemixEngine";
 import SharedView from "@/pages/SharedView";
-import ComingSoon from "@/pages/ComingSoon";
 import FullScaleCreates from "@/pages/FullScaleCreates";
 import Brands from "@/pages/Brands";
 import BrandOnboarding from "@/pages/BrandOnboarding";
+import BrandSignUp from "@/pages/BrandSignUp";
 import StudioUpload from "@/pages/StudioUpload";
 import FullScaleStudio from "@/pages/FullScaleStudio";
 import StudioPricing from "@/pages/StudioPricing";
@@ -98,12 +112,18 @@ function Router() {
   const { isAuthenticated: isGoogleAuthenticated, isLoading: isLoadingGoogleAuth } = useHybridMode();
   const [location, setLocation] = useLocation();
 
-  // Admin email bypass for dev/testing (same list as Library.tsx)
+  // Admin email bypass for LOCAL DEV ONLY. In production this was a URL-param
+  // auth bypass: ?admin_email=<known admin> set isAuthenticated=true with no
+  // session, exposing an authenticated-looking (but broken) shell and leaking
+  // the admin list in the bundle. Gated behind a non-production hostname so it
+  // works for local dev and is dead on gofullscale.co. (Server data-gating
+  // already holds regardless; this just closes the client-side shell.)
+  const isDevHost = window.location.hostname !== "gofullscale.co";
   const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
   const urlParams = new URLSearchParams(window.location.search);
   const adminEmailFromUrl = urlParams.get('admin_email') || '';
-  const isAdminBypass = ADMIN_EMAILS.includes(adminEmailFromUrl);
-  
+  const isAdminBypass = isDevHost && ADMIN_EMAILS.includes(adminEmailFromUrl);
+
   const isAuthenticated = !!user || isGoogleAuthenticated || isAdminBypass;
 
   useEffect(() => {
@@ -128,7 +148,7 @@ function Router() {
   });
 
   // Protected routes that require approval
-  const protectedRoutes = ["/dashboard", "/library", "/opportunities", "/marketplace", "/campaigns", "/settings", "/earnings", "/upload"];
+  const protectedRoutes = ["/dashboard", "/library", "/clips", "/earnings", "/opportunities", "/marketplace", "/campaigns", "/settings", "/upload"];
   const isProtectedRoute = protectedRoutes.some(route => location === route || location === "/");
 
   // Redirect based on approval status (skip for admin bypass)
@@ -159,7 +179,17 @@ function Router() {
     if (userTypeData?.userType === "creator" && location === "/marketplace") {
       window.location.href = "/dashboard";
     }
-    if (userTypeData?.userType === "brand" && (location === "/dashboard" || location === "/library" || location === "/opportunities")) {
+    // Brand users get bounced off creator-side pages — UNLESS they're
+    // explicitly viewing another user's library via ?as=<email>. The
+    // server-side view-as check (admin OR LIBRARY_VIEW_GRANTS) gates the
+    // data; we just need to NOT redirect them away before the page renders.
+    const hasViewAsParam = typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("as");
+    if (
+      userTypeData?.userType === "brand" &&
+      (location === "/dashboard" || location === "/library" || location === "/clips" || location === "/opportunities") &&
+      !(location === "/library" && hasViewAsParam)
+    ) {
       window.location.href = "/marketplace";
     }
   }, [authStatus, userTypeData, location, setLocation]);
@@ -191,7 +221,9 @@ function Router() {
         <Route path="/creates" component={FullScaleCreates} />
         <Route path="/brands" component={Brands} />
         <Route path="/brands/onboarding" component={BrandOnboarding} />
-        <Route path="/about" component={ComingSoon} />
+        <Route path="/brand-signup" component={BrandSignUp} />
+        <Route path="/about" component={Story} />
+        <Route path="/stories" component={Story} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
         <Route path="/s/:slug" component={SharedView} />
@@ -210,15 +242,25 @@ function Router() {
     );
   }
 
-  // User is authenticated but not approved - show waitlist (skip for admin bypass)
+  // User is authenticated but not approved - allow public marketing pages
+  // and waitlist; everything else bounces to waitlist via the catch-all.
+  // Without these explicit routes the "Continue Later" button on the
+  // waitlist page looks broken: it hard-navigates to /creates but the
+  // catch-all here catches /creates and re-renders WaitlistPage.
   if (authStatus && !authStatus.isApproved && !isAdminBypass) {
-    // Redirect to waitlist if not already there (effect handles this)
     return (
       <Switch>
-        <Route path="/waitlist" component={WaitlistPage} />
+        <Route path="/" component={Landing} />
+        <Route path="/creates" component={FullScaleCreates} />
+        <Route path="/brands" component={Brands} />
+        <Route path="/brand-signup" component={BrandSignUp} />
+        <Route path="/about" component={Story} />
+        <Route path="/stories" component={Story} />
+        <Route path="/c/:slug" component={CreatorProfile} />
         <Route path="/s/:slug" component={SharedView} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
+        <Route path="/waitlist" component={WaitlistPage} />
         <Route component={WaitlistPage} />
       </Switch>
     );
@@ -244,7 +286,9 @@ function Router() {
       <Route path="/creates" component={FullScaleCreates} />
       <Route path="/brands" component={Brands} />
       <Route path="/brands/onboarding" component={BrandOnboarding} />
-      <Route path="/about" component={ComingSoon} />
+      <Route path="/brand-signup" component={BrandSignUp} />
+      <Route path="/about" component={Story} />
+      <Route path="/stories" component={Story} />
       <Route path="/c/:slug" component={CreatorProfile} />
       <Route path="/s/:slug" component={SharedView} />
       <Route path="/remix/:videoId" component={RemixEngine} />
@@ -258,13 +302,25 @@ function Router() {
               <Route path="/privacy" component={Privacy} />
               <Route path="/terms" component={Terms} />
               <Route path="/library" component={Library} />
+              <Route path="/clips" component={ClipsAndReels} />
+              <Route path="/library/reels/:reelId/edit" component={ReelEditor} />
               <Route path="/opportunities" component={Opportunities} />
               <Route path="/marketplace" component={BrandMarketplace} />
               <Route path="/campaigns" component={Campaigns} />
               <Route path="/brand-products" component={BrandProducts} />
               <Route path="/saved-placements" component={SavedPlacements} />
+              <Route path="/inbox" component={PlacementInbox} />
+              <Route path="/analytics" component={CreatorAnalytics} />
+              <Route path="/admin/creators" component={AdminCreatorIntelligence} />
+              <Route path="/admin/signups" component={AdminSignups} />
+              <Route path="/admin/placements" component={AdminPlacements} />
+              <Route path="/admin/measurement" component={AdminMeasurement} />
+              <Route path="/deliveries" component={Deliveries} />
+              <Route path="/admin/data-inventory" component={AdminDataInventory} />
+              <Route path="/brand/clips" component={BrandClipsBrowser} />
+              <Route path="/brand/placements" component={BrandPlacementRequests} />
               <Route path="/settings" component={Settings} />
-              <Route path="/earnings" component={Dashboard} />
+              <Route path="/earnings" component={Earnings} />
               <Route path="/studio/upload">{() => <StudioAccessGuard><StudioUpload /></StudioAccessGuard>}</Route>
               <Route path="/studio/library">{() => <StudioAccessGuard><StudioLibrary /></StudioAccessGuard>}</Route>
               <Route component={NotFound} />
