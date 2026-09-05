@@ -616,7 +616,8 @@ export async function registerRoutes(
       if (req.isAuthenticated && req.isAuthenticated() && req.user?.claims) {
         const claims = req.user.claims;
         req.authEmail = claims.email;
-        req.authUserId = claims.sub || (await storage.getUserByEmail(claims.email))?.id || claims.email;
+        // Same precedence fix as isFlexibleAuthenticated: users.id first.
+        req.authUserId = (await storage.getUserByEmail(claims.email))?.id || claims.sub || claims.email;
         return next();
       }
       const sessionUserId = req.session?.userId;
@@ -3250,7 +3251,13 @@ export async function registerRoutes(
       const claims = req.user.claims;
       req.authEmail = claims.email;
       const oidcRow = claims.email ? await storage.getUserByEmail(claims.email) : undefined;
-      req.authUserId = claims.sub || oidcRow?.id || claims.email;
+      // The users row wins over the OIDC subject. This read
+      // `claims.sub || oidcRow?.id || claims.email`, discarding the row it had
+      // just fetched on the line above — and claims.sub is an identity-provider
+      // subject, not users.id, so every owner-scoped query filtered on a value
+      // that matches nothing. It has no "@" either, so getVideoIndex's own
+      // email fallback could not rescue it.
+      req.authUserId = oidcRow?.id || claims.sub || claims.email;
       req.isAdmin = adminEmails.includes(claims.email);
       if (blockUnapproved(req, res, oidcRow)) return;
       return next();
@@ -18438,7 +18445,21 @@ export async function registerRoutes(
   const assembleAccountAnalytics = async (acct: any, mediaCount: number) => {
     const withTimeout = <T,>(p: Promise<T | null>, ms: number): Promise<T | null> =>
       Promise.race([p.catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), ms))]);
-    const snapshots = await storage.getSocialInsightSnapshotsForAccount(acct.id, 60);
+    // A YouTube channel connected before the social_accounts mirror existed
+    // has no row there, so getSocialAccountsWithYouTube fabricates one with
+    // id `yt:<channelId>` and isSynthetic: true. social_insight_snapshots
+    // .social_account_id is a UUID column, so passing that id through here
+    // threw 22P02 (invalid input syntax for type uuid) on the FIRST statement
+    // of assembly — before any platform branching — and the Promise.all below
+    // turned one unreadable account into a blank page for all of them.
+    //
+    // The right reader was already written for exactly this case and had
+    // never been called: channel history keys on platformAccountId, which is
+    // also how socialSnapshots.ts writes those rows (with a null
+    // social_account_id, so the UUID reader could never have found them).
+    const snapshots = (acct as any).isSynthetic || !acct.id || !/^[0-9a-f-]{36}$/i.test(String(acct.id))
+      ? await storage.getSocialInsightSnapshotsForPlatformAccount(acct.platform, (acct as any).platformAccountId, 60)
+      : await storage.getSocialInsightSnapshotsForAccount(acct.id, 60);
     const latest = snapshots[0] ?? null;
     // Chronological series for trend charts
     const series = [...snapshots].reverse().map((s: any) => ({
@@ -18593,8 +18614,15 @@ export async function registerRoutes(
       // "The Analytics tab isn't pulling anything from YouTube" — correct,
       // this line filtered it out before assembly ever ran.
       const supported = accounts.filter((a) => a.platform === "instagram" || a.platform === "facebook" || a.platform === "youtube");
-      const out = await Promise.all(supported.map((acct) => assembleAccountAnalytics(acct, 6)));
-      res.json({ accounts: out });
+      // allSettled, not all: one account that cannot be assembled must not
+      // blank every other one. The page renders what it has and logs the rest.
+      const settled = await Promise.allSettled(supported.map((acct) => assembleAccountAnalytics(acct, 6)));
+      const out = settled.flatMap((r, i) => {
+        if (r.status === "fulfilled") return [r.value];
+        console.warn(`[API] /api/analytics/social: ${supported[i].platform} account failed to assemble:`, (r.reason as any)?.message);
+        return [];
+      });
+      res.json({ accounts: out, failed: settled.filter((r) => r.status === "rejected").length });
     } catch (err: any) {
       console.error("[API] /api/analytics/social error:", err.message);
       res.status(500).json({ error: "Failed to load social analytics" });

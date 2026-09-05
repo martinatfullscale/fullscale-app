@@ -34,6 +34,12 @@ export interface MediaBinProps {
   onPlace: (assetId: number) => void;
   stockPanel: React.ReactNode;
   aiPanel: React.ReactNode;
+  /** The actual recorder. Until this existed, "Webcam" was a FILTER over
+   *  filenames — /webcam|recording/i against assets you had already uploaded —
+   *  so on an empty bin the chip read "Webcam 0", clicking it showed a drop
+   *  zone, and no camera ever turned on. Nothing in this whole directory ever
+   *  called getUserMedia. */
+  webcamPanel?: React.ReactNode;
 }
 
 const isImage = (a: AssetRow) => a.kind === "broll_image";
@@ -42,7 +48,7 @@ const isMusic = (a: AssetRow) => a.kind === "music";
 const isWebcam = (a: AssetRow) => /webcam|recording/i.test(a.name || "");
 
 export default function MediaBin(props: MediaBinProps) {
-  const { assets, loading, lockedReason, uploading, onUpload, onPlace, stockPanel, aiPanel } = props;
+  const { assets, loading, lockedReason, uploading, onUpload, onPlace, stockPanel, aiPanel, webcamPanel } = props;
   const fileRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
 
@@ -153,6 +159,20 @@ export default function MediaBin(props: MediaBinProps) {
           <div className="p-3.5">{stockPanel}</div>
         ) : filter === "ai" ? (
           <div className="p-3.5">{aiPanel}</div>
+        ) : filter === "webcam" && webcamPanel ? (
+          // The recorder first, then whatever has already been captured. A
+          // take saved as "webcam-recording-*.mp4" satisfies isWebcam, so the
+          // filter keeps working and the chip is now both.
+          <div className="p-3.5 flex flex-col gap-3">
+            {webcamPanel}
+            {shown.length > 0 && (
+              <div className="grid grid-cols-2 gap-2.5">
+                {shown.map((a) => (
+                  <AssetCard key={a.id} asset={a} locked={!!lockedReason} onPlace={() => onPlace(a.id)} />
+                ))}
+              </div>
+            )}
+          </div>
         ) : loading ? (
           <div className="flex justify-center py-10">
             <Loader2 className="w-5 h-5 animate-spin text-primary" />

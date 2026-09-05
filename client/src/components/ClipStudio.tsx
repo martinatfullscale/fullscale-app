@@ -34,6 +34,7 @@
  *      cleared every word cut at once.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { WebcamPanel } from "@/components/reel-editor/BinPanels";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle, ArrowLeft, Camera, ChevronsLeft, ChevronsRight, Loader2, Pause, Play,
@@ -934,6 +935,11 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
               uploading={uploading}
               onUpload={uploadAsset}
               onPlace={(id) => placeAsset(id, t)}
+              /* The recorder the "Webcam" chip always implied and never had.
+                 Same component the reel bin uses; a take arrives as a normal
+                 broll_video asset named webcam-recording-*, which the chip's
+                 own filename filter then picks up. */
+              webcamPanel={<WebcamPanel busy={uploading} onCapture={(f) => uploadAsset(f, "broll_video")} />}
               stockPanel={
                 <BrollTool
                   /* Distinct keys, deliberately. Both panels sit at the same

@@ -575,7 +575,17 @@ export class DatabaseStorage implements IStorage {
   // User authentication methods
   async getUserByEmail(email: string): Promise<User | undefined> {
     const normalizedEmail = email.toLowerCase().trim();
-    const [user] = await db.select().from(users).where(eq(users.email, normalizedEmail));
+    // Compare case-insensitively on BOTH sides. This lowercased the argument
+    // and then matched the raw column, so a users row stored with any
+    // uppercase or trailing space was permanently unfindable here — while
+    // normalizeLegacyIdentityKeys, the boot sweep, matches with
+    // `lower(u.email)` and DID find it. The two disagreeing is how a creator's
+    // data gets rewritten onto a users.id that their own session can no longer
+    // produce, and every owner-scoped list then returns zero rows.
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(sql`lower(${users.email}) = ${normalizedEmail}`);
     return user;
   }
 
@@ -1392,6 +1402,15 @@ export class DatabaseStorage implements IStorage {
     let user = await this.getUserById(userId);
     if (!user && userId.includes("@")) {
       user = await this.getUserByEmail(userId);
+    }
+    // ...and fall back to the session's email, which was already a parameter
+    // and was only ever added to the match set — never used to RESOLVE the
+    // user. When authUserId is something that is not users.id (an OIDC
+    // subject, or an email that missed), users.id never entered the match set
+    // at all, so the query could not find rows the boot sweep had just moved
+    // onto it.
+    if (!user && authEmail) {
+      user = await this.getUserByEmail(authEmail);
     }
     const userEmail = user?.email;
     console.log(`[Storage.getVideoIndex] User found: ${!!user}, email: ${userEmail}`);
@@ -3943,9 +3962,39 @@ export class DatabaseStorage implements IStorage {
   // between the UUID and email forms of the same account.
   async getStitchPlansByVideoIds(videoIds: number[]): Promise<StitchPlan[]> {
     if (videoIds.length === 0) return [];
-    return db.select().from(stitchPlans)
+    // An EXPLICIT column list, not select(). A bare select enumerates every
+    // column drizzle knows about, so the moment a column is added to the
+    // schema and the deployment has not run db:push yet, this throws 42703 and
+    // takes out BOTH feeds that call it — /api/clips and the reel bin — with a
+    // 500 rather than degrading to a missing field. `overlays` was added a day
+    // before the reel bin started calling this, which is exactly that setup.
+    return db
+      .select({
+        // Every column the two feeds read, and deliberately NOT `overlays` —
+        // that is the one added most recently, and the only field a reader
+        // here would miss is one no feed uses. /api/remix/reel loads its plan
+        // by id separately and can have it.
+        id: stitchPlans.id,
+        videoId: stitchPlans.videoId,
+        userId: stitchPlans.userId,
+        status: stitchPlans.status,
+        narrativeArc: stitchPlans.narrativeArc,
+        suggestedTitle: stitchPlans.suggestedTitle,
+        segments: stitchPlans.segments,
+        totalDuration: stitchPlans.totalDuration,
+        transitionStyle: stitchPlans.transitionStyle,
+        platformTarget: stitchPlans.platformTarget,
+        outputPath: stitchPlans.outputPath,
+        thumbnailPath: stitchPlans.thumbnailPath,
+        qualityScore: stitchPlans.qualityScore,
+        generatedClipId: stitchPlans.generatedClipId,
+        errorMessage: stitchPlans.errorMessage,
+        createdAt: stitchPlans.createdAt,
+        completedAt: stitchPlans.completedAt,
+      } as any)
+      .from(stitchPlans)
       .where(inArray(stitchPlans.videoId, videoIds))
-      .orderBy(desc(stitchPlans.createdAt));
+      .orderBy(desc(stitchPlans.createdAt)) as any;
   }
 
   async updateStitchPlanStatus(

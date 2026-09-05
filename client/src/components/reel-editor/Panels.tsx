@@ -83,6 +83,9 @@ const UPLOAD_KINDS: SourceKind[] = ["upload", "webcam", "stock", "ai", "music"];
 export function Bin(props: {
   sources: BinSource[];
   loading: boolean;
+  /** Set when the bin is empty because a fetch FAILED, which is a different
+   *  thing from having nothing — and used to be indistinguishable. */
+  error?: string | null;
   selectedKey: string | null;
   onPick: (s: BinSource) => void;
   uploading: boolean;
@@ -214,6 +217,15 @@ export function Bin(props: {
       <div className="flex-1 min-h-0 overflow-y-auto">
         {props.loading ? (
           <p className="px-3 py-6 text-center text-[11px] text-muted-foreground">Loading your sources…</p>
+        ) : props.error ? (
+          <div className="m-2 p-3 border border-amber-500/40 bg-amber-500/[0.07]">
+            <p className="text-[11px] font-semibold text-amber-300 mb-1">Couldn't load your bin</p>
+            <p className="text-[10.5px] leading-relaxed text-amber-200/80">{props.error}</p>
+            <p className="text-[10.5px] leading-relaxed text-muted-foreground mt-2">
+              This is a load failure, not an empty library — your clips are still there. Reload the page, and
+              if it keeps happening the server log will say why.
+            </p>
+          </div>
         ) : tab === "create" ? (
           <div className="p-2 flex flex-col gap-3">
             <StockPanel onImported={props.onSourcesChanged} />

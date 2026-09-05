@@ -1,6 +1,11 @@
 /**
  * The tool panels the Story Clip Editor mounts — transcript, captions, stock
- * search, AI generation, upload and the webcam recorder.
+ * search, AI generation and upload.
+ *
+ * NOT the webcam recorder, despite what this comment claimed for months.
+ * There has never been a getUserMedia call in this directory; the editor's
+ * "Webcam" control was a filter over filenames. The recorder it now mounts is
+ * WebcamPanel from components/reel-editor/BinPanels.tsx.
  *
  * These were the bottom two-thirds of the old ClipStudio.tsx. The editor's
  * SHELL was rebuilt around a timeline (see ClipStudio.tsx and the components

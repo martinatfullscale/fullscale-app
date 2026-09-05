@@ -64,6 +64,8 @@ export default function ReelEditor() {
 
   // ── Sources ─────────────────────────────────────────────────────────
   const [sources, setSources] = useState<BinSource[]>([]);
+  /** Why the bin is empty, when it is empty because something broke. */
+  const [binError, setBinError] = useState<string | null>(null);
   const [loadingBin, setLoadingBin] = useState(true);
   const [uploading, setUploading] = useState(false);
   /** Bumped after an upload so the bin refetches. */
@@ -82,6 +84,7 @@ export default function ReelEditor() {
     let dead = false;
     (async () => {
       setLoadingBin(true);
+      setBinError(null);
       const out: BinSource[] = [];
       try {
         const res = await fetchWithTimeout("/api/remix/reel/clips", { credentials: "include" });
@@ -146,7 +149,15 @@ export default function ReelEditor() {
             thumbnailPath: v.thumbnailPath,
           });
         }
-      } catch { /* an empty bin is a valid state */ }
+      } catch (e: any) {
+        // NOT swallowed. The server was deliberately hardened so a failed
+        // query surfaces as a 500 rather than a confident "nothing here" —
+        // and this catch threw that away, reporting every possible failure as
+        // an empty bin. That is the worst answer available: the creator
+        // concludes their work is gone.
+        console.error("[ReelBin] clips:", e);
+        setBinError(e?.message || "Couldn't load your clips.");
+      }
       try {
         const res = await fetchWithTimeout("/api/media-assets", { credentials: "include" });
         const data = await res.json().catch(() => ({}));
@@ -169,7 +180,10 @@ export default function ReelEditor() {
             isImage,
           });
         }
-      } catch { /* ditto */ }
+      } catch (e: any) {
+        console.error("[ReelBin] assets:", e);
+        setBinError((prev) => prev ?? (e?.message || "Couldn't load your uploads."));
+      }
       if (!dead) { setSources(out); setLoadingBin(false); }
     })();
     return () => { dead = true; };
@@ -685,7 +699,7 @@ export default function ReelEditor() {
         className="h-full grid border-b-2 border-border"
         style={{ gridTemplateColumns: "300px minmax(320px,1fr) minmax(360px,1.15fr) 290px" }}
       >
-        <Bin sources={sources} loading={loadingBin} selectedKey={binSel} onPick={pickBin} uploading={uploading} onUpload={upload} onSourcesChanged={() => setReloadAssets((n) => n + 1)} />
+        <Bin sources={sources} loading={loadingBin} error={binError} selectedKey={binSel} onPick={pickBin} uploading={uploading} onUpload={upload} onSourcesChanged={() => setReloadAssets((n) => n + 1)} />
         <SourceMonitor
           source={binSource}
           srcIn={srcIn}
