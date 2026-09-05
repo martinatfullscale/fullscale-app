@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   dur, end, fmtClock, fmtT, isJunction, KIND_COLOR, snapTime,
-  MAX_REEL_SEC, MIN_ITEM_SEC, TRACK_PHASE, TRACK_ROLE,
+  MAX_REEL_SEC, MIN_ITEM_SEC, TRACK_NAME, TRACK_PHASE, TRACK_ROLE,
   type BinSource, type ReelItem, type Track, type Transition,
 } from "./types";
 
@@ -240,7 +240,7 @@ export default function ReelTimeline(props: ReelTimelineProps) {
             style={{ height: LANE_H[tr] }}
           >
             <div className="min-w-0">
-              <div className="font-display text-[13px] font-extrabold leading-none text-foreground">{tr}</div>
+              <div className="font-display text-[13px] font-extrabold leading-none text-foreground">{TRACK_NAME[tr]}</div>
               <div className="text-[10px] text-muted-foreground leading-tight mt-0.5">{TRACK_ROLE[tr]}</div>
             </div>
             <span

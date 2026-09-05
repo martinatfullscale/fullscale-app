@@ -394,10 +394,30 @@ export const TRACK_PHASE: Record<Track, "today" | "engine"> = {
   A1: "today",
 };
 
+/**
+ * What each lane is CALLED on screen.
+ *
+ * The codes were V0 / V1 / V2 / A1, borrowed from Premiere. "V0" reads as
+ * "VO" — voice-over — which is a real thing in an edit and not what that lane
+ * is, and the owner read it that way. Premiere itself has no V0; its video
+ * tracks start at V1, so the code was both confusable and non-standard.
+ *
+ * The Track values themselves are unchanged. They are persisted into saved
+ * drafts in localStorage and sent to the server in the build payload, so
+ * renaming the identifiers would strand every draft and break the render.
+ * This is the display layer only.
+ */
+export const TRACK_NAME: Record<Track, string> = {
+  V2: "Text",
+  V1: "Overlay",
+  V0: "Main",
+  A1: "Music",
+};
+
 export const TRACK_ROLE: Record<Track, string> = {
-  V2: "text",
-  V1: "overlay / PiP",
-  V0: "sequence",
+  V2: "titles and captions",
+  V1: "picture-in-picture",
+  V0: "the cut, end to end",
   A1: "music bed",
 };
 

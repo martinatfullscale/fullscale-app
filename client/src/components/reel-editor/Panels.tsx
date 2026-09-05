@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, Play, Pause, Plus, Scissors, Search, SkipBack } from "lucide-react";
 import { AiStillPanel, StockPanel, WebcamPanel } from "./BinPanels";
 import {
-  dur, fmtT, fmtPrecise, KIND_COLOR, KIND_LABEL, REEL_ASPECT,
+  dur, fmtT, fmtPrecise, KIND_COLOR, KIND_LABEL, REEL_ASPECT, TRACK_NAME,
   type BinSource, type ReelItem, type SourceKind,
 } from "./types";
 
@@ -264,7 +264,7 @@ export function Bin(props: {
         )}
 
         <p className="px-3 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
-          Hover a thumbnail to scrub it. Drag to V0 for a beat or V1 for an overlay, or open it in the source
+          Hover a thumbnail to scrub it. Drag to Main for a beat or Overlay to lay it on top, or open it in the source
           monitor to set in/out first.
         </p>
       </div>
@@ -682,7 +682,7 @@ export function Inspector(props: {
       <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-2.5">
         <div>
           <div className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
-            {item.track} · {source ? KIND_LABEL[source.kind] : "unknown source"}
+            {TRACK_NAME[item.track]} · {source ? KIND_LABEL[source.kind] : "unknown source"}
           </div>
           <div className="font-display text-base font-extrabold leading-tight mt-0.5 text-foreground">
             {item.track === "V2" ? item.text || "Text" : source?.label ?? item.sk}
@@ -698,7 +698,7 @@ export function Inspector(props: {
         <div className="h-0.5 bg-border" />
 
         <div className="flex flex-col">
-          <Row label="Track" value={item.track} />
+          <Row label="Track" value={`${TRACK_NAME[item.track]} (${item.track})`} />
           <Row label="Source in / out" value={`${fmtPrecise(item.in)} – ${fmtPrecise(item.out)}`} />
           <Row label="Timeline at" value={fmtT(item.at)} />
           <Row label="Duration" value={fmtT(dur(item))} />
