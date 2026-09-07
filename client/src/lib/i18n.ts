@@ -16,6 +16,26 @@ import HttpBackend from "i18next-http-backend";
  */
 export const SUPPORTED = ["en", "ar"] as const;
 export type Locale = (typeof SUPPORTED)[number];
+
+/**
+ * Which locales a visitor may actually be offered.
+ *
+ * Arabic is BUILT but not REVIEWED. Every Arabic string in this repo is a
+ * machine draft written so the RTL layout could be built and tested against
+ * text of realistic length — it is scaffolding that happens to be in Arabic,
+ * not a translation. One of the six glossary terms in the first pass was
+ * simply invented (see docs/GLOSSARY_ARABIC.md §1).
+ *
+ * Shipping that to an Arabic-speaking visitor is worse than shipping nothing:
+ * a site written in confident, wrong Arabic tells a reader the company does
+ * not know or does not care, and that is the opposite of the impression the
+ * whole exercise exists to make.
+ *
+ * So Arabic is reachable — with an explicit ?lang=ar, for the team and for the
+ * reviewer to work against — but it is not offered in the switcher. Flip this
+ * to include "ar" when a native reviewer has signed off, and not before.
+ */
+export const OFFERED: readonly Locale[] = ["en"];
 export const RTL_LOCALES: readonly string[] = ["ar", "he", "fa", "ur"];
 
 export const LOCALE_LABEL: Record<Locale, string> = {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Globe, Check } from "lucide-react";
-import { LOCALE_LABEL, SUPPORTED, useLocale, type Locale } from "@/lib/locale";
+import { LOCALE_LABEL, OFFERED, SUPPORTED, useLocale, type Locale } from "@/lib/locale";
 
 /**
  * The language control, top right, on every page.
@@ -20,6 +20,9 @@ import { LOCALE_LABEL, SUPPORTED, useLocale, type Locale } from "@/lib/locale";
 export function LanguageSwitcher({ className = "" }: { className?: string }) {
   const { locale, setLocale } = useLocale();
   const [open, setOpen] = useState(false);
+  /** Whatever is offered, plus whatever the visitor is already in — so someone
+   *  previewing with ?lang=ar can still see and leave it. */
+  const choices = SUPPORTED.filter((l) => OFFERED.includes(l) || l === locale);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -35,6 +38,10 @@ export function LanguageSwitcher({ className = "" }: { className?: string }) {
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  // Nothing to switch between: don't put a control on every page that opens a
+  // menu with one item in it.
+  if (choices.length < 2) return null;
 
   return (
     // inset-inline-end, not right: the control itself has to sit on the
@@ -66,7 +73,7 @@ export function LanguageSwitcher({ className = "" }: { className?: string }) {
           className="absolute mt-1.5 min-w-[9rem] rounded-lg border border-white/15 bg-background/95 backdrop-blur shadow-xl overflow-hidden"
           style={{ insetInlineEnd: 0 }}
         >
-          {SUPPORTED.map((l) => {
+          {choices.map((l) => {
             const active = l === locale;
             return (
               <li key={l}>

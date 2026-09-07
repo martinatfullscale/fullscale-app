@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { DirectionProvider } from "@radix-ui/react-direction";
-import i18n, { LOCALE_LABEL, persistLocale, readStoredLocale, RTL_LOCALES, SUPPORTED, type Locale } from "./i18n";
+import i18n, { LOCALE_LABEL, OFFERED, persistLocale, readStoredLocale, RTL_LOCALES, SUPPORTED, type Locale } from "./i18n";
 
 /**
  * Locale and DIRECTION, from one source.
@@ -96,5 +96,5 @@ export function LtrIsland({
   );
 }
 
-export { LOCALE_LABEL, SUPPORTED, type Locale };
+export { LOCALE_LABEL, OFFERED, SUPPORTED, type Locale };
 export default i18n;
