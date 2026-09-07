@@ -5,6 +5,8 @@ import { ArrowLeft, Mail, Play, X } from "lucide-react";
 import { SiInstagram, SiLinkedin, SiYoutube } from "react-icons/si";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import { Footer } from "@/components/Footer";
+import { useContent } from "@/content";
+import type { StorySection } from "@/content";
 import {
   bandStories,
   gridStories,
@@ -90,52 +92,10 @@ const INSTAGRAM = "https://www.instagram.com/gofullscale";
 const YOUTUBE = "https://www.youtube.com/@FullScale-Journey";
 const CONTACT_EMAIL = "fullscale_info@gofullscale.co";
 
-interface Section {
-  /** The rail label. Describes the PROSE, not the video beside it. */
-  rail: string;
-  heading: string;
-  body: string[];
-  takeaway: string;
-}
-
-const SECTIONS: Section[] = [
-  {
-    rail: "The gap",
-    heading: "The only thing most creators can sell is an interruption",
-    body: [
-      "A sixty-second read is the default sponsorship because it is the easy thing to buy and the easy thing to verify. It works. It also asks a creator to stop making the video in order to pay for making the video.",
-      "Meanwhile the format brands have wanted for a hundred years — a product sitting in the shot, in a room someone actually lives in — has been reserved for productions with a props department and an agency on retainer.",
-    ],
-    takeaway: "The gap was never demand. There was simply no way to transact.",
-  },
-  {
-    rail: "The surfaces",
-    heading: "We look for the surfaces that are already in frame",
-    body: [
-      "FullScale reads a video and finds the places a product could believably sit: a desk, a counter, a shelf, a wall behind someone's head. Those places already exist in footage that is already published.",
-      "The creator decides which of them are for sale. A brand browsing the marketplace sees only surfaces a creator has opened, prices a placement against that video's real reach, and sends a request.",
-    ],
-    takeaway: "A brand cannot see a surface its creator hasn't approved.",
-  },
-  {
-    rail: "The consent",
-    heading: "The creator says yes three times",
-    body: [
-      "Once when they open a surface to the marketplace. Once when a specific brand asks for it and they accept or decline in their inbox. Once when the finished cut is in front of them and they decide whether it goes out at all.",
-      "None of those steps happen on a timer, and nothing publishes on its own.",
-    ],
-    takeaway: "We would rather lose a placement than surprise a creator with one.",
-  },
-  {
-    rail: "The footage",
-    heading: "We don't keep your video",
-    body: [
-      "To find surfaces we pull a video down, take the frames we need, record where the surfaces are, and delete the source. When a brand commits we pull it again at full resolution to render, then delete it again.",
-      "What we hold onto is thumbnails, coordinates and results — the parts that make a marketplace work. The library stays yours, on your channel, under your account.",
-    ],
-    takeaway: "Your footage is not our inventory.",
-  },
-];
+/* The copy lives in client/src/content/story.{en,ar}.ts as a MODULE, not as
+   catalog keys. These are ~1,100 words of hand-written brand voice, and a
+   translator has to be able to rewrite a paragraph, cut one, or reorder the
+   argument — none of which a flat key-value catalog can express. */
 
 /* ── Poster ────────────────────────────────────────────────────────────────
    maxresdefault doesn't exist for every video and oardefault doesn't exist
@@ -404,6 +364,8 @@ function Rail({ num, label }: { num: string; label: string }) {
 }
 
 export default function Story() {
+  const c = useContent("story");
+  const SECTIONS: StorySection[] = c.sections;
   const [playing, setPlaying] = useState<Story | null>(null);
 
   const band = useMemo(() => bandStories(), []);
@@ -432,7 +394,7 @@ export default function Story() {
           data-testid="link-about-home"
         >
           <ArrowLeft className="w-4 h-4" />
-          Back to Home
+          {c.nav.backHome}
         </Link>
       </nav>
 
@@ -458,21 +420,19 @@ export default function Story() {
               className="pt-14 md:pt-24 pb-10 md:pb-16"
             >
               <p className="font-display text-[13px] font-semibold uppercase tracking-[0.18em] text-primary mb-6 md:mb-7">
-                The FullScale Story
+                {c.masthead.eyebrow}
               </p>
               <h1
                 className="font-display font-bold text-[clamp(2.75rem,6.4vw,6.5rem)] leading-[0.97] tracking-[-0.035em] max-w-[20ch]"
                 style={{ textWrap: "balance" } as React.CSSProperties}
               >
-                How we're building FullScale
+                {c.masthead.title}
               </h1>
               <p
                 className="mt-7 md:mt-8 text-[clamp(1.125rem,1.4vw,1.375rem)] leading-[1.5] text-muted-foreground max-w-[58ch]"
                 style={{ textWrap: "pretty" } as React.CSSProperties}
               >
-                Written and filmed by the two people doing it — the argument, the honest parts, and the
-                videos where we say it out loud. Creator and brand case studies will live here too, once
-                there are placements worth showing.
+                {c.masthead.deck}
               </p>
             </motion.div>
 
@@ -495,13 +455,13 @@ export default function Story() {
                   className="font-display font-medium text-[clamp(1.5rem,2.1vw,2.125rem)] leading-[1.28] tracking-[-0.02em] text-foreground"
                   style={{ textWrap: "pretty" } as React.CSSProperties}
                 >
-                  Product placement has existed for a century. Almost no creator was ever offered it.
+                  {c.thesis}
                 </p>
 
                 {/* Byline. Names only — no titles, deliberately. */}
                 <div className="border-t border-white/10 pt-7 flex flex-col gap-5">
                   <p className="font-display text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                    Written by
+                    {c.byline.label}
                   </p>
                   <div className="flex flex-wrap gap-x-10 gap-y-4">
                     <div className="flex flex-col gap-1.5">
@@ -516,7 +476,7 @@ export default function Story() {
                         data-testid="link-linkedin-martin"
                       >
                         <SiLinkedin className="w-3.5 h-3.5" />
-                        LinkedIn
+                        {c.byline.linkedin}
                       </a>
                     </div>
                     <div className="flex flex-col gap-1.5">
@@ -531,7 +491,7 @@ export default function Story() {
                         data-testid="link-linkedin-tamara"
                       >
                         <SiLinkedin className="w-3.5 h-3.5" />
-                        LinkedIn
+                        {c.byline.linkedin}
                       </a>
                     </div>
                   </div>
@@ -618,7 +578,7 @@ export default function Story() {
                   {short ? (
                     <div className="flex flex-col gap-3.5">
                       <p className="font-display text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                        In our own voice
+                        {c.inOurOwnVoice}
                       </p>
                       <StoryCard story={short} onPlay={() => setPlaying(short)} />
                     </div>
@@ -638,20 +598,19 @@ export default function Story() {
           <section aria-labelledby="band-heading" className="container mx-auto px-6 border-b border-white/10">
             <div className="py-14 md:py-20">
               <p className="font-display text-[13px] font-semibold uppercase tracking-[0.16em] text-primary mb-5">
-                How we got here
+                {c.band.eyebrow}
               </p>
               <h2
                 id="band-heading"
                 className="font-display font-bold text-[clamp(1.875rem,3.2vw,3.25rem)] leading-[1.05] tracking-[-0.03em]"
               >
-                The part that isn't about the product
+                {c.band.title}
               </h2>
               <p
                 className="mt-4 text-lg leading-[1.6] text-muted-foreground max-w-[56ch]"
                 style={{ textWrap: "pretty" } as React.CSSProperties}
               >
-                Raising the money to build this was its own story, and it did not go the way the tidy
-                version goes. Both of these are ours, filmed at the time.
+                {c.band.deck}
               </p>
               <div className="mt-11 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 lg:gap-8">
                 {band.map((s) => (
@@ -674,13 +633,13 @@ export default function Story() {
           <section aria-labelledby="record-heading" className="container mx-auto px-6 border-b border-white/10">
             <div className="py-14 md:py-20">
               <p className="font-display text-[13px] font-semibold uppercase tracking-[0.16em] text-primary mb-5">
-                Case studies
+                {c.grid.eyebrow}
               </p>
               <h2
                 id="record-heading"
                 className="font-display font-bold text-[clamp(1.875rem,3.2vw,3.25rem)] leading-[1.05] tracking-[-0.03em]"
               >
-                Placements that ran
+                {c.grid.title}
               </h2>
               <div className="mt-11 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-7 gap-y-11">
                 {grid.map((st) => (
@@ -699,7 +658,7 @@ export default function Story() {
                 id="find-heading"
                 className="font-display font-bold text-[clamp(1.625rem,2.6vw,2.5rem)] leading-[1.1] tracking-[-0.025em] mb-8"
               >
-                Find FullScale
+                {c.find.title}
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-10 border-t border-white/10">
                 <a
