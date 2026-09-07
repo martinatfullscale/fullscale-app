@@ -54,6 +54,9 @@ import FullScaleStudio from "@/pages/FullScaleStudio";
 import StudioPricing from "@/pages/StudioPricing";
 import StudioLibrary from "@/pages/StudioLibrary";
 import StudioWaitlistPage from "@/pages/StudioWaitlistPage";
+import "@/lib/i18n";
+import { LocaleProvider } from "@/lib/locale";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -335,12 +338,22 @@ function Router() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <PitchModeProvider>
-          <Toaster />
-          <Router />
-        </PitchModeProvider>
-      </TooltipProvider>
+      {/* LocaleProvider owns <html lang/dir> AND the Radix direction context.
+          Both, from one place — Radix reads direction from React context and
+          never from the DOM, so setting only the attribute leaves 27
+          primitives internally LTR while the CSS around them flips. */}
+      <LocaleProvider>
+        <TooltipProvider>
+          <PitchModeProvider>
+            <Toaster />
+            {/* Once, at the root. There is no shared header in this app —
+                four marketing pages carry copy-pasted <header>s, two have
+                their own <nav>, and fifteen pages have no chrome at all. */}
+            <LanguageSwitcher />
+            <Router />
+          </PitchModeProvider>
+        </TooltipProvider>
+      </LocaleProvider>
     </QueryClientProvider>
   );
 }

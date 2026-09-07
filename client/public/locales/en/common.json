@@ -1,0 +1,19 @@
+{
+  "_note": "The English catalog IS the source text. Keys are English sentences; a missing Arabic key falls back to the key itself, so an untranslated line renders as English rather than as a dotted identifier.",
+  "Language": "Language",
+  "English": "English",
+  "Back to Home": "Back to Home",
+  "Our Story": "Our Story",
+  "Privacy Policy": "Privacy Policy",
+  "Terms of Service": "Terms of Service",
+  "Contact Us": "Contact Us",
+  "Instagram": "Instagram",
+  "Creator Portal": "Creator Portal",
+  "Stay in the Loop": "Stay in the Loop",
+  "Enter your email": "Enter your email",
+  "Subscribe": "Subscribe",
+  "Legal": "Legal",
+  "Connect": "Connect",
+  "Products": "Products",
+  "This part of FullScale is English only for now.": "This part of FullScale is English only for now."
+}

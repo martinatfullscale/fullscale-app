@@ -632,7 +632,19 @@ export default function ReelEditor() {
   );
 
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground" style={{ minWidth: 1360, overflowX: "auto" }}>
+    /* dir="ltr" on the whole route, not on the timeline alone.
+       This element is itself a horizontal scroller (minWidth + overflowX), so
+       islanding only the inner timeline would nest an LTR scroller inside an
+       RTL one — and a per-panel island gives RTL bin -> LTR timeline -> RTL
+       inspector, two direction flips on one screen, which is what actually
+       reads as broken. One flip, at the route boundary.
+
+       This is a CORRECTNESS guard, not styling: timeAt() at
+       reel-editor/ReelTimeline.tsx:79 is `clientX - r.left + scrollLeft`, and
+       RTL moves a scroll container's scrollLeft origin. Under an inherited
+       RTL it returns the wrong timestamp with no error and nothing visibly
+       wrong — cuts land in the wrong place. */
+    <div dir="ltr" className="min-h-screen flex flex-col bg-background text-foreground" style={{ minWidth: 1360, overflowX: "auto" }}>
       {/* ── Header ── */}
       <div className="shrink-0 flex items-center gap-4 px-4 py-2.5 border-b-2 border-border bg-card/40">
         <button onClick={() => navigate("/clips")} className="p-1.5 border border-border hover:bg-white/5" title="Back to Clips & Reels">

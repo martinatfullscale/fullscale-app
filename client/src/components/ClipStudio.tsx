@@ -798,7 +798,10 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
 
   // ── Render ──────────────────────────────────────────────────────────
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3" onClick={onClose}>
+    /* Pinned LTR for the same reason as the reel editor: Timeline.tsx:154
+       converts a pointer to a time with `clientX - r.left + scrollLeft`, which
+       RTL silently breaks. Media time reads left-to-right in every locale. */
+    <div dir="ltr" className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3" onClick={onClose}>
       <div
         className="w-full max-w-[1480px] h-[95vh] rounded-xl border border-white/10 bg-[#080b16] shadow-2xl shadow-black/60 flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
