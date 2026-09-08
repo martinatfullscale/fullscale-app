@@ -80,8 +80,41 @@ export interface BrandsContent {
   finalCta: { titleLead: string; titleAccent: string; deck: string; ctaPrimary: string; ctaSecondary: string };
 }
 
+
+/* ── / (the landing page) ─────────────────────────────────────────────────
+   MARKETING copy only. Two parts of that page are deliberately absent and
+   must stay absent: the Google OAuth verification section, whose text was
+   checked sentence by sentence against the running code and submitted to
+   Google, and the demo modal's technical HUD. See landing.en.ts. */
+
+export interface LandingStep { title: string; description: string }
+
+export interface LandingContent {
+  nav: { logoAlt: string; wordmark: string; forBrands: string; signIn: string };
+  hero: {
+    badge: string; titleLead: string; titleAccent: string; deck: string;
+    ctaPrimary: string; ctaSecondary: string;
+  };
+  partners: { label: string; accent: string };
+  realityAugmented: { titleLead: string; titleAccent: string; deck: string };
+  opportunityFeed: { title: string; deck: string };
+  /** `names` are proper nouns and stay Latin in every locale. */
+  backers: { title: string; names: string[] };
+  /** Zipped to the feature images by index in the page — keep the order. */
+  features: { titles: string[] };
+  howItWorks: { titleLead: string; titleAccent: string; steps: LandingStep[] };
+  testimonial: { quote: string; attribution: string };
+  cohort: { titleLead: string; titleAccent: string; deck: string };
+  betaModal: {
+    restricted: string; notInCohort: string;
+    titleLead: string; titleAccent: string; deck: string;
+    ctaPrimary: string; alreadyPartner: string;
+  };
+}
+
 /** Every page's content shape, keyed by page. Extended as pages are converted. */
 export interface ContentByPage {
   story: StoryContent;
   brands: BrandsContent;
+  landing: LandingContent;
 }

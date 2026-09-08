@@ -4,6 +4,8 @@ import { storyEn } from "./story.en";
 import { storyAr } from "./story.ar";
 import { brandsEn } from "./brands.en";
 import { brandsAr } from "./brands.ar";
+import { landingEn } from "./landing.en";
+import { landingAr } from "./landing.ar";
 
 /**
  * Resolve a page's copy for the current locale.
@@ -20,6 +22,7 @@ import { brandsAr } from "./brands.ar";
 const REGISTRY: { [K in keyof ContentByPage]: Record<string, ContentByPage[K]> } = {
   story: { en: storyEn, ar: storyAr },
   brands: { en: brandsEn, ar: brandsAr },
+  landing: { en: landingEn, ar: landingAr },
 };
 
 export function useContent<K extends keyof ContentByPage>(page: K): ContentByPage[K] {
@@ -28,4 +31,4 @@ export function useContent<K extends keyof ContentByPage>(page: K): ContentByPag
   return byLocale[locale] ?? byLocale.en;
 }
 
-export type { StoryContent, StorySection, BrandsContent, ContentByPage } from "./types";
+export type { StoryContent, StorySection, BrandsContent, LandingContent, ContentByPage } from "./types";

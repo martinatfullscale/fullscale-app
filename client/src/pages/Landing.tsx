@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useContent } from "@/content";
 import { motion, AnimatePresence, useInView } from "framer-motion";
 import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2, Briefcase, MousePointerClick, CalendarCheck } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -1240,6 +1241,9 @@ const DEMO_CREATORS: Array<{
 ];
 
 export default function Landing() {
+  /* Marketing copy per locale. The Google OAuth verification section and
+     the demo HUD are deliberately NOT in this module — see landing.en.ts. */
+  const c = useContent("landing");
   const [showBetaModal, setShowBetaModal] = useState(false);
   const [showDemoModal, setShowDemoModal] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
@@ -1367,7 +1371,7 @@ export default function Landing() {
           <div className="flex items-center">
             <img
               src={logoUrl}
-              alt="FullScale Creator Portal"
+              alt={c.nav.logoAlt}
               className="h-7 sm:h-8 md:h-10 w-auto"
               data-testid="img-landing-logo"
             />
@@ -1459,16 +1463,16 @@ export default function Landing() {
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
                 </span>
-                3D Scene Reconstruction Active
+                {c.hero.badge}
               </div>
 
               <h1 className="text-3xl sm:text-5xl md:text-7xl font-bold font-display tracking-tight mb-4 md:mb-6 text-white uppercase max-w-[90%] mx-auto mt-4 md:mt-0">
-                We Turn Storytelling <br/>
-                <span className="bg-gradient-to-r from-primary via-emerald-400 to-primary bg-clip-text text-transparent">Into Revenue</span>
+                {c.hero.titleLead} <br/>
+                <span className="bg-gradient-to-r from-primary via-emerald-400 to-primary bg-clip-text text-transparent">{c.hero.titleAccent}</span>
               </h1>
               
               <p className="text-base md:text-2xl text-white/70 max-w-3xl mx-auto mb-6 md:mb-10 leading-relaxed">
-                AI-powered product placement that places products into your existing content with perfect lighting, occlusion, and tracking—scaling your reach for a global economy.
+                {c.hero.deck}
               </p>
 
               <div className="flex flex-col sm:flex-row gap-3 md:gap-4 items-center justify-center">
@@ -1520,10 +1524,10 @@ export default function Landing() {
         <div className="container mx-auto px-4">
           <h2 className="mb-6 md:mb-8 text-center">
             <span className="block font-medium text-xl md:text-2xl text-muted-foreground">
-              Already used by
+              {c.partners.label}
             </span>
             <span className="block font-black text-2xl md:text-3xl text-primary tracking-tight">
-              Best in the Game
+              {c.partners.accent}
             </span>
           </h2>
           <LogoCloud logos={partnerLogos} />
@@ -1543,10 +1547,10 @@ export default function Landing() {
             className="text-center mb-6 md:mb-12"
           >
             <h2 className="text-2xl md:text-5xl font-bold font-display tracking-tight mb-2 md:mb-4 uppercase">
-              Reality vs <span className="text-emerald-400">Augmented</span>
+              {c.realityAugmented.titleLead} <span className="text-emerald-400">{c.realityAugmented.titleAccent}</span>
             </h2>
             <p className="text-muted-foreground text-sm md:text-lg max-w-2xl mx-auto max-[480px]:hidden">
-              Watch our AI place products onto surfaces with perfect occlusion and lighting. From flat surface to seamless product placement.
+              {c.realityAugmented.deck}
             </p>
           </motion.div>
           
@@ -1564,10 +1568,10 @@ export default function Landing() {
             className="text-center"
           >
             <h2 className="text-2xl md:text-4xl font-bold font-display tracking-tight mb-2 md:mb-4 uppercase">
-              Live <span className="text-primary">Global Opportunity Feed</span>
+              Live <span className="text-primary">{c.opportunityFeed.title}</span>
             </h2>
             <p className="text-muted-foreground text-sm md:text-lg max-w-2xl mx-auto max-[480px]:hidden">
-              Real-time inventory index. Every frame scanned. Every surface monetizable.
+              {c.opportunityFeed.deck}
             </p>
           </motion.div>
         </div>
@@ -1576,19 +1580,19 @@ export default function Landing() {
 
       {/* Partners Section - Seamless Infinite Marquee with Glassmorphism */}
       <section className="py-4 md:py-12 overflow-hidden max-[480px]:max-h-[100px]">
-        <p className="text-[10px] md:text-xs uppercase tracking-widest text-muted-foreground/50 mb-3 md:mb-6 font-medium text-center">Backed by Industry Leaders</p>
+        <p className="text-[10px] md:text-xs uppercase tracking-widest text-muted-foreground/50 mb-3 md:mb-6 font-medium text-center">{c.backers.title}</p>
         <div className="relative w-full overflow-hidden">
           <div className="flex w-max animate-partner-marquee hover:[animation-play-state:paused]">
             {[...Array(4)].map((_, setIndex) => (
               <div key={setIndex} className="flex items-center shrink-0" style={{ gap: '4rem' }}>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300 ml-16">
-                  <img src={logoBlackAmbition} alt="Black Ambition" loading="lazy" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                  <img src={logoBlackAmbition} alt={c.backers.names[0]} loading="lazy" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
-                  <img src={logoMayDavis} alt="May Davis Partners" loading="lazy" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                  <img src={logoMayDavis} alt={c.backers.names[1]} loading="lazy" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
-                  <img src={logoElementa} alt="Elementa" loading="lazy" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                  <img src={logoElementa} alt={c.backers.names[2]} loading="lazy" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
                   <SmithFamilyCircleLogo className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
@@ -1596,7 +1600,7 @@ export default function Landing() {
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
                   <img
                     src="/partner-logos/mighty-capital.png"
-                    alt="Mighty Capital"
+                    alt={c.backers.names[3]}
                     loading="lazy"
                     className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity"
                     onError={(e) => {
@@ -1634,22 +1638,22 @@ export default function Landing() {
         >
           <FeatureCard 
             icon={<Zap className="w-6 h-6 text-yellow-400" />} 
-            title="The Remix Engine" 
+            title={c.features.titles[0]} 
             desc="We turn archives into new viral inventory. Our AI identifies high-value moments and inserts products automatically." 
           />
           <FeatureCard 
             icon={<Shield className="w-6 h-6 text-emerald-400" />} 
-            title="Contextual AI" 
+            title={c.features.titles[1]} 
             desc="Beyond computer vision. We analyze narrative, sentiment, and cultural nuance to ensure brand safety." 
           />
           <FeatureCard 
             icon={<Video className="w-6 h-6 text-blue-400" />} 
-            title="ZERO RESHOOTS" 
+            title={c.features.titles[2]} 
             desc="Stop filming ads. We insert high-value products into your existing content library using post-production AI." 
           />
           <FeatureCard 
             icon={<Globe className="w-6 h-6 text-primary" />} 
-            title="Context-Aware Reach" 
+            title={c.features.titles[3]} 
             desc="Instantly adapt campaigns for international audiences in US, MENA, and APAC markets." 
           />
         </motion.div>
@@ -1664,28 +1668,28 @@ export default function Landing() {
           className="w-full max-w-5xl mx-auto"
         >
           <h2 className="text-3xl md:text-4xl font-bold font-display tracking-tight mb-12 uppercase text-center">
-            A Simple Path <span className="text-primary">Forward.</span>
+            {c.howItWorks.titleLead} <span className="text-primary">{c.howItWorks.titleAccent}</span>
           </h2>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div className="text-center p-6">
               <span className="text-5xl font-bold text-primary font-display">01</span>
-              <h3 className="text-xl font-bold font-display mt-4 mb-3">Connect.</h3>
+              <h3 className="text-xl font-bold font-display mt-4 mb-3">{c.howItWorks.steps[0].title}</h3>
               <p className="text-muted-foreground leading-relaxed">
-                Seamlessly integrate with YouTube, Instagram, Facebook, and TikTok. We index your library in minutes, not weeks.
+                {c.howItWorks.steps[0].description}
               </p>
             </div>
             <div className="text-center p-6">
               <span className="text-5xl font-bold text-primary font-display">02</span>
-              <h3 className="text-xl font-bold font-display mt-4 mb-3">Align.</h3>
+              <h3 className="text-xl font-bold font-display mt-4 mb-3">{c.howItWorks.steps[1].title}</h3>
               <p className="text-muted-foreground leading-relaxed">
-                Our AI identifies brand-safe opportunities that match your specific aesthetic.
+                {c.howItWorks.steps[1].description}
               </p>
             </div>
             <div className="text-center p-6">
               <span className="text-5xl font-bold text-primary font-display">03</span>
-              <h3 className="text-xl font-bold font-display mt-4 mb-3">Earn.</h3>
+              <h3 className="text-xl font-bold font-display mt-4 mb-3">{c.howItWorks.steps[2].title}</h3>
               <p className="text-muted-foreground leading-relaxed">
-                Approve placements and generate recurring revenue from your back-catalog.
+                {c.howItWorks.steps[2].description}
               </p>
             </div>
           </div>
@@ -1701,9 +1705,9 @@ export default function Landing() {
           className="w-full max-w-3xl mx-auto text-center"
         >
           <blockquote className="text-2xl md:text-3xl italic font-serif text-white/90 leading-relaxed">
-            "FullScale helped us unlock value from content we'd forgotten about. It feels like discovering a whole new revenue stream without changing how we create."
+            {c.testimonial.quote}
           </blockquote>
-          <p className="mt-6 text-muted-foreground font-medium">— Early Creator Partner</p>
+          <p className="mt-6 text-muted-foreground font-medium">{c.testimonial.attribution}</p>
         </motion.div>
       </section>
 
@@ -1719,10 +1723,10 @@ export default function Landing() {
             viewport={{ once: true }}
           >
             <h2 className="text-3xl md:text-4xl font-bold font-display tracking-tight mb-4 uppercase">
-              Join the <span className="text-primary">Founding Cohort.</span>
+              {c.cohort.titleLead} <span className="text-primary">{c.cohort.titleAccent}</span>
             </h2>
             <p className="text-lg text-muted-foreground max-w-2xl mx-auto mb-8 leading-relaxed">
-              Not ready to automate everything? Join our exclusive group of partner creators shaping the future of the platform.
+              {c.cohort.deck}
             </p>
             <a 
               href="/auth?mode=signup"
@@ -1851,10 +1855,10 @@ export default function Landing() {
                     <Ban className="w-8 h-8 text-red-400" />
                   </div>
                   <h2 className="text-2xl font-bold font-display tracking-tight mb-4 uppercase text-red-400">
-                    Access Restricted
+                    {c.betaModal.restricted}
                   </h2>
                   <p className="text-muted-foreground leading-relaxed mb-4">
-                    You are not in the Founding Cohort yet.
+                    {c.betaModal.notInCohort}
                   </p>
                   <p className="text-sm text-muted-foreground/60 mb-8">
                     Email: <span className="text-white">{accessError}</span>
@@ -1870,11 +1874,11 @@ export default function Landing() {
               ) : (
                 <>
                   <h2 className="text-2xl font-bold font-display tracking-tight mb-4 uppercase">
-                    FullScale is Currently <span className="text-primary">Invite-Only.</span>
+                    {c.betaModal.titleLead} <span className="text-primary">{c.betaModal.titleAccent}</span>
                   </h2>
                   
                   <p className="text-muted-foreground leading-relaxed mb-8">
-                    We are onboarding a select cohort of founding creators to ensure the highest quality experience. Applications are reviewed daily.
+                    {c.betaModal.deck}
                   </p>
 
                   <a
@@ -1894,7 +1898,7 @@ export default function Landing() {
                     className="mt-6 inline-block text-sm text-muted-foreground/60 hover:text-white transition-colors underline underline-offset-4"
                     data-testid="button-modal-partner-signin"
                   >
-                    Already a Partner? Sign In
+                    {c.betaModal.alreadyPartner}
                   </a>
                 </>
               )}
