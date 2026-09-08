@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useMemo } from "react";
+import { useContent } from "@/content";
 import { motion } from "framer-motion";
 import {
   Briefcase,
@@ -70,136 +72,52 @@ import sceneGamerAugmented from "@assets/generated_images/brands_gamer_augmented
 // JUST Water / Naturade / Shinju / VeganSmart / SETO remain available at
 // client/public/brand-logos/{slug}.png if a future section needs them.)
 
-const FRICTION_TRADITIONAL = [
-  { icon: Clock, text: "Spend weeks sourcing and vetting creator talent" },
-  { icon: DollarSign, text: "Negotiate rates, contracts, and exclusivity terms" },
-  { icon: Film, text: "Fund production, travel, reshoots, revisions" },
-  { icon: TrendingDown, text: "Launch one spot and hope the impressions land" },
-];
-
-const FRICTION_FULLSCALE = [
-  { icon: Sparkles, text: "Pick content that already has proven engagement" },
-  { icon: Target, text: "Our AI matches your product to contextually-relevant spaces" },
-  { icon: FlaskConical, text: "Test placements across multiple creators at once" },
-  { icon: TrendingUp, text: "Scale only the variants that actually perform" },
-];
-
-const CAPABILITIES = [
-  {
-    icon: Package,
-    title: "Physical Products",
-    description:
-      "Drop beverages, electronics, beauty, lifestyle, or food & bev onto a creator's desk, counter, or studio table with AI-perfect lighting and occlusion.",
-  },
-  {
-    icon: Tag,
-    title: "Branded Stickers & Decals",
-    description:
-      "Place your logo or campaign art on a DJ controller, laptop, helmet, or instrument case — wherever your brand fits the moment.",
-  },
-  {
-    icon: Monitor,
-    title: "On-Screen Overlays",
-    description:
-      "Replace a creator's monitor content with your app UI, game preview, or product demo. Perfectly tracked across every frame.",
-  },
-  {
-    icon: Layers,
-    title: "Ambient Branding",
-    description:
-      "Wall art, posters, neon signs, book spines — the subtle placements that build brand presence without breaking the creator's moment.",
-  },
-];
-
-const SHOWCASE_SCENES = [
-  {
-    label: "Kitchen",
-    sceneNumber: "Scene 1 of 3",
-    description:
-      "A warm minimalist kitchen — oak counter, sage cabinets, copper pans, morning light from the window. Drag the slider to see our AI place an Olipop can onto the counter with shadow direction matched to the window light and the counter's wood grain preserved right up to the can's base.",
-    reality: sceneKitchenReality,
-    augmented: sceneKitchenAugmented,
-    realityAlt: "Warm minimalist kitchen with oak counter, copper pans, morning window light",
-    augmentedAlt: "Same kitchen with an Olipop can placed on the counter by FullScale AI",
-    testId: "showcase-kitchen",
-  },
-  {
-    label: "DJ Booth",
-    sceneNumber: "Scene 2 of 3",
-    description:
-      "A DJ controller mid-session — jog wheels, mixer faders, RGB performance pads glowing purple and cyan. Drag to reveal an energy drink can placed on the surface beside the mixer. The can's shadow falls in the direction of the booth's ambient lighting, and its scale matches the controller's depth of field perfectly.",
-    reality: sceneDjReality,
-    augmented: sceneDjAugmented,
-    realityAlt: "DJ controller close-up with jog wheels, mixer faders, and RGB pads",
-    augmentedAlt: "Same DJ booth with an energy drink can placed beside the mixer",
-    testId: "showcase-dj",
-  },
-  {
-    label: "Gaming Setup",
-    sceneNumber: "Scene 3 of 3",
-    description:
-      "A gaming desk at dusk — dual monitors, mechanical RGB keyboard, desk mat with RGB underglow, gaming chair blurred in the background. Drag to see a Monster Energy can land to the left of the keyboard. The can picks up the warm RGB light in its reflections and drops a clean shadow across the desk space.",
-    reality: sceneGamerReality,
-    augmented: sceneGamerAugmented,
-    realityAlt: "Gaming desk with dual monitors, RGB keyboard, and accent lighting",
-    augmentedAlt: "Same gaming desk with a Monster Energy can placed beside the keyboard",
-    testId: "showcase-gamer",
-  },
-];
-
-const PLACEMENT_STEPS = [
-  {
-    icon: Upload,
-    step: "Step 1",
-    title: "You upload your product",
-    description:
-      "Drop in a clean PNG of your product — drinks, electronics, beauty, apparel, anything with a recognizable silhouette. Add brand guidelines, placement preferences, and which markets you want to reach.",
-  },
-  {
-    icon: ScanSearch,
-    step: "Step 2",
-    title: "Our AI scans creator content",
-    description:
-      "FullScale's space engine analyzes the existing videos in your matched creators' libraries. Every flat surface, every empty frame, every moment your product could live in — identified, scored, and ranked.",
-  },
-  {
-    icon: CheckCircle2,
-    step: "Step 3",
-    title: "You approve the placements",
-    description:
-      "Review AI-generated composites before anything goes live. Approve the ones that fit your brand, reject the ones that don't. No surprises, no off-brand moments, no creator-product mismatches.",
-  },
-  {
-    icon: BarChart3,
-    step: "Step 4",
-    title: "Measure, iterate, scale",
-    description:
-      "Performance data comes in — engagement per second, view-through rate, purchase-link clicks. Double down on the creators and formats that work. Kill the rest. Scale only what's proven.",
-  },
-];
-
-const TEST_AND_LEARN = [
-  {
-    icon: Target,
-    title: "Match products to creators",
-    description:
-      "Run the same product across multiple creators' existing content libraries. See which audience engages most before you commit a dollar.",
-  },
-  {
-    icon: FlaskConical,
-    title: "A/B placement variants",
-    description:
-      "Same video, two spaces, two product treatments. Find the variant that converts before you commit to a full flight.",
-  },
-  {
-    icon: Gauge,
-    title: "Measure and scale",
-    description:
-      "Engagement per second, view-through rate, click-through for purchase-linked placements. The signal you need to double down on what works.",
-  },
+/* The WORDS live in client/src/content/brands.{en,ar}.ts. What stays here is
+   everything a translator must not be able to touch: the icon components, the
+   scene images and the data-testids. They are zipped to the copy by index
+   inside the component, so the JSX below is unchanged and a reordered Arabic
+   list can never drag an icon or a testId out of place with it. */
+const FRICTION_TRADITIONAL_ICONS = [Clock, DollarSign, Film, TrendingDown];
+const FRICTION_FULLSCALE_ICONS = [Sparkles, Target, FlaskConical, TrendingUp];
+const CAPABILITY_ICONS = [Package, Tag, Monitor, Layers];
+const PLACEMENT_STEP_ICONS = [Upload, ScanSearch, CheckCircle2, BarChart3];
+const TEST_AND_LEARN_ICONS = [Target, FlaskConical, Gauge];
+const SHOWCASE_MEDIA = [
+  { reality: sceneKitchenReality, augmented: sceneKitchenAugmented, testId: "showcase-kitchen" },
+  { reality: sceneDjReality, augmented: sceneDjAugmented, testId: "showcase-dj" },
+  { reality: sceneGamerReality, augmented: sceneGamerAugmented, testId: "showcase-gamer" },
 ];
 
 export default function Brands() {
+  const c = useContent("brands");
+
+  /* Same shapes the JSX below already expects — copy from the locale module,
+     icons and media from the lists above, zipped by index. */
+  const FRICTION_TRADITIONAL = useMemo(
+    () => c.friction.traditional.map((text, i) => ({ icon: FRICTION_TRADITIONAL_ICONS[i], text })),
+    [c],
+  );
+  const FRICTION_FULLSCALE = useMemo(
+    () => c.friction.fullscale.map((text, i) => ({ icon: FRICTION_FULLSCALE_ICONS[i], text })),
+    [c],
+  );
+  const CAPABILITIES = useMemo(
+    () => c.capabilities.items.map((it, i) => ({ ...it, icon: CAPABILITY_ICONS[i] })),
+    [c],
+  );
+  const PLACEMENT_STEPS = useMemo(
+    () => c.steps.items.map((it, i) => ({ ...it, icon: PLACEMENT_STEP_ICONS[i] })),
+    [c],
+  );
+  const TEST_AND_LEARN = useMemo(
+    () => c.testLearn.items.map((it, i) => ({ ...it, icon: TEST_AND_LEARN_ICONS[i] })),
+    [c],
+  );
+  const SHOWCASE_SCENES = useMemo(
+    () => c.showcase.scenes.map((sc, i) => ({ ...sc, ...SHOWCASE_MEDIA[i] })),
+    [c],
+  );
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [videoFailed, setVideoFailed] = useState(false);
   const [isMobile, setIsMobile] = useState(() =>
@@ -311,7 +229,7 @@ export default function Brands() {
               </span>
             </h1>
             <p className="text-lg md:text-xl text-white/80 leading-relaxed max-w-2xl mx-auto mb-8">
-              Drop your product into podcast desks, DJ booths, gaming setups, and creator studios — without the heavy friction of finding talent, negotiating rates, or chasing reshoots. Test creator-product associations before you commit the big budget.
+              {c.hero.deck}
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
               <a
@@ -355,10 +273,10 @@ export default function Brands() {
           className="text-center mb-12 max-w-3xl mx-auto"
         >
           <h2 className="text-3xl md:text-4xl font-bold text-foreground mb-4 tracking-tight">
-            There are two ways to get your product in front of audiences.
+            {c.friction.title}
           </h2>
           <p className="text-lg text-muted-foreground leading-relaxed">
-            One way is expensive, slow, and hit-or-miss. The other is FullScale.
+            {c.friction.deck}
           </p>
         </motion.div>
 
@@ -380,7 +298,7 @@ export default function Brands() {
                     <div className="text-xs uppercase tracking-widest text-red-400/80 font-semibold">
                       The Traditional Path
                     </div>
-                    <div className="text-lg font-bold text-foreground">Heavy friction, hit-or-miss outcomes</div>
+                    <div className="text-lg font-bold text-foreground">{c.friction.traditionalLabel}</div>
                   </div>
                 </div>
                 <ul className="space-y-4">
@@ -398,11 +316,11 @@ export default function Brands() {
                 </ul>
                 <div className="mt-8 pt-6 border-t border-red-500/10">
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    Average timeline: <span className="text-red-400/90 font-semibold">6–12 weeks</span>
+                    Average timeline: <span className="text-red-400/90 font-semibold">{c.friction.statSlow}</span>
                     <span className="mx-2 text-muted-foreground/50">·</span>
                     Average cost: <span className="text-red-400/90 font-semibold">$50K+</span>
                     <span className="mx-2 text-muted-foreground/50">·</span>
-                    Outcome: <span className="text-red-400/90 font-semibold">hit or miss</span>
+                    Outcome: <span className="text-red-400/90 font-semibold">{c.friction.statUncertain}</span>
                   </p>
                 </div>
               </CardContent>
@@ -426,7 +344,7 @@ export default function Brands() {
                     <div className="text-xs uppercase tracking-widest text-emerald-300 font-semibold">
                       With FullScale
                     </div>
-                    <div className="text-lg font-bold text-foreground">Proven content, measurable outcomes</div>
+                    <div className="text-lg font-bold text-foreground">{c.friction.fullscaleLabel}</div>
                   </div>
                 </div>
                 <ul className="space-y-4">
@@ -444,11 +362,11 @@ export default function Brands() {
                 </ul>
                 <div className="mt-8 pt-6 border-t border-emerald-400/20">
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    Average timeline: <span className="text-emerald-300 font-semibold">48 hours</span>
+                    Average timeline: <span className="text-emerald-300 font-semibold">{c.friction.statFast}</span>
                     <span className="mx-2 text-muted-foreground/50">·</span>
-                    Average cost: <span className="text-emerald-300 font-semibold">a fraction</span>
+                    Average cost: <span className="text-emerald-300 font-semibold">{c.friction.statCheap}</span>
                     <span className="mx-2 text-muted-foreground/50">·</span>
-                    Outcome: <span className="text-emerald-300 font-semibold">measurable</span>
+                    Outcome: <span className="text-emerald-300 font-semibold">{c.friction.statMeasured}</span>
                   </p>
                 </div>
               </CardContent>
@@ -483,10 +401,10 @@ export default function Brands() {
               See It In Action
             </Badge>
             <h2 className="text-3xl md:text-4xl font-bold text-foreground mb-4 tracking-tight">
-              Real products. Real creator moments.
+              {c.showcase.title}
             </h2>
             <p className="text-lg text-muted-foreground leading-relaxed">
-              Drag the slider on each scene to see what FullScale's AI does to a creator's existing content — no reshoots, no prop-swapping, no production day required.
+              {c.showcase.deck}
             </p>
           </motion.div>
 
@@ -558,10 +476,10 @@ export default function Brands() {
             className="text-center mb-12 max-w-3xl mx-auto"
           >
             <h2 className="text-3xl md:text-4xl font-bold text-foreground mb-4 tracking-tight">
-              Stickers. Products. Screens. All of it.
+              {c.capabilities.title}
             </h2>
             <p className="text-lg text-muted-foreground leading-relaxed">
-              If it has a flat surface, a screen, or an empty frame — you can own the moment.
+              {c.capabilities.deck}
             </p>
           </motion.div>
 
@@ -609,10 +527,10 @@ export default function Brands() {
             The Placement Flow
           </Badge>
           <h2 className="text-3xl md:text-4xl font-bold text-foreground mb-4 tracking-tight">
-            From product upload to live placement in four steps.
+            {c.steps.title}
           </h2>
           <p className="text-lg text-muted-foreground leading-relaxed">
-            No production crew. No reshoots. No waiting months for a creator to decide.
+            {c.steps.deck}
           </p>
         </motion.div>
 
@@ -676,10 +594,10 @@ export default function Brands() {
             Test & Learn
           </Badge>
           <h2 className="text-3xl md:text-4xl font-bold text-foreground mb-4 tracking-tight">
-            Test everything before you scale anything.
+            {c.testLearn.title}
           </h2>
           <p className="text-lg text-muted-foreground leading-relaxed">
-            Figure out what lands — and with whom — before you commit real budget.
+            {c.testLearn.deck}
           </p>
         </motion.div>
 
@@ -737,7 +655,7 @@ export default function Brands() {
               </span>
             </h2>
             <p className="text-lg md:text-xl text-muted-foreground leading-relaxed max-w-2xl mx-auto mb-10">
-              Sign up and our team walks you through a brief tailored to your brand, budget, and audience. Pick a creator, test a placement, see the numbers — before you commit.
+              {c.finalCta.deck}
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
               <a

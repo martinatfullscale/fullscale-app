@@ -44,7 +44,44 @@ export interface StoryContent {
   player: { close: string };
 }
 
+
+/* ── /brands ──────────────────────────────────────────────────────────────
+   Only WORDS. The icons, images, testIds and outbound links stay in the page
+   and are zipped to these lists by index — a translator should never be able
+   to break a data-testid or a lucide import, and reordering a list in Arabic
+   would silently reorder the icons if they lived here. */
+
+export interface BrandsCapability { title: string; description: string }
+export interface BrandsStep { step: string; title: string; description: string }
+export interface BrandsScene {
+  label: string;
+  sceneNumber: string;
+  description: string;
+  realityAlt: string;
+  augmentedAlt: string;
+}
+
+export interface BrandsContent {
+  badge: string;
+  hero: { titleLead: string; titleAccent: string; deck: string; ctaPrimary: string; ctaSecondary: string };
+  friction: {
+    title: string; deck: string;
+    traditionalLabel: string; fullscaleLabel: string;
+    /** These two must stay the SAME LENGTH as each other and as the icon
+     *  lists in the page — they render as a paired comparison. */
+    traditional: string[]; fullscale: string[];
+    statSlow: string; statUncertain: string;
+    statFast: string; statCheap: string; statMeasured: string;
+  };
+  showcase: { title: string; deck: string; scenes: BrandsScene[] };
+  capabilities: { title: string; deck: string; items: BrandsCapability[] };
+  steps: { title: string; deck: string; items: BrandsStep[] };
+  testLearn: { title: string; deck: string; items: BrandsCapability[] };
+  finalCta: { titleLead: string; titleAccent: string; deck: string; ctaPrimary: string; ctaSecondary: string };
+}
+
 /** Every page's content shape, keyed by page. Extended as pages are converted. */
 export interface ContentByPage {
   story: StoryContent;
+  brands: BrandsContent;
 }
