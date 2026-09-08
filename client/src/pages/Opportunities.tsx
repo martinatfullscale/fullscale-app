@@ -216,7 +216,7 @@ export default function Opportunities() {
             <Card className="p-5">
               <div className="flex items-center gap-2 mb-2">
                 <Eye className="w-4 h-4 text-blue-400" />
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Surfaces</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Spaces</p>
               </div>
               <p className="text-3xl font-bold text-white" data-testid="text-surfaces-count">
                 {totalSurfaces}
@@ -421,7 +421,7 @@ export default function Opportunities() {
                 <span className="text-lg font-bold text-emerald-400">{selectedOffer.bidAmount}</span>
               </div>
               <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-                <span className="text-sm text-muted-foreground">Target Surface</span>
+                <span className="text-sm text-muted-foreground">Target Space</span>
                 <Badge variant="outline">{selectedOffer.sceneType || "Any"}</Badge>
               </div>
               <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">

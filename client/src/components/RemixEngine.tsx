@@ -1725,7 +1725,7 @@ export default function RemixEngine() {
                   </div>
                 ) : (
                   <div className="px-2 py-1.5 mb-3 bg-muted/30 rounded-lg">
-                    <p className="text-xs text-muted-foreground">Select a surface below the video</p>
+                    <p className="text-xs text-muted-foreground">Select a space below the video</p>
                   </div>
                 )}
 

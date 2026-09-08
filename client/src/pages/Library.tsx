@@ -491,7 +491,7 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
                   <div className="bg-white/5 rounded-lg p-3 border border-white/5">
                     <div className="flex items-center gap-2 mb-1">
                       <Sun className="w-4 h-4 text-muted-foreground" />
-                      <span className="text-xs text-muted-foreground font-mono uppercase">Surfaces</span>
+                      <span className="text-xs text-muted-foreground font-mono uppercase">Spaces</span>
                     </div>
                     <p className="text-lg font-bold font-mono text-white">{surfaces.length} Found</p>
                   </div>
@@ -520,7 +520,7 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
                     ) : video.aiStatus === "pending" ? (
                       <span className="text-xs text-muted-foreground">No objects detected. Run a scan first.</span>
                     ) : (
-                      <span className="text-xs text-yellow-400">No surfaces found in this scene. Try a different timestamp or video.</span>
+                      <span className="text-xs text-yellow-400">No spaces found in this scene. Try a different timestamp or video.</span>
                     )}
                   </div>
                 </div>
@@ -2095,7 +2095,7 @@ export default function Library() {
                   </div>
                   <div>
                     <h2 className="text-lg font-bold text-white">Editorial Intelligence</h2>
-                    <p className="text-xs text-muted-foreground">Transcript-based viral clip analysis + narrative surface insights</p>
+                    <p className="text-xs text-muted-foreground">Transcript-based viral clip analysis + narrative space insights</p>
                   </div>
                 </div>
                 <button onClick={() => { setNarrativeInsightsOpen(false); setNarrativeVideoId(null); }} className="text-zinc-400 hover:text-white">

@@ -3279,7 +3279,7 @@ export default function PlacementPreviewModal({
                 {/* Surface selector strip */}
                 {surfacesWithFrames.length > 1 && (
                   <div className="mt-3 p-2 bg-black/30 rounded-lg">
-                    <p className="text-xs text-muted-foreground mb-2">Select surface:</p>
+                    <p className="text-xs text-muted-foreground mb-2">Select space:</p>
                     <div className="flex gap-2 overflow-x-auto pb-1">
                       {surfacesWithFrames.map((surface) => (
                         <button
@@ -3430,7 +3430,7 @@ export default function PlacementPreviewModal({
                     {isDenseScanning && (
                       <div className="flex items-center justify-center gap-1.5 mt-1">
                         <Loader2 className="w-3 h-3 animate-spin text-primary" />
-                        <span className="text-[10px] text-primary">Scanning frames for surface tracking...</span>
+                        <span className="text-[10px] text-primary">Scanning frames for space tracking...</span>
                       </div>
                     )}
                   </div>
@@ -3471,7 +3471,7 @@ export default function PlacementPreviewModal({
                         <div className="p-3 rounded-xl bg-white/5 border border-white/10">
                           <div className="flex items-center gap-2 mb-2">
                             <Target className="w-4 h-4 text-primary" />
-                            <span className="text-sm font-medium text-white">Selected Surface</span>
+                            <span className="text-sm font-medium text-white">Selected Space</span>
                           </div>
                           <div className="flex flex-wrap gap-1.5">
                             <Badge variant="secondary" className="text-xs">

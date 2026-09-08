@@ -584,7 +584,7 @@ export default function CreatorProfile() {
                 <Target className="h-4 w-4 text-primary" />
                 <span className="text-2xl font-bold text-foreground">{stats.totalSurfaces}</span>
               </div>
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">Ad Surfaces</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Ad Spaces</p>
             </div>
             <div className="text-center">
               <div className="flex items-center justify-center gap-2 mb-1">
@@ -593,7 +593,7 @@ export default function CreatorProfile() {
                   {stats.surfaceTypes.length || 1}
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">Surface Types</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Space Types</p>
             </div>
           </div>
         </div>

@@ -269,7 +269,7 @@ export default function AdminPlacements() {
           <dl className="text-xs space-y-1">
             {data?.surface && (
               <div className="flex gap-2">
-                <dt className="text-muted-foreground w-20 shrink-0">Surface</dt>
+                <dt className="text-muted-foreground w-20 shrink-0">Space</dt>
                 <dd>{data.surface.surfaceType}{data.surface.timestamp != null ? ` @ ${Math.round(data.surface.timestamp)}s` : ""}</dd>
               </div>
             )}

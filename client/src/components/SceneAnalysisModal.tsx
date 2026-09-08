@@ -1513,7 +1513,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                       <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
                         <div className="flex items-center gap-2 mb-2">
                           <Clock className="w-4 h-4 text-emerald-400" />
-                          <span className="text-sm font-medium text-white">Surface Timeline</span>
+                          <span className="text-sm font-medium text-white">Space Timeline</span>
                         </div>
                         <div className="text-sm text-emerald-300 mb-1">
                           <span className="font-semibold">{surfaceType}</span>

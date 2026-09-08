@@ -955,7 +955,7 @@ export default function BrandMarketplace() {
                   <Sparkles className="w-5 h-5 text-purple-400" />
                   Featured Creators
                 </h2>
-                <p className="text-sm text-white/60">Discover top creators with premium placement surfaces</p>
+                <p className="text-sm text-white/60">Discover top creators with premium placement spaces</p>
               </div>
               <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30">
                 {featuredCreators.length} Creators

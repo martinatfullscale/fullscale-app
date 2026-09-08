@@ -299,7 +299,7 @@ function RoomModelSection() {
               <thead>
                 <tr className="text-xs text-muted-foreground text-left border-b border-white/10">
                   <th className="p-3 font-medium">Creator</th>
-                  <th className="p-3 font-medium">Surfaces</th>
+                  <th className="p-3 font-medium">Spaces</th>
                   <th className="p-3 font-medium text-right">Episodes</th>
                   <th className="p-3 font-medium text-right">Exemplars</th>
                   <th className="p-3 font-medium">Last video</th>

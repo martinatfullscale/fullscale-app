@@ -2082,7 +2082,7 @@ export default function Landing() {
                   <div className="mb-10">
                     <div className="flex items-center gap-2 mb-6">
                       <Sparkles className="w-5 h-5 text-yellow-400" />
-                      <h3 className="text-lg font-bold text-white uppercase tracking-wider">The Surface Engine</h3>
+                      <h3 className="text-lg font-bold text-white uppercase tracking-wider">The Space Engine</h3>
                       <span className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 text-xs font-bold">Proprietary AI</span>
                     </div>
                     <div className="w-full max-w-4xl mx-auto">

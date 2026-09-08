@@ -1597,7 +1597,7 @@ function EditorialClipCard({
 
                 {onScan && mode !== "brand" && (clip as any).id && (
                   (isScanning || (clip as any).scanInFlight) ? (
-                    <span className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] text-purple-300" title="Scanning for placement surfaces">
+                    <span className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] text-purple-300" title="Scanning for placement spaces">
                       <Loader2 className="w-3 h-3 animate-spin" />
                       Scanning…
                     </span>
