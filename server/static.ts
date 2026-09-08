@@ -1,4 +1,5 @@
 import express, { type Express } from "express";
+import { renderShellWithMeta } from "./lib/htmlMeta";
 import fs from "fs";
 import path from "path";
 
@@ -83,10 +84,27 @@ export function serveStatic(app: Express) {
     },
   }));
 
-  // SPA fallback - serve index.html for all non-API routes
-  app.use("*", (_req, res, next) => {
+  // SPA fallback - serve index.html for all non-API routes, with this route's
+  // OWN metadata injected. Social unfurlers never run the JavaScript, so a
+  // client-side title fix would leave every shared link — including a
+  // creator's own /c/<slug> permalink — unfurling as the homepage, which is
+  // what it did.
+  app.use("*", async (req, res, next) => {
     try {
       res.setHeader('Cache-Control', 'no-cache');
+      const pathname = (req.originalUrl || "/").split("?")[0];
+      try {
+        const html = await renderShellWithMeta(indexPath, pathname);
+        if (html) {
+          res.status(200).type("html").send(html);
+          return;
+        }
+      } catch (metaErr) {
+        // Never let metadata take the page down. A shell with the wrong title
+        // is a bad day; a 500 on / is what the platform healthcheck reads as
+        // unhealthy, and that is the restart loop this file exists to avoid.
+        console.error("[Static] Meta injection failed, serving the plain shell:", metaErr);
+      }
       res.sendFile(indexPath, (err) => {
         if (!err || res.headersSent) return;
         // Deliberately NOT next(err): that lands in the 500 handler, and a 500

@@ -57,6 +57,7 @@ import StudioWaitlistPage from "@/pages/StudioWaitlistPage";
 import "@/lib/i18n";
 import { LocaleProvider } from "@/lib/locale";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { useRouteMeta } from "@/lib/useRouteMeta";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -111,6 +112,9 @@ function StudioAccessGuard({ children }: { children: React.ReactNode }) {
 }
 
 function Router() {
+  // Per-route <title>/description/og during SPA navigation. The server
+  // already injected the correct values for the first paint.
+  useRouteMeta();
   const { user, isLoading: isLoadingReplitAuth } = useAuth();
   const { isAuthenticated: isGoogleAuthenticated, isLoading: isLoadingGoogleAuth } = useHybridMode();
   const [location, setLocation] = useLocation();
