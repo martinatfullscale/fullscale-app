@@ -3,6 +3,8 @@ import {
   ALIASES, APP_FALLBACK, DEFAULT_IMAGE, ROUTE_META, SITE_NAME, SITE_ORIGIN,
   absoluteUrl, escapeHtml, metaForPath, type PageMeta,
 } from "@shared/seo";
+/** The single source of truth for which routes have Arabic copy. */
+import { LOCALIZED_PATHS } from "@shared/locales";
 
 /**
  * Inject per-route metadata into the SPA shell before it is sent.
@@ -86,7 +88,19 @@ function upsert(html: string, matcher: RegExp, tag: string): string {
   return matcher.test(html) ? html.replace(matcher, tag) : html.replace("</head>", `    ${tag}\n  </head>`);
 }
 
-export async function renderShellWithMeta(indexPath: string, pathname: string): Promise<string | null> {
+/** Which locale this request is for, from the same signals the client uses. */
+function localeFromRequest(search: string, cookie: string | undefined): "en" | "ar" {
+  const q = new URLSearchParams(search || "").get("lang");
+  if (q === "ar" || q === "en") return q;
+  const m = (cookie || "").match(/(?:^|;\s*)fs_lang=([^;]+)/);
+  return m && m[1] === "ar" ? "ar" : "en";
+}
+
+export async function renderShellWithMeta(
+  indexPath: string,
+  pathname: string,
+  opts?: { search?: string; cookie?: string },
+): Promise<string | null> {
   const shell = readShell(indexPath);
   if (!shell) return null;
 
@@ -97,6 +111,18 @@ export async function renderShellWithMeta(indexPath: string, pathname: string): 
   const d = escapeHtml(meta.description);
 
   let html = shell;
+
+  // lang and dir ON THE SERVER. The client sets these too, but a crawler or an
+  // unfurler never runs that code — and Google decides a page's language from
+  // the markup it is served. Only routes that actually have Arabic copy are
+  // served as Arabic; the rest stay English regardless of the cookie, matching
+  // hasTranslation() on the client.
+  const localized = LOCALIZED_PATHS.includes(pathname.replace(/\/+$/, "") || "/");
+  const locale = localized ? localeFromRequest(opts?.search ?? "", opts?.cookie) : "en";
+  if (locale === "ar") {
+    html = html.replace(/<html[^>]*>/i, '<html lang="ar" dir="rtl">');
+  }
+
   html = html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${t}</title>`);
   html = upsert(html, /<meta\s+name="description"[^>]*>/i, `<meta name="description" content="${d}" />`);
   html = upsert(html, /<meta\s+property="og:title"[^>]*>/i, `<meta property="og:title" content="${t}" />`);
@@ -108,6 +134,20 @@ export async function renderShellWithMeta(indexPath: string, pathname: string): 
   html = upsert(html, /<meta\s+name="twitter:description"[^>]*>/i, `<meta name="twitter:description" content="${d}" />`);
   html = upsert(html, /<meta\s+name="twitter:image"[^>]*>/i, `<meta name="twitter:image" content="${escapeHtml(image)}" />`);
   html = upsert(html, /<link\s+rel="canonical"[^>]*>/i, `<link rel="canonical" href="${escapeHtml(url)}" />`);
+
+  // hreflang, but only where a translation genuinely exists. Declaring an
+  // Arabic alternate for a page that is still English is a worse signal than
+  // declaring none — it tells Google to serve Arabic speakers a page in a
+  // language it is not in.
+  html = html.replace(/\s*<link\s+rel="alternate"[^>]*>/gi, "");
+  if (localized) {
+    const alts = [
+      `<link rel="alternate" hreflang="en" href="${escapeHtml(url)}" />`,
+      `<link rel="alternate" hreflang="ar" href="${escapeHtml(url)}${url.includes("?") ? "&" : "?"}lang=ar" />`,
+      `<link rel="alternate" hreflang="x-default" href="${escapeHtml(url)}" />`,
+    ].join("\n    ");
+    html = html.replace("</head>", `    ${alts}\n  </head>`);
+  }
 
   // robots: only ever ADD a noindex. Never emit an "index" directive that
   // could contradict a future robots.txt or a header set upstream.

@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { DirectionProvider } from "@radix-ui/react-direction";
-import i18n, { LOCALE_LABEL, OFFERED, persistLocale, readStoredLocale, RTL_LOCALES, SUPPORTED, type Locale } from "./i18n";
+import { useLocation } from "wouter";
+import i18n, { hasTranslation, LOCALE_LABEL, OFFERED, persistLocale, readStoredLocale, RTL_LOCALES, SUPPORTED, type Locale } from "./i18n";
 
 /**
  * Locale and DIRECTION, from one source.
@@ -38,21 +39,36 @@ export const dirOf = (locale: string): "ltr" | "rtl" =>
 
 export function LocaleProvider({ children }: { children: React.ReactNode }) {
   const { i18n: inst } = useTranslation();
+  const [location] = useLocation();
   const [locale, setLocaleState] = useState<Locale>(
     () => (readStoredLocale() ?? (inst.resolvedLanguage as Locale) ?? "en"),
   );
-  const dir = dirOf(locale);
+  /* Direction follows the ROUTE, not just the locale. Five of the nine public
+     pages have no Arabic module yet, and English text in an RTL page is not
+     neutral — paragraphs right-align, sentence-final punctuation jumps to the
+     left, lists reverse. It reads as broken rather than as untranslated. An
+     untranslated route therefore renders LTR while keeping the language
+     preference, so the switcher still says العربية and the next translated
+     page a visitor opens is Arabic again. */
+  const dir = hasTranslation(location) ? dirOf(locale) : "ltr";
+
+  /* lang follows the same rule as dir, and for a sharper reason: it is a
+     promise about what language the text on this page IS. On an untranslated
+     route the text is English, so lang="ar" would tell a screen reader to
+     pronounce English words with Arabic phonetics — unintelligible — and tell
+     Google the page is Arabic when it is not. */
+  const pageLocale = hasTranslation(location) ? locale : "en";
 
   useEffect(() => {
     const root = document.documentElement;
-    root.setAttribute("lang", locale);
+    root.setAttribute("lang", pageLocale);
     root.setAttribute("dir", dir);
     // Arabic needs more vertical room than Latin at the same nominal size, and
     // it has no lowercase, so the tight leading this design uses reads as
     // cramped. Scoped to the <html> element so nothing else has to know.
-    root.classList.toggle("locale-ar", locale === "ar");
+    root.classList.toggle("locale-ar", pageLocale === "ar");
     if (inst.resolvedLanguage !== locale) inst.changeLanguage(locale);
-  }, [locale, dir, inst]);
+  }, [locale, pageLocale, dir, inst]);
 
   const setLocale = useCallback((next: Locale) => {
     if (!(SUPPORTED as readonly string[]).includes(next)) return;
@@ -96,5 +112,5 @@ export function LtrIsland({
   );
 }
 
-export { LOCALE_LABEL, OFFERED, SUPPORTED, type Locale };
+export { hasTranslation, LOCALE_LABEL, OFFERED, SUPPORTED, type Locale };
 export default i18n;

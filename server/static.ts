@@ -94,7 +94,10 @@ export function serveStatic(app: Express) {
       res.setHeader('Cache-Control', 'no-cache');
       const pathname = (req.originalUrl || "/").split("?")[0];
       try {
-        const html = await renderShellWithMeta(indexPath, pathname);
+        const html = await renderShellWithMeta(indexPath, pathname, {
+          search: (req.originalUrl || "").split("?")[1] || "",
+          cookie: req.headers?.cookie,
+        });
         if (html) {
           res.status(200).type("html").send(html);
           return;

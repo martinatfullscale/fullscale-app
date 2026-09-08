@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Globe, Check } from "lucide-react";
-import { LOCALE_LABEL, OFFERED, SUPPORTED, useLocale, type Locale } from "@/lib/locale";
+import { useLocation } from "wouter";
+import { hasTranslation, LOCALE_LABEL, OFFERED, SUPPORTED, useLocale, type Locale } from "@/lib/locale";
 
 /**
  * The language control, top right, on every page.
@@ -19,6 +20,7 @@ import { LOCALE_LABEL, OFFERED, SUPPORTED, useLocale, type Locale } from "@/lib/
  */
 export function LanguageSwitcher({ className = "" }: { className?: string }) {
   const { locale, setLocale } = useLocale();
+  const [location] = useLocation();
   const [open, setOpen] = useState(false);
   /** Whatever is offered, plus whatever the visitor is already in — so someone
    *  previewing with ?lang=ar can still see and leave it. */
@@ -42,6 +44,17 @@ export function LanguageSwitcher({ className = "" }: { className?: string }) {
   // Nothing to switch between: don't put a control on every page that opens a
   // menu with one item in it.
   if (choices.length < 2) return null;
+
+  /* Only where there is something to switch TO.
+     Four pages are translated; the other five public routes and the whole
+     authenticated app are English. Offering the control there would be an
+     invitation to a language the page cannot speak — the visitor clicks,
+     nothing changes, and the product looks broken rather than partial.
+     This does NOT make the fallback in LocaleProvider redundant: someone who
+     switches to Arabic here and then navigates to an untranslated page carries
+     the preference with them in the cookie, and it is that page's direction
+     the fallback protects. Two different problems. */
+  if (!hasTranslation(location)) return null;
 
   return (
     // inset-inline-end, not right: the control itself has to sit on the

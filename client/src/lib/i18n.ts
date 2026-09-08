@@ -20,22 +20,20 @@ export type Locale = (typeof SUPPORTED)[number];
 /**
  * Which locales a visitor may actually be offered.
  *
- * Arabic is BUILT but not REVIEWED. Every Arabic string in this repo is a
- * machine draft written so the RTL layout could be built and tested against
- * text of realistic length — it is scaffolding that happens to be in Arabic,
- * not a translation. One of the six glossary terms in the first pass was
- * simply invented (see docs/GLOSSARY_ARABIC.md §1).
+ * Arabic went live on 2026-09-08 by the owner's decision, with the translation
+ * still a machine draft — see docs/GLOSSARY_ARABIC.md, which records what is
+ * evidenced, what is not, and the one term that was invented before being
+ * checked. A native reviewer has not been through it.
  *
- * Shipping that to an Arabic-speaking visitor is worse than shipping nothing:
- * a site written in confident, wrong Arabic tells a reader the company does
- * not know or does not care, and that is the opposite of the impression the
- * whole exercise exists to make.
- *
- * So Arabic is reachable — with an explicit ?lang=ar, for the team and for the
- * reviewer to work against — but it is not offered in the switcher. Flip this
- * to include "ar" when a native reviewer has signed off, and not before.
+ * Reverting is this one line.
  */
-export const OFFERED: readonly Locale[] = ["en"];
+export const OFFERED: readonly Locale[] = ["en", "ar"];
+
+/* Which routes have Arabic copy lives in shared/, because the SERVER needs
+   the same list — it decides the served <html lang>/<dir> and whether to emit
+   an hreflang alternate. Two lists would drift, and the failure would be an
+   hreflang promising Arabic on a page that renders English. */
+export { LOCALIZED_PATHS, hasTranslation } from "@shared/locales";
 export const RTL_LOCALES: readonly string[] = ["ar", "he", "fa", "ur"];
 
 export const LOCALE_LABEL: Record<Locale, string> = {
