@@ -1828,7 +1828,7 @@ export default function Library() {
                             ) : (
                               <>
                                 <Scan className="w-3 h-3" />
-                                Scan Surfaces
+                                Scan Spaces
                               </>
                             )}
                           </Button>
@@ -2118,10 +2118,10 @@ export default function Library() {
                 <div className="border-t border-white/5 pt-4">
                   <h3 className="text-sm font-semibold text-zinc-300 mb-3 flex items-center gap-2">
                     <Brain className="w-4 h-4 text-purple-400" />
-                    Surface Narrative Analysis
+                    Space Narrative Analysis
                   </h3>
                   <p className="text-xs text-zinc-500 mb-3">
-                    Per-frame surface analysis with brand matching — complements the transcript-based editorial analysis above.
+                    Per-frame space analysis with brand matching — complements the transcript-based editorial analysis above.
                   </p>
                 </div>
               </div>

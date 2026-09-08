@@ -905,7 +905,7 @@ export default function BrandMarketplace() {
                     >
                       <ShoppingCart className="w-4 h-4" />
                       {/* No price on the button. The fee depends on which
-                          product goes on which surface, and the modal quotes
+                          product goes on which space, and the modal quotes
                           the real one before anything is committed. */}
                       Request placement
                     </Button>
@@ -930,7 +930,7 @@ export default function BrandMarketplace() {
             <h3 className="text-lg font-medium mb-2">No inventory yet</h3>
             <p className="text-sm text-muted-foreground">
               A video appears here once its creator has scanned it and approved at least one
-              surface for placements. Nothing is being hidden by your filters.
+              space for placements. Nothing is being hidden by your filters.
             </p>
           </div>
         ) : filteredOpportunities.length === 0 ? (
@@ -1206,7 +1206,7 @@ export default function BrandMarketplace() {
                   <div>
                     {/* This used to headline "$X Placement Value" from
                         priorityScore * 1.2. The real fee comes from the CPM
-                        rubric and depends on the product, the surface and the
+                        rubric and depends on the product, the space and the
                         term — none of which are known until the request. */}
                     <p className="text-sm text-muted-foreground">Priced when you choose a product</p>
                     <p className="text-xs text-muted-foreground/80 max-w-xs mt-0.5">

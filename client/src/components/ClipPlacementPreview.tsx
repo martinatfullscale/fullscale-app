@@ -198,7 +198,7 @@ export default function ClipPlacementPreview({ clipId, videoId, clipTitle, onClo
                   <p className="text-sm text-gray-300 mb-1">No placement surfaces in this clip's range</p>
                   <p className="text-xs text-gray-500 max-w-sm mx-auto mb-4">
                     The scan found nothing sellable inside {" "}
-                    this cut. A denser scan of the range sometimes finds surfaces the sparse pass missed.
+                    this cut. A denser scan of the range sometimes finds spaces the sparse pass missed.
                   </p>
                 </>
               )}

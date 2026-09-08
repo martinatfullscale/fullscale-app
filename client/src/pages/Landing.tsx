@@ -1546,7 +1546,7 @@ export default function Landing() {
               Reality vs <span className="text-emerald-400">Augmented</span>
             </h2>
             <p className="text-muted-foreground text-sm md:text-lg max-w-2xl mx-auto max-[480px]:hidden">
-              Watch our AI dream products onto surfaces with perfect occlusion and lighting. From flat surface to seamless product placement.
+              Watch our AI dream products onto spaces with perfect occlusion and lighting. From flat surface to seamless product placement.
             </p>
           </motion.div>
           
@@ -1567,7 +1567,7 @@ export default function Landing() {
               Live <span className="text-primary">Global Opportunity Feed</span>
             </h2>
             <p className="text-muted-foreground text-sm md:text-lg max-w-2xl mx-auto max-[480px]:hidden">
-              Real-time inventory index. Every frame scanned. Every surface monetizable.
+              Real-time inventory index. Every frame scanned. Every space monetizable.
             </p>
           </motion.div>
         </div>

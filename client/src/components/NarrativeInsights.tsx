@@ -197,7 +197,7 @@ export default function NarrativeInsights({ videoId, open, onClose }: NarrativeI
                 <Brain className="w-12 h-12 text-purple-400 mx-auto mb-4" />
                 <h3 className="text-lg font-medium text-white mb-2">AI Narrative Analysis</h3>
                 <p className="text-gray-400 mb-6 max-w-md mx-auto">
-                  Analyze detected surfaces with Claude AI to understand narrative context,
+                  Analyze detected spaces with Claude AI to understand narrative context,
                   emotional tone, cultural relevance, and brand compatibility.
                 </p>
                 <Button onClick={runAnalysis} className="bg-purple-600 hover:bg-purple-700">

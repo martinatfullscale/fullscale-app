@@ -457,7 +457,7 @@ export function BrandPlacementRequestModal({
         <DialogHeader>
           <DialogTitle data-testid="text-placement-modal-title">Request placement on this video</DialogTitle>
           <DialogDescription>
-            Pick a product and the surfaces you want it on. The creator will review and approve before
+            Pick a product and the spaces you want it on. The creator will review and approve before
             it's rendered into the clip.
           </DialogDescription>
         </DialogHeader>
@@ -584,7 +584,7 @@ export function BrandPlacementRequestModal({
               </div>
             ) : surfaces.length === 0 ? (
               <div className="rounded-md border border-border/50 p-3 text-sm text-muted-foreground">
-                This video has no detected surfaces yet. Ask the creator to run scene analysis.
+                This video has no detected spaces yet. Ask the creator to run scene analysis.
               </div>
             ) : surfaceGroups ? (
               /* Canonical surfaces from the scene inventory — one entry per

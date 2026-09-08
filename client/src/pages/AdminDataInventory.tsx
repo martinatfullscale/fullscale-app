@@ -252,7 +252,7 @@ function RoomModelSection() {
             <Camera className="w-4 h-4 text-primary" /> Set memory (room models)
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Persistent per-set surface memory: one row per recurring camera setup, whose surfaces
+            Persistent per-set space memory: one row per recurring camera setup, whose spaces
             every future scan confirms instead of re-detecting. Forgetting one makes the next scan
             rediscover that set from scratch — safe, just slower and briefly less consistent.
           </p>

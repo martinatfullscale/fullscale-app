@@ -1289,7 +1289,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     </Button>
                     {teachArmed && !teachRect && (
                       <span className="text-[11px] text-muted-foreground">
-                        Drag a box around the surface · Esc to cancel
+                        Drag a box around the space · Esc to cancel
                       </span>
                     )}
                   </div>
@@ -1532,7 +1532,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     produced one (canonical surfaces grouped by recurring
                     scene class), otherwise the flat all-surfaces list.
                     Either way every detection row is visible and clickable
-                    to jump to its scene. Surfaces default to hidden from
+                    to jump to its scene. Spaces default to hidden from
                     brands; creator approves to expose. */}
                 {hasDbSurfaces && dbSurfaces.length > 0 && (() => {
                   const sortedSurfaces = [...dbSurfaces].sort(
@@ -1715,7 +1715,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                               </div>
                               {scene.surfaces.length === 0 && (
                                 <div className="rounded-lg border border-dashed border-white/10 bg-zinc-900/40 p-2.5 text-[11px] text-muted-foreground">
-                                  No approved surfaces yet — a rescan may find more in this scene.
+                                  No approved spaces yet — a rescan may find more in this scene.
                                 </div>
                               )}
                               <div className="space-y-2">
