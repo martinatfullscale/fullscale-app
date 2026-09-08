@@ -113,8 +113,27 @@ export interface LandingContent {
 }
 
 /** Every page's content shape, keyed by page. Extended as pages are converted. */
+
+/* ── /creates ─────────────────────────────────────────────────────────────
+   The nine showcase TITLES are proper nouns — real campaigns, brands and
+   people — and stay in the page in Latin script. Only their one-line
+   descriptions are translatable, held here as a parallel list zipped by
+   index. */
+
+export interface CreatesCapability { title: string; description: string }
+
+export interface CreatesContent {
+  badge: string;
+  hero: { title: string; deck: string; ctaPrimary: string; ctaSecondary: string };
+  capabilities: { title: string; deck: string; items: CreatesCapability[] };
+  showcase: { title: string; deck: string; descriptions: string[] };
+  philosophy: { title: string; body: string };
+  cta: { title: string; deck: string; ctaPrimary: string; ctaSecondary: string };
+}
+
 export interface ContentByPage {
   story: StoryContent;
   brands: BrandsContent;
   landing: LandingContent;
+  creates: CreatesContent;
 }

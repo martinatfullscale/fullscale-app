@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useMemo } from "react";
+import { useContent } from "@/content";
 import { motion } from "framer-motion";
 import { Film, Play, Sparkles, Users, Zap, ArrowRight, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -82,30 +84,23 @@ const VIDEO_SHOWCASE = [
   },
 ];
 
-const CAPABILITIES = [
-  {
-    icon: Film,
-    title: "Content Production",
-    description: "From concept to final cut — full-service video production for digital creators",
-  },
-  {
-    icon: Users,
-    title: "Creator Partnerships",
-    description: "Strategic partnerships that connect brands with authentic creator voices",
-  },
-  {
-    icon: Sparkles,
-    title: "AI-Enhanced Workflow",
-    description: "Leveraging AI tools to accelerate production while preserving the human touch",
-  },
-  {
-    icon: Zap,
-    title: "Distribution & Reach",
-    description: "Multi-platform content strategy to maximize audience engagement and impact",
-  },
-];
+/* Icons only. The words are in content/creates.{en,ar}.ts and zipped by
+   index inside the component, so a reordered Arabic list cannot drag an icon
+   with it. */
+const CAPABILITY_ICONS = [Film, Users, Sparkles, Zap];
 
 export default function FullScaleCreates() {
+  const c = useContent("creates");
+  /* Same shapes the JSX already reads: icons and the real campaign titles stay
+     here, the words come from the locale. */
+  const CAPABILITIES = useMemo(
+    () => c.capabilities.items.map((it, i) => ({ ...it, icon: CAPABILITY_ICONS[i] })),
+    [c],
+  );
+  const SHOWCASE = useMemo(
+    () => VIDEO_SHOWCASE.map((v, i) => ({ ...v, description: c.showcase.descriptions[i] ?? v.description })),
+    [c],
+  );
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoFailed, setVideoFailed] = useState(false);
   const [activeVideo, setActiveVideo] = useState<typeof VIDEO_SHOWCASE[number] | null>(null);
@@ -197,18 +192,18 @@ export default function FullScaleCreates() {
           >
             <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/10 border border-white/20 text-white text-sm font-medium mb-6 backdrop-blur-sm">
               <Film className="w-4 h-4" />
-              FullScale Creates
+              {c.badge}
             </div>
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6 text-white">
-              Content That Connects
+              {c.hero.title}
             </h1>
             <p className="text-lg md:text-xl text-white/80 leading-relaxed max-w-2xl mx-auto mb-8">
-              We build and curate content for audiences that demand something real. AI accelerates the craft — but the creator drives the story. That partnership is where the magic lands.
+              {c.hero.deck}
             </p>
             <div className="flex items-center justify-center gap-4">
               <a href="mailto:martin@gofullscale.ai">
                 <Button size="lg" className="gap-2">
-                  Work With Us
+                  {c.hero.ctaPrimary}
                   <ArrowRight className="w-4 h-4" />
                 </Button>
               </a>
@@ -216,7 +211,7 @@ export default function FullScaleCreates() {
                 document.getElementById("showcase")?.scrollIntoView({ behavior: "smooth" });
               }}>
                 <Play className="w-4 h-4" />
-                See Our Work
+                {c.hero.ctaSecondary}
               </Button>
             </div>
           </motion.div>
@@ -233,9 +228,9 @@ export default function FullScaleCreates() {
             transition={{ duration: 0.5 }}
             className="text-center mb-12"
           >
-            <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-3">What We Do</h2>
+            <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-3">{c.capabilities.title}</h2>
             <p className="text-muted-foreground max-w-lg mx-auto">
-              End-to-end content production for creators and brands who value authenticity
+              {c.capabilities.deck}
             </p>
           </motion.div>
 
@@ -275,14 +270,14 @@ export default function FullScaleCreates() {
           transition={{ duration: 0.5 }}
           className="text-center mb-12"
         >
-          <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-3">Our Work</h2>
+          <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-3">{c.showcase.title}</h2>
           <p className="text-muted-foreground max-w-lg mx-auto">
-            A showcase of content crafted at the intersection of creativity and technology
+            {c.showcase.deck}
           </p>
         </motion.div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {VIDEO_SHOWCASE.map((video, idx) => (
+          {SHOWCASE.map((video, idx) => (
             <motion.div
               key={video.vimeoId}
               initial={{ opacity: 0, y: 20 }}
@@ -358,10 +353,10 @@ export default function FullScaleCreates() {
           >
             <div className="text-5xl mb-6 opacity-20">"</div>
             <p className="text-xl md:text-2xl text-foreground leading-relaxed font-medium mb-6">
-              We believe in the power of real stories told by real people. When creators own the narrative and the tools work in service of that vision, the content doesn't just perform, it connects.
+              {c.philosophy.body}
             </p>
             <p className="text-muted-foreground text-sm uppercase tracking-widest">
-              The FullScale Creates Philosophy
+              {c.philosophy.title}
             </p>
           </motion.div>
         </div>
@@ -377,21 +372,21 @@ export default function FullScaleCreates() {
           className="text-center"
         >
           <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-4">
-            Ready to Create Something Real?
+            {c.cta.title}
           </h2>
           <p className="text-muted-foreground max-w-md mx-auto mb-8">
-            Whether you're a creator looking to produce premium content or a brand seeking authentic partnerships.
+            {c.cta.deck}
           </p>
           <div className="flex items-center justify-center gap-4 flex-wrap">
             <a href="mailto:fullscale_info@gofullscale.co">
               <Button size="lg" className="gap-2">
                 <Globe className="w-4 h-4" />
-                Get in Touch
+                {c.cta.ctaPrimary}
               </Button>
             </a>
             <a href="/marketplace">
               <Button size="lg" variant="outline" className="gap-2">
-                Explore Marketplace
+                {c.cta.ctaSecondary}
                 <ArrowRight className="w-4 h-4" />
               </Button>
             </a>
