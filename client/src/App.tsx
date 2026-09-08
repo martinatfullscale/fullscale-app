@@ -56,7 +56,6 @@ import StudioLibrary from "@/pages/StudioLibrary";
 import StudioWaitlistPage from "@/pages/StudioWaitlistPage";
 import "@/lib/i18n";
 import { LocaleProvider } from "@/lib/locale";
-import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useRouteMeta } from "@/lib/useRouteMeta";
 
 interface AuthStatusResponse {
@@ -350,10 +349,6 @@ function App() {
         <TooltipProvider>
           <PitchModeProvider>
             <Toaster />
-            {/* Once, at the root. There is no shared header in this app —
-                four marketing pages carry copy-pasted <header>s, two have
-                their own <nav>, and fifteen pages have no chrome at all. */}
-            <LanguageSwitcher />
             <Router />
           </PitchModeProvider>
         </TooltipProvider>

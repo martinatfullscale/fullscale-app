@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useMemo } from "react";
 import { useContent } from "@/content";
 import { motion } from "framer-motion";
@@ -169,6 +170,7 @@ export default function Brands() {
             <img src={logoUrl} alt="FullScale" className="h-7" />
           </a>
           <div className="flex items-center gap-3">
+            <LanguageSwitcher />
             <Badge
               variant="outline"
               className="text-xs font-medium border-emerald-400/40 text-emerald-300 bg-emerald-400/5"

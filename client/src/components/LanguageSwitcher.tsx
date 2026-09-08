@@ -6,13 +6,19 @@ import { hasTranslation, LOCALE_LABEL, OFFERED, SUPPORTED, useLocale, type Local
 /**
  * The language control, top right, on every page.
  *
- * Rendered ONCE at the app root as a fixed element rather than added to each
- * header. There is no shared marketing header in this codebase — Brands,
- * FullScaleCreates, FullScaleStudio and StudioPricing each carry a
- * byte-identical copy-pasted <header>, Landing and Story have their own <nav>,
- * and fifteen pages have no header at all. Adding a button to each would mean
- * six insertion points that immediately drift, and would still miss half the
- * app.
+ * Rendered INLINE, inside each translated page's own nav.
+ *
+ * It began as a single fixed element at the app root, on the reasoning that
+ * this codebase has no shared header and adding a button to each of six
+ * would drift. Two things overturned that. Scoping the switcher to the four
+ * pages that actually have Arabic cut the insertion points from six to four —
+ * exactly the pages whose navs were being edited anyway. And a fixed control
+ * in the top corner sits precisely where every one of those navs already puts
+ * its buttons: it overlapped "Sign In" by 59px at 1280, in both directions,
+ * because the trailing edge is the right in English and the left in Arabic and
+ * the nav's actions move with it.
+ *
+ * A floating control cannot dodge that. It belongs in the row.
  *
  * Not a Radix DropdownMenu, deliberately: with two languages a menu is one
  * extra interaction for no information, and this way the control has no
@@ -57,15 +63,7 @@ export function LanguageSwitcher({ className = "" }: { className?: string }) {
   if (!hasTranslation(location)) return null;
 
   return (
-    // inset-inline-end, not right: the control itself has to sit on the
-    // trailing edge in both directions, which is the one place in this file
-    // where "top right" means "top start-of-nothing, end-of-line".
-    <div
-      ref={wrapRef}
-      className={`fixed top-3 z-[60] ${className}`}
-      style={{ insetInlineEnd: "0.75rem" }}
-      data-testid="language-switcher"
-    >
+    <div ref={wrapRef} className={`relative ${className}`} data-testid="language-switcher">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -83,7 +81,8 @@ export function LanguageSwitcher({ className = "" }: { className?: string }) {
         <ul
           role="listbox"
           aria-label="Language"
-          className="absolute mt-1.5 min-w-[9rem] rounded-lg border border-white/15 bg-background/95 backdrop-blur shadow-xl overflow-hidden"
+          // z above the nav so the menu is not clipped by a sticky header.
+          className="absolute z-50 mt-1.5 min-w-[9rem] rounded-lg border border-white/15 bg-background/95 backdrop-blur shadow-xl overflow-hidden"
           style={{ insetInlineEnd: 0 }}
         >
           {choices.map((l) => {

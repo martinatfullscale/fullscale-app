@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useContent } from "@/content";
 import { motion, AnimatePresence, useInView } from "framer-motion";
 import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2, Briefcase, MousePointerClick, CalendarCheck } from "lucide-react";
@@ -1407,6 +1408,7 @@ export default function Landing() {
               /brand-signup, the approval-gated form), and "Sign In"
               for returning users. */}
           <div className="hidden min-[600px]:flex items-center gap-3">
+            <LanguageSwitcher />
             <a
               href="/brands"
               className="px-5 py-2 rounded-lg font-medium text-sm border border-emerald-400/40 text-emerald-300 bg-emerald-400/5 backdrop-blur-sm hover:bg-emerald-400/15 transition-colors min-h-[44px] flex items-center gap-2"
@@ -1429,6 +1431,11 @@ export default function Landing() {
               the extra 16px bought nothing visually and was the last of the
               budget the wordmark needed to stay on one line down to 354px. */}
           <div className="flex min-[600px]:hidden items-center gap-3 ml-2">
+            {/* Also here, not only in the desktop group above: that group is
+                min-[600px] and hidden on a phone, so the switcher was in the
+                DOM at 390px and invisible — a language control the mobile
+                homepage did not have. */}
+            <LanguageSwitcher />
             <a
               href="/brands"
               className="p-2 rounded-lg border border-emerald-400/40 text-emerald-300 bg-emerald-400/5 backdrop-blur-sm hover:bg-emerald-400/15 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"

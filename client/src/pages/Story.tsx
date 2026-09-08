@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { Link } from "wouter";
 import { motion } from "framer-motion";
 import { ArrowLeft, Mail, Play, X } from "lucide-react";
@@ -388,14 +389,17 @@ export default function Story() {
         <Link href="/" data-testid="link-about-logo">
           <img src={logoUrl} alt="FullScale Creator Portal" className="h-9 md:h-10 w-auto" />
         </Link>
-        <Link
-          href="/"
-          className="text-sm text-muted-foreground hover:text-white transition-colors inline-flex items-center gap-2"
-          data-testid="link-about-home"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          {c.nav.backHome}
-        </Link>
+        <div className="flex items-center gap-4">
+          <LanguageSwitcher />
+          <Link
+            href="/"
+            className="text-sm text-muted-foreground hover:text-white transition-colors inline-flex items-center gap-2"
+            data-testid="link-about-home"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            {c.nav.backHome}
+          </Link>
+        </div>
       </nav>
 
       <main>
