@@ -44,16 +44,24 @@ the closest thing to a direct competitor's own vocabulary.
 
 Confirmed in the same sources. Not in doubt.
 
-## 4. surface — **مساحة العرض** — *a coinage, and it is ours*
+## 4. space — **مساحة** — *resolved, by changing the English*
 
-This is FullScale's own term of art. No dictionary or industry source will settle it, because
-the concept barely exists elsewhere: the specific in-frame spot where a product could sit.
+This was the hardest entry on the list. The English word was **surface**, which is FullScale's
+own term of art — the specific in-frame spot where a product could sit — and no dictionary could
+settle its Arabic, because the concept barely exists elsewhere.
 
-That makes it the most important one to get right and the one no amount of research can answer.
-Options a reviewer should weigh: **مساحة العرض** (display space), **موضع** (position/spot),
-**مساحة** alone, or leaving it as a defined term introduced once on the page. Whatever is
-chosen has to work as a countable noun — the product says "4 surfaces", "approve a surface",
-"a surface your creator hasn't opened".
+It stopped being a problem on 2026-09-06, when the English term changed from *surface* to
+**space**. That is a plainer word in English, and it has a direct, unambiguous Arabic equivalent
+in **مساحة** — no coinage, no compound, no explanation needed. The two-word placeholder
+*مساحة العرض* is gone.
+
+It still has to work as a countable noun, and it does: *4 spaces*, *approve a space*,
+*a space your creator hasn't opened* — **4 مساحات**، **الموافقة على مساحة**.
+
+Note for whoever reviews the rest of the product: *surface* survives in the CODE — the
+`detected_surfaces` table, `surfaceType`, `surfaceId`, and 19 API response keys. That is
+deliberate. Renaming 2,889 code references is a database migration with no user-visible benefit,
+and the identifiers are not read by anyone outside the team.
 
 ## 5. placement (a single transaction) — **إدراج** — *unverified, and it should follow §1*
 

@@ -2428,7 +2428,7 @@ export default function PlacementPreviewModal({
       toast({
         title: "Product comes from another fixture",
         description:
-          "This surface inherits it from a placement saved elsewhere. Delete that placement in Saved Placements to remove it everywhere.",
+          "This space inherits it from a placement saved elsewhere. Delete that placement in Saved Placements to remove it everywhere.",
       });
       return;
     }
@@ -2557,7 +2557,7 @@ export default function PlacementPreviewModal({
       toast({
         title: "Placement saved",
         description: anchorGroupId
-          ? `Applies to exactly ${scopeCount} surface${scopeCount === 1 ? "" : "s"} — nowhere else.`
+          ? `Applies to exactly ${scopeCount} space${scopeCount === 1 ? "" : "s"} — nowhere else.`
           : propagated > 0
           ? `Saved and auto-applied to ${propagated} matching scene${propagated > 1 ? 's' : ''} across the video.`
           : "Placement submitted! Our team reviews every placement and produces the final polished render — track its status in Saved Placements.",
@@ -3160,7 +3160,7 @@ export default function PlacementPreviewModal({
                     <div className="absolute inset-0 flex items-center justify-center">
                       <div className="text-center text-muted-foreground">
                         <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                        <p>Select a surface to preview</p>
+                        <p>Select a space to preview</p>
                       </div>
                     </div>
                   )}
@@ -3335,7 +3335,7 @@ export default function PlacementPreviewModal({
                         >
                           <img
                             src={surface.frameUrl!}
-                            alt={`Surface ${surface.displayLabel || surface.surfaceType}`}
+                            alt={`Space ${surface.displayLabel || surface.surfaceType}`}
                             className="w-full h-full object-cover"
                           />
                           {/* Scope checkbox — is this canonical surface in
@@ -3353,7 +3353,7 @@ export default function PlacementPreviewModal({
                               <span
                                 role="checkbox"
                                 aria-checked={checked}
-                                title={!gid ? "Legacy detection — cannot be scoped" : isAnchorGroup ? `${fixtureName} — anchor surface, always included` : checked ? `${fixtureName} — included in placement scope` : `${fixtureName} — excluded from placement scope`}
+                                title={!gid ? "Legacy detection — cannot be scoped" : isAnchorGroup ? `${fixtureName} — anchor space, always included` : checked ? `${fixtureName} — included in placement scope` : `${fixtureName} — excluded from placement scope`}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   if (!gid || isAnchorGroup) return;
@@ -3421,7 +3421,7 @@ export default function PlacementPreviewModal({
                       {isDenseScanning
                         ? "Analyzing video frames... Product tracking will improve once complete."
                         : isVideoMode && motionData?.source === "gemini-keyframes"
-                        ? "Playing with AI surface tracking — product follows the physical surface"
+                        ? "Playing with AI space tracking — product follows the physical space"
                         : isVideoMode
                         ? "Playing with camera motion tracking — product follows camera movement"
                         : "Drag to move | Corner handles to resize | Orange dot to rotate | Play to preview"
@@ -3665,7 +3665,7 @@ export default function PlacementPreviewModal({
                         <div className="p-3 rounded-xl bg-white/5 border border-white/10">
                           <h4 className="text-xs font-medium text-white mb-2">How it works</h4>
                           <ol className="text-xs text-muted-foreground space-y-1.5 list-decimal list-inside">
-                            <li>Select an ad surface from the video</li>
+                            <li>Select an ad space from the video</li>
                             <li>Upload your product or brand image</li>
                             <li>Drag to reposition, resize, and rotate</li>
                             <li>Adjust blend, shadow, and lighting</li>

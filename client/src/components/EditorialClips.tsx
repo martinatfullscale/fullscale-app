@@ -190,7 +190,7 @@ export default function EditorialClips({ videoId, mode, initialSearch, onSeedCon
       if (res.status === 202) {
         toast({
           title: body.mode === "full_scan" ? "Scanning source video" : "Scanning clip range",
-          description: body.message || "Surfaces appear here when the scan finishes.",
+          description: body.message || "Spaces appear here when the scan finishes.",
         });
       } else if (res.status === 409) {
         toast({ title: "Already scanning", description: "This clip's scan is still running." });

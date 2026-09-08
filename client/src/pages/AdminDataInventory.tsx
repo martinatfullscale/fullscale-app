@@ -227,7 +227,7 @@ function RoomModelSection() {
   const onForget = (m: RoomModelRow) => {
     const ok = confirm(
       `Forget ${creatorLabel(m)}'s set memory?\n\n` +
-      `${plural(m.surfaceCount, "canonical surface")} will be dropped, and their next scan ` +
+      `${plural(m.surfaceCount, "canonical space")} will be dropped, and their next scan ` +
       `will rediscover this set from scratch.\n\n` +
       `Any brand placement anchored to this set loses its cross-scan link — the rebuilt ` +
       `model gets a new identity, so those placements won't re-match automatically.`

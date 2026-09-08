@@ -76,7 +76,7 @@ const demoVideoData = [
     brandSafety: 99,
     cpm: 48,
     opportunity: "Perfect for: Peripheral Placement or Drinkware",
-    surfaceLabel: "Available Surface: Desk Mat",
+    surfaceLabel: "Available Space: Desk Mat",
     boundingBox: { top: "55%", left: "50%", width: "40%", height: "35%" },
     sentiment: "Educational",
     culturalContext: "Western Home Office"
@@ -95,7 +95,7 @@ const demoVideoData = [
     brandSafety: 98,
     cpm: 42,
     opportunity: "Perfect for: Kitchen Gadgets or Food Products",
-    surfaceLabel: "Available Surface: Counter",
+    surfaceLabel: "Available Space: Counter",
     boundingBox: { top: "60%", left: "20%", width: "45%", height: "30%" },
     sentiment: "Uplifting",
     culturalContext: "American Kitchen"
@@ -114,7 +114,7 @@ const demoVideoData = [
     brandSafety: 97,
     cpm: 38,
     opportunity: "Perfect for: Audio Equipment or Beverages",
-    surfaceLabel: "Available Surface: Table",
+    surfaceLabel: "Available Space: Table",
     boundingBox: { top: "50%", left: "30%", width: "40%", height: "35%" },
     sentiment: "Serious",
     culturalContext: "Podcast Studio"
@@ -133,7 +133,7 @@ const demoVideoData = [
     brandSafety: 100,
     cpm: 52,
     opportunity: "Perfect for: Fitness Equipment or Apparel",
-    surfaceLabel: "Available Surface: Floor/Wall",
+    surfaceLabel: "Available Space: Floor/Wall",
     boundingBox: { top: "30%", left: "60%", width: "35%", height: "50%" },
     sentiment: "Uplifting",
     culturalContext: "Home Gym"
@@ -152,7 +152,7 @@ const demoVideoData = [
     brandSafety: 95,
     cpm: 36,
     opportunity: "Perfect for: Laptop Accessories or Coffee Brands",
-    surfaceLabel: "Available Surface: Table",
+    surfaceLabel: "Available Space: Table",
     boundingBox: { top: "45%", left: "25%", width: "50%", height: "40%" },
     sentiment: "Educational",
     culturalContext: "Urban Cafe"
@@ -171,7 +171,7 @@ const demoVideoData = [
     brandSafety: 88,
     cpm: 32,
     opportunity: "Perfect for: Tool Brands or Hardware",
-    surfaceLabel: "Available Surface: Workbench",
+    surfaceLabel: "Available Space: Workbench",
     boundingBox: { top: "40%", left: "15%", width: "45%", height: "45%" },
     sentiment: "Educational",
     culturalContext: "American Garage Workshop"
@@ -242,7 +242,7 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
   const sceneSummary = (video as any).sceneSummary ?? null;
   if (sceneSummary && sceneSummary.surfaceCount > 0) {
     return {
-      status: `${sceneSummary.surfaceCount} surface${sceneSummary.surfaceCount !== 1 ? "s" : ""} · ${sceneSummary.sceneCount} scene${sceneSummary.sceneCount !== 1 ? "s" : ""}`,
+      status: `${sceneSummary.surfaceCount} space${sceneSummary.surfaceCount !== 1 ? "s" : ""} · ${sceneSummary.sceneCount} scene${sceneSummary.sceneCount !== 1 ? "s" : ""}`,
       statusColor: "bg-emerald-500/20 text-emerald-400",
       statusDot: "bg-emerald-500",
       aiStatus: "ready",
@@ -256,7 +256,7 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
       statusColor: "bg-emerald-500/20 text-emerald-400",
       statusDot: "bg-emerald-500",
       aiStatus: "ready",
-      aiText: `${adOpportunities} Surfaces Found`
+      aiText: `${adOpportunities} Spaces Found`
     };
   }
   
@@ -268,7 +268,7 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
       statusColor: spots > 0 ? "bg-emerald-500/20 text-emerald-400" : "bg-zinc-500/20 text-zinc-400",
       statusDot: spots > 0 ? "bg-emerald-500" : "bg-zinc-500",
       aiStatus: "ready",
-      aiText: `${spots} Surfaces Found`
+      aiText: `${spots} Spaces Found`
     };
   }
   
@@ -280,7 +280,7 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
       ? (video as any).status.split(/—|-/).slice(1).join("-").trim()
       : "";
     return {
-      status: failDetail ? `Scan Failed — Retry` : "No Surfaces - Retry",
+      status: failDetail ? `Scan Failed — Retry` : "No Spaces - Retry",
       statusColor: "bg-amber-500/20 text-amber-400",
       statusDot: "bg-amber-500",
       aiStatus: "retry",
@@ -413,8 +413,8 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
 
   const handleApprove = () => {
     toast({
-      title: "Surface Approved",
-      description: "This surface is now visible to brands as a placement option.",
+      title: "Space Approved",
+      description: "This space is now visible to brands as a placement option.",
     });
     onClose();
   };
@@ -450,7 +450,7 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
             )}
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 to-transparent p-4">
               <p className="text-white/70 text-xs font-mono">
-                {firstSurface ? `frame @ ${firstSurface.timestamp}s` : "No surfaces detected"}
+                {firstSurface ? `frame @ ${firstSurface.timestamp}s` : "No spaces detected"}
               </p>
             </div>
           </div>
@@ -813,7 +813,7 @@ export default function Library() {
             imageUrl: fallbackImage,
             surfaces: 0,
             surfaceTypes: [],
-            context: "No surfaces detected yet - scan video to detect placement surfaces",
+            context: "No spaces detected yet - scan video to detect placement spaces",
             confidence: 0,
           }];
           
@@ -845,7 +845,7 @@ export default function Library() {
       imageUrl: videoThumbnailEmpty || `/uploads/frames/${videoId}/frame_0s.jpg`,
       surfaces: 0,
       surfaceTypes: [],
-      context: "No scan data - click 'Scan with AI' to detect surfaces",
+      context: "No scan data - click 'Scan with AI' to detect spaces",
       confidence: 0,
     }];
     setSceneVideo({
@@ -1079,7 +1079,7 @@ export default function Library() {
             if (video.status?.toLowerCase().includes("ready") && video.adOpportunities > 0) {
               toast({
                 title: "Scan Complete",
-                description: `Found ${video.adOpportunities} ad placement surfaces. Click the video to view details.`,
+                description: `Found ${video.adOpportunities} ad placement spaces. Click the video to view details.`,
               });
             } else if (video.status?.toLowerCase().startsWith("scan failed")) {
               toast({
@@ -1089,8 +1089,8 @@ export default function Library() {
               });
             } else {
               toast({
-                title: "No Surfaces Found",
-                description: "No suitable ad placement surfaces were detected in this video. Try a different video with visible desks, tables, or monitors.",
+                title: "No Spaces Found",
+                description: "No suitable ad placement spaces were detected in this video. Try a different video with visible desks, tables, or monitors.",
               });
             }
           }
@@ -1256,8 +1256,8 @@ export default function Library() {
     },
     onSuccess: (data, videoId) => {
       toast({
-        title: "Surface Scan Started",
-        description: "Analyzing your video for placement surfaces. This may take 1-2 minutes.",
+        title: "Space Scan Started",
+        description: "Analyzing your video for placement spaces. This may take 1-2 minutes.",
       });
 
       // Poll for scan completion by checking actual video status
@@ -1289,7 +1289,7 @@ export default function Library() {
             if (video.status?.toLowerCase().includes("ready") && video.adOpportunities > 0) {
               toast({
                 title: "Scan Complete",
-                description: `Found ${video.adOpportunities} placement surfaces. Click the video to view details.`,
+                description: `Found ${video.adOpportunities} placement spaces. Click the video to view details.`,
               });
             } else if (video.status?.toLowerCase().startsWith("scan failed")) {
               toast({
@@ -1299,8 +1299,8 @@ export default function Library() {
               });
             } else {
               toast({
-                title: "No Surfaces Found",
-                description: "No suitable placement surfaces detected in this video.",
+                title: "No Spaces Found",
+                description: "No suitable placement spaces detected in this video.",
               });
             }
           }
@@ -1326,7 +1326,7 @@ export default function Library() {
         return next;
       });
       toast({
-        title: "Surface Scan Failed",
+        title: "Space Scan Failed",
         description: error.message,
         variant: "destructive",
       });
@@ -1866,7 +1866,7 @@ export default function Library() {
                       {/* Only for sources the cloud scan can FETCH (YouTube /
                           pasted-URL). A local upload whose file is gone has no
                           source to pull — a green Scan there could only fail
-                          with a misleading "No Surfaces Found", so it keeps an
+                          with a misleading "No Spaces Found", so it keeps an
                           honest "re-upload" badge instead. */}
                       {!video.hasLocalFile && !(video.platform === "fullscale" || String(video.youtubeId ?? "").startsWith("upload-")) && (video.aiStatus === "pending" || video.aiStatus === "retry" || scanningVideoIds.has(video.id)) && (
                         <div

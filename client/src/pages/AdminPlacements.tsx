@@ -252,7 +252,7 @@ export default function AdminPlacements() {
           {data?.seekSec != null && (
             <p className="text-[11px] text-muted-foreground mt-1">
               Seeked to {Math.floor(data.seekSec / 60)}:{String(Math.floor(data.seekSec % 60)).padStart(2, "0")}
-              {data?.clip ? " — clip start" : " — surface timestamp"}
+              {data?.clip ? " — clip start" : " — space timestamp"}
             </p>
           )}
         </div>

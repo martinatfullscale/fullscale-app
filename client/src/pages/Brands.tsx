@@ -79,7 +79,7 @@ const FRICTION_TRADITIONAL = [
 
 const FRICTION_FULLSCALE = [
   { icon: Sparkles, text: "Pick content that already has proven engagement" },
-  { icon: Target, text: "Our AI matches your product to contextually-relevant surfaces" },
+  { icon: Target, text: "Our AI matches your product to contextually-relevant spaces" },
   { icon: FlaskConical, text: "Test placements across multiple creators at once" },
   { icon: TrendingUp, text: "Scale only the variants that actually perform" },
 ];
@@ -138,7 +138,7 @@ const SHOWCASE_SCENES = [
     label: "Gaming Setup",
     sceneNumber: "Scene 3 of 3",
     description:
-      "A gaming desk at dusk — dual monitors, mechanical RGB keyboard, desk mat with RGB underglow, gaming chair blurred in the background. Drag to see a Monster Energy can land to the left of the keyboard. The can picks up the warm RGB light in its reflections and drops a clean shadow across the desk surface.",
+      "A gaming desk at dusk — dual monitors, mechanical RGB keyboard, desk mat with RGB underglow, gaming chair blurred in the background. Drag to see a Monster Energy can land to the left of the keyboard. The can picks up the warm RGB light in its reflections and drops a clean shadow across the desk space.",
     reality: sceneGamerReality,
     augmented: sceneGamerAugmented,
     realityAlt: "Gaming desk with dual monitors, RGB keyboard, and accent lighting",
@@ -160,7 +160,7 @@ const PLACEMENT_STEPS = [
     step: "Step 2",
     title: "Our AI scans creator content",
     description:
-      "FullScale's surface engine analyzes the existing videos in your matched creators' libraries. Every flat surface, every empty frame, every moment your product could live in — identified, scored, and ranked.",
+      "FullScale's space engine analyzes the existing videos in your matched creators' libraries. Every flat surface, every empty frame, every moment your product could live in — identified, scored, and ranked.",
   },
   {
     icon: CheckCircle2,
@@ -189,7 +189,7 @@ const TEST_AND_LEARN = [
     icon: FlaskConical,
     title: "A/B placement variants",
     description:
-      "Same video, two surfaces, two product treatments. Find the variant that converts before you commit to a full flight.",
+      "Same video, two spaces, two product treatments. Find the variant that converts before you commit to a full flight.",
   },
   {
     icon: Gauge,

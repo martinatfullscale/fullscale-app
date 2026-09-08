@@ -824,7 +824,7 @@ export default function SharedView() {
             </DialogDescription>
           </DialogHeader>
           <Textarea
-            placeholder="e.g., Please adjust the product position to be more centered on the surface, and increase the opacity slightly."
+            placeholder="e.g., Please adjust the product position to be more centered on the space, and increase the opacity slightly."
             value={revisionNote}
             onChange={(e) => setRevisionNote(e.target.value)}
             rows={4}

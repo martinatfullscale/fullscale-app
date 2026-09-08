@@ -1020,7 +1020,7 @@ export default function RemixEngine() {
 
   const assignProduct = useCallback(async (product: CatalogProduct) => {
     if (!selectedTrack) {
-      toast({ title: "Select a surface first", description: "Click a surface pill below the video." });
+      toast({ title: "Select a space first", description: "Click a space pill below the video." });
       return;
     }
     try {
@@ -1352,7 +1352,7 @@ export default function RemixEngine() {
             : "Placements persisted. They'll auto-load next time you open the Placement Engine.",
         });
       } else {
-        toast({ title: "No placements saved", description: "Could not match any assignments to surfaces.", variant: "destructive" });
+        toast({ title: "No placements saved", description: "Could not match any assignments to spaces.", variant: "destructive" });
       }
     } catch (err: any) {
       toast({ title: "Save failed", description: err.message, variant: "destructive" });
@@ -1790,7 +1790,7 @@ export default function RemixEngine() {
                   <div className="text-center py-8">
                     <Move className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
                     <p className="text-xs text-muted-foreground">
-                      {selectedTrack ? "Assign a product first" : "Select a surface first"}
+                      {selectedTrack ? "Assign a product first" : "Select a space first"}
                     </p>
                   </div>
                 ) : (
@@ -1896,7 +1896,7 @@ export default function RemixEngine() {
                   <div className="text-center py-8">
                     <Blend className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
                     <p className="text-xs text-muted-foreground">
-                      {selectedTrack ? "Assign a product first" : "Select a surface first"}
+                      {selectedTrack ? "Assign a product first" : "Select a space first"}
                     </p>
                   </div>
                 ) : (

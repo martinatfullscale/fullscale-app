@@ -24,7 +24,7 @@ import type { StoryContent } from "./types";
  *   product placement  موضعة المنتج       (rather than a transliteration)
  *   creator            صانع المحتوى
  *   brand              العلامة التجارية
- *   surface            مساحة العرض           (the in-frame spot a product sits on)
+ *   surface            مساحة           (the in-frame spot a product sits on)
  *   placement          إدراج
  *   marketplace        السوق
  *   FullScale          left in Latin, deliberately — see docs/PLAN_ARABIC.md §7

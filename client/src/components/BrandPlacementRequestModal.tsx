@@ -344,7 +344,7 @@ export function BrandPlacementRequestModal({
         title: "Placement request sent",
         // Name the destination. The brand was left on the marketplace with no
         // idea which page now holds the thing they just created.
-        description: `${data.count} surface${data.count !== 1 ? "s" : ""} sent to the creator for approval. Track it under Requests.`,
+        description: `${data.count} space${data.count !== 1 ? "s" : ""} sent to the creator for approval. Track it under Requests.`,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/brand/placements"] });
       queryClient.invalidateQueries({ queryKey: [`/api/videos/${videoId}/placements/approved`] });
@@ -366,8 +366,8 @@ export function BrandPlacementRequestModal({
           );
           setConflictSurfaceIds(conflictIds);
           toast({
-            title: "Some surfaces are already taken",
-            description: `${conflictIds.size} of your selected surfaces have an active placement from another brand. Deselect those and try again.`,
+            title: "Some spaces are already taken",
+            description: `${conflictIds.size} of your selected spaces have an active placement from another brand. Deselect those and try again.`,
             variant: "destructive",
           });
           return;
@@ -573,14 +573,14 @@ export function BrandPlacementRequestModal({
           {/* Surface picker */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">Surfaces to place on</label>
+              <label className="text-sm font-medium">Spaces to place on</label>
               <span className="text-xs text-muted-foreground">
                 {selectedSurfaceIds.size} selected
               </span>
             </div>
             {surfacesLoading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="w-4 h-4 animate-spin" /> Loading surfaces…
+                <Loader2 className="w-4 h-4 animate-spin" /> Loading spaces…
               </div>
             ) : surfaces.length === 0 ? (
               <div className="rounded-md border border-border/50 p-3 text-sm text-muted-foreground">

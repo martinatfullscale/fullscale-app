@@ -79,7 +79,7 @@ export default function ClipPlacementPreview({ clipId, videoId, clipTitle, onClo
     queryKey: ["/api/editorial-clips", clipId, "surfaces"],
     queryFn: async () => {
       const res = await fetchWithTimeout(`/api/editorial-clips/${clipId}/surfaces`, { credentials: "include" });
-      if (!res.ok) throw new Error("surfaces unavailable");
+      if (!res.ok) throw new Error("spaces unavailable");
       return res.json();
     },
     // While a scan runs, keep the panel live so surfaces appear as they land.

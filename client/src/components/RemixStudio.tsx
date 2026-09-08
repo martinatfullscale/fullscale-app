@@ -399,7 +399,7 @@ export default function RemixStudio({ videoId, open, onClose, initialSearch, onS
       }
       case "add_placement": {
         if (!data?.surfaceId || !data?.productId) {
-          toast({ title: "Placement suggestion", description: suggestion.reason || "Suggestion lacks a surface/product to auto-apply" });
+          toast({ title: "Placement suggestion", description: suggestion.reason || "Suggestion lacks a space/product to auto-apply" });
           break;
         }
         (async () => {
@@ -425,7 +425,7 @@ export default function RemixStudio({ videoId, open, onClose, initialSearch, onS
               }),
             });
             if (res.ok) {
-              toast({ title: "Placement saved", description: `${data.productName || "Product"} placed on surface #${data.surfaceId} — fine-tune in the Placement editor` });
+              toast({ title: "Placement saved", description: `${data.productName || "Product"} placed on space #${data.surfaceId} — fine-tune in the Placement editor` });
             } else {
               const err = await res.json().catch(() => ({}));
               toast({ title: "Placement failed", description: err.error || "Could not save placement", variant: "destructive" });
@@ -440,7 +440,7 @@ export default function RemixStudio({ videoId, open, onClose, initialSearch, onS
         const surfaceId = data?.targetSurface;
         const productId = data?.productId;
         if (!surfaceId || !productId) {
-          toast({ title: "Asset suggestion", description: `${suggestion.reason} (needs a target surface + product to auto-generate)` });
+          toast({ title: "Asset suggestion", description: `${suggestion.reason} (needs a target space + product to auto-generate)` });
           break;
         }
         toast({ title: "Generating asset", description: "AI asset generation started — this can take ~30s" });
@@ -452,7 +452,7 @@ export default function RemixStudio({ videoId, open, onClose, initialSearch, onS
         })
           .then(async (res) => {
             if (res.ok) {
-              toast({ title: "Asset generated", description: "Product asset created for the target surface" });
+              toast({ title: "Asset generated", description: "Product asset created for the target space" });
             } else {
               const err = await res.json().catch(() => ({}));
               toast({ title: "Asset generation failed", description: err.error || "Generation failed", variant: "destructive" });

@@ -919,7 +919,7 @@ export default function CreatorProfile() {
       <Dialog open={isPreviewOpen} onOpenChange={() => setIsPreviewOpen(false)}>
         <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Ad Surfaces Detected</DialogTitle>
+            <DialogTitle>Ad Spaces Detected</DialogTitle>
             <DialogDescription>
               {previewVideo && (
                 <span>
@@ -943,7 +943,7 @@ export default function CreatorProfile() {
                     <div className="relative aspect-video bg-muted">
                       <img
                         src={surface.frameUrl!}
-                        alt={`Surface at ${surface.timestamp}s`}
+                        alt={`Space at ${surface.timestamp}s`}
                         className="w-full h-full object-contain"
                         onError={(e) => {
                           (e.target as HTMLImageElement).style.display = "none";
@@ -979,7 +979,7 @@ export default function CreatorProfile() {
 
               {previewVideo.surfaces.filter((s) => s.frameUrl).length === 0 && (
                 <div className="py-12 text-center text-muted-foreground">
-                  <p>Surface frames are being processed. Check back soon.</p>
+                  <p>Space frames are being processed. Check back soon.</p>
                 </div>
               )}
             </div>

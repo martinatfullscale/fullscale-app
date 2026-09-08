@@ -967,7 +967,7 @@ function RealityToAugmentedTransition() {
         {/* Reality image (base - empty counter, shows when slider is left) */}
         <img 
           src={realityImg} 
-          alt="Reality - Empty counter surface" 
+          alt="Reality - Empty counter space" 
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
           data-testid="img-reality-base"
           draggable={false}
@@ -1185,7 +1185,7 @@ const DEMO_SCENES: Record<
   tech: {
     label: "Tech / Review",
     caption:
-      "Creator tech desk — boom-arm mic, monitor, clean surface. Our AI lands an AirPods Pro case on the desk with lighting matched to the soft key light above.",
+      "Creator tech desk — boom-arm mic, monitor, clean space. Our AI lands an AirPods Pro case on the desk with lighting matched to the soft key light above.",
     reality: demoTechReality,
     augmented: demoTechAugmented,
   },
