@@ -21,7 +21,7 @@ import type { StoryContent } from "./types";
  * The page renders whatever this object contains.
  *
  * GLOSSARY DECISIONS TAKEN HERE, all open to being overruled:
- *   product placement  موضعة المنتج       (rather than a transliteration)
+ *   product placement  التسويق المُدمج       (rather than a transliteration)
  *   creator            صانع المحتوى
  *   brand              العلامة التجارية
  *   surface            مساحة العرض           (the in-frame spot a product sits on)
@@ -42,7 +42,7 @@ export const storyAr: StoryContent = {
       "كتبها وصوّرها الشخصان اللذان يبنيانها — الفكرة، والأجزاء الصريحة، والمقاطع التي نقولها فيها بصوتنا. وستجد هنا أيضًا تجارب صناع المحتوى والعلامات التجارية، حالما تتوفر عمليات إدراج تستحق العرض.",
   },
 
-  thesis: "موضعة المنتج موجود منذ قرن. ولم يُعرض على صناع المحتوى تقريبًا في أي يوم.",
+  thesis: "التسويق المُدمج موجود منذ قرن. ولم يُعرض على صناع المحتوى تقريبًا في أي يوم.",
 
   byline: { label: "بقلم", linkedin: "لينكدإن" },
 

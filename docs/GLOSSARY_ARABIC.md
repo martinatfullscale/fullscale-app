@@ -12,26 +12,43 @@ are wrong after five pages are translated is not.
 
 ---
 
-## 1. product placement — **MY DRAFT WAS WRONG**
+## 1. product placement — **التسويق المُدمج** — *changed 2026-09-08, and read the warning*
 
-I used **توظيف المنتجات**. It appears in no established source I can find. I invented it.
+My first draft used **توظيف المنتجات**, which I invented. It appears in no source. The second used
+**موضعة المنتج** — "positioning of the product" — which is real, but transactional: it describes
+the act of putting a thing somewhere.
 
-The terms actually in use:
+The steer was to make it read closer to *product in entertainment* — the product living inside
+something a person chose to watch, rather than a slot being filled. That is a better description
+of what FullScale does, and Arabic has a term for it that is already attested as a synonym:
 
-| Term | Literal sense | Used by |
+| Term | Sense | Source |
 |---|---|---|
-| **موضعة المنتج** | positioning of the product | [Arabic Wikipedia](https://ar.wikipedia.org/wiki/موضعة_المنتج) |
-| **الإشارة إلى المنتج** | reference to the product | [Harvard Business Review Arabic](https://hbrarabic.com/المفاهيم-الادارية/الإشارة-إلى-المنتج/) |
-| **التسويق الضمني** / **الإعلان الضمني** | embedded marketing / embedded advertising | HBR Arabic, general marketing press |
+| **التسويق المُدمج** | integrated / embedded marketing — the product woven into the work | [Arabic Wikipedia](https://ar.wikipedia.org/wiki/موضعة_المنتج), which gives it as the alternative name for موضعة المنتج |
+| موضعة المنتج | positioning of the product — the transactional act | same |
+| الإشارة إلى المنتج | reference to the product — closer to a mention | [Harvard Business Review Arabic](https://hbrarabic.com/المفاهيم-الادارية/الإشارة-إلى-المنتج/) |
 
-**Reviewer's call.** My reading, offered as a starting point and not a recommendation I can
-stand behind: *موضعة المنتج* is closest to what FullScale actually does — putting a product in a
-position within a frame — whereas *الإشارة إلى المنتج* reads closer to a mention, and
-*التسويق الضمني* names the category rather than the act. But this is exactly the judgement a
-native marketer should make, not me.
+The files now carry **التسويق المُدمج**.
 
-The files currently carry **موضعة المنتج** as a placeholder because it has the strongest
-sourcing, not because it has been chosen.
+### The warning — three obvious terms would misdescribe the product
+
+Searching for the "product in entertainment" framing surfaces three terms that sound exactly
+right and are exactly wrong for FullScale:
+
+- **المحتوى المميز بالعلامة التجارية** / branded content — [HBR Arabic](https://hbrarabic.com/المفاهيم-الادارية/المحتوى-المميز-بالعلامة-التجارية/) defines it as content *funded or produced by the advertiser*.
+- **الترفيه ذو العلامة التجارية** / branded entertainment — [same](https://ar.wikipedia.org/wiki/محتوى_ذو_علامة_تجارية) premise.
+- **الترفيه الإعلاني** / advertainment — [HBR Arabic](https://hbrarabic.com/المفاهيم-الادارية/الترفيه-الاعلاني/): advertising elements placed into entertainment *the company produces*.
+
+All three assume the brand commissioned the content. FullScale's entire proposition is the
+opposite: **the creator already made the video, owns it, and the product goes in afterwards.**
+Using any of them in Arabic would not be a clumsy translation — it would describe a different
+business, and it would undercut the one thing the marketing pages spend their whole length
+arguing. Do not let a translator reach for them because they read more naturally.
+
+**Still for a native reviewer to confirm**, and the reason to ask specifically: التسويق المُدمج is
+attested, but it is a *marketing-category* noun. Whether it works as a countable thing a creator
+sells one of — "approve a placement", "three placements this month" — is a judgement call, and
+§5 depends on the answer.
 
 ## 2. creator — **صانع المحتوى** (plural **صنّاع المحتوى**) — *evidenced*
 

@@ -25,6 +25,12 @@ import type { LandingContent } from "./types";
 export const landingEn: LandingContent = {
   nav: {
     logoAlt: "FullScale Creator Portal",
+    /* NOT wired into the page, deliberately. The nav renders "FullScale
+       Creator Portal" as the app's NAME, and it is there because a Google
+       OAuth reviewer recorded the name as absent from the page — see the
+       comment above it in Landing.tsx. It stays Latin in every locale for the
+       same reason the wordmark does. Kept here so the next person sees a
+       decision rather than an omission. */
     wordmark: "FullScale",
     forBrands: "For Brands",
     signIn: "Sign In",

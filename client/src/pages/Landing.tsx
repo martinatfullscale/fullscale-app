@@ -1413,14 +1413,14 @@ export default function Landing() {
               data-testid="link-nav-brands"
             >
               <Briefcase className="w-4 h-4" />
-              For Brands
+              {c.nav.forBrands}
             </a>
             <button
               onClick={handleLoginClick}
               className="px-5 py-2 rounded-lg font-medium text-sm border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] flex items-center"
               data-testid="button-nav-signin"
             >
-              Sign In
+              {c.nav.signIn}
             </button>
           </div>
 
@@ -1433,7 +1433,7 @@ export default function Landing() {
               href="/brands"
               className="p-2 rounded-lg border border-emerald-400/40 text-emerald-300 bg-emerald-400/5 backdrop-blur-sm hover:bg-emerald-400/15 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
               data-testid="link-mobile-brands"
-              aria-label="For Brands"
+              aria-label={c.nav.forBrands}
             >
               <Briefcase className="w-5 h-5" />
             </a>
@@ -1441,7 +1441,7 @@ export default function Landing() {
               onClick={handleLoginClick}
               className="p-2 rounded-lg border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] min-w-[44px] flex items-center justify-center"
               data-testid="button-mobile-signin"
-              aria-label="Sign In"
+              aria-label={c.nav.signIn}
             >
               <User className="w-5 h-5" />
             </button>

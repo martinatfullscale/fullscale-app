@@ -8,7 +8,7 @@ import type { LandingContent } from "./types";
  *
  * Uses the glossary as it stands: صانع المحتوى (creator), العلامة التجارية
  * (brand), مساحة (surface — the one place English and Arabic deliberately
- * diverge in imagery, see §4), موضعة المنتج (product placement, still the
+ * diverge in imagery, see §4), التسويق المُدمج (product placement, see
  * unsettled placeholder).
  *
  * NOTES FOR THE COPYWRITER, specific to this page:
@@ -40,7 +40,7 @@ export const landingAr: LandingContent = {
     titleLead: "نحوّل رواية القصص",
     titleAccent: "إلى إيرادات",
     deck:
-      "موضعة منتجات مدعومة بالذكاء الاصطناعي تضع المنتجات داخل محتواك الحالي بإضاءة وتداخل وتتبّع دقيق — لتوسيع وصولك إلى اقتصاد عالمي.",
+      "تسويق مُدمج مدعوم بالذكاء الاصطناعي يضع المنتجات داخل محتواك الحالي بإضاءة وتداخل وتتبّع دقيق — لتوسيع وصولك إلى اقتصاد عالمي.",
     ctaPrimary: "سجّل الآن",
     ctaSecondary: "معاينة توضيحية",
   },

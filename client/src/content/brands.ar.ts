@@ -8,7 +8,7 @@ import type { BrandsContent } from "./types";
  * tested against text of realistic length, not because it is ready to read.
  *
  * Uses the glossary as it stands: مساحة (space), صانع المحتوى (creator),
- * العلامة التجارية (brand), السوق (marketplace), and موضعة المنتج as the
+ * العلامة التجارية (brand), السوق (marketplace), and التسويق المُدمج as the
  * still-unsettled placeholder for product placement.
  *
  * NOTE FOR THE COPYWRITER: `friction.traditional` and `friction.fullscale`
