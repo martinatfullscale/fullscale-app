@@ -252,7 +252,7 @@ export default function AdminPlacements() {
           {data?.seekSec != null && (
             <p className="text-[11px] text-muted-foreground mt-1">
               Seeked to {Math.floor(data.seekSec / 60)}:{String(Math.floor(data.seekSec % 60)).padStart(2, "0")}
-              {data?.clip ? " — clip start" : " — space timestamp"}
+              {data?.clip ? " — clip start" : " — surface timestamp"}
             </p>
           )}
         </div>
@@ -269,7 +269,7 @@ export default function AdminPlacements() {
           <dl className="text-xs space-y-1">
             {data?.surface && (
               <div className="flex gap-2">
-                <dt className="text-muted-foreground w-20 shrink-0">Space</dt>
+                <dt className="text-muted-foreground w-20 shrink-0">Surface</dt>
                 <dd>{data.surface.surfaceType}{data.surface.timestamp != null ? ` @ ${Math.round(data.surface.timestamp)}s` : ""}</dd>
               </div>
             )}

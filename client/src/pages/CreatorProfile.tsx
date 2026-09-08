@@ -584,7 +584,7 @@ export default function CreatorProfile() {
                 <Target className="h-4 w-4 text-primary" />
                 <span className="text-2xl font-bold text-foreground">{stats.totalSurfaces}</span>
               </div>
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">Ad Spaces</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Ad Surfaces</p>
             </div>
             <div className="text-center">
               <div className="flex items-center justify-center gap-2 mb-1">
@@ -593,7 +593,7 @@ export default function CreatorProfile() {
                   {stats.surfaceTypes.length || 1}
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground uppercase tracking-wide">Space Types</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">Surface Types</p>
             </div>
           </div>
         </div>
@@ -895,7 +895,7 @@ export default function CreatorProfile() {
                         data-testid={`button-view-surfaces-${video.id}`}
                       >
                         <Sparkles className="h-3.5 w-3.5 mr-1.5" />
-                        View Spaces
+                        View Surfaces
                       </Button>
                     )}
                     <Button
@@ -919,7 +919,7 @@ export default function CreatorProfile() {
       <Dialog open={isPreviewOpen} onOpenChange={() => setIsPreviewOpen(false)}>
         <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Ad Spaces Detected</DialogTitle>
+            <DialogTitle>Ad Surfaces Detected</DialogTitle>
             <DialogDescription>
               {previewVideo && (
                 <span>
@@ -943,7 +943,7 @@ export default function CreatorProfile() {
                     <div className="relative aspect-video bg-muted">
                       <img
                         src={surface.frameUrl!}
-                        alt={`Space at ${surface.timestamp}s`}
+                        alt={`Surface at ${surface.timestamp}s`}
                         className="w-full h-full object-contain"
                         onError={(e) => {
                           (e.target as HTMLImageElement).style.display = "none";
@@ -979,7 +979,7 @@ export default function CreatorProfile() {
 
               {previewVideo.surfaces.filter((s) => s.frameUrl).length === 0 && (
                 <div className="py-12 text-center text-muted-foreground">
-                  <p>Space frames are being processed. Check back soon.</p>
+                  <p>Surface frames are being processed. Check back soon.</p>
                 </div>
               )}
             </div>

@@ -190,7 +190,7 @@ export default function EditorialClips({ videoId, mode, initialSearch, onSeedCon
       if (res.status === 202) {
         toast({
           title: body.mode === "full_scan" ? "Scanning source video" : "Scanning clip range",
-          description: body.message || "Spaces appear here when the scan finishes.",
+          description: body.message || "Surfaces appear here when the scan finishes.",
         });
       } else if (res.status === 409) {
         toast({ title: "Already scanning", description: "This clip's scan is still running." });
@@ -1597,7 +1597,7 @@ function EditorialClipCard({
 
                 {onScan && mode !== "brand" && (clip as any).id && (
                   (isScanning || (clip as any).scanInFlight) ? (
-                    <span className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] text-purple-300" title="Scanning for placement spaces">
+                    <span className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] text-purple-300" title="Scanning for placement surfaces">
                       <Loader2 className="w-3 h-3 animate-spin" />
                       Scanning…
                     </span>

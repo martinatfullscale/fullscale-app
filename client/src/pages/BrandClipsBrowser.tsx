@@ -119,7 +119,7 @@ export default function BrandClipsBrowser() {
               Browse Creator Clips
             </h1>
             <p className="text-sm md:text-base text-muted-foreground">
-              Auto-generated story clips ready for product placement. Pick one, choose a space, request placement.
+              Auto-generated story clips ready for product placement. Pick one, choose a surface, request placement.
             </p>
           </div>
         </div>

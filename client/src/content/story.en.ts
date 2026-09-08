@@ -40,19 +40,19 @@ export const storyEn: StoryContent = {
       takeaway: "The gap was never demand. There was simply no way to transact.",
     },
     {
-      rail: "The spaces",
-      heading: "We look for the spaces that are already in frame",
+      rail: "The surfaces",
+      heading: "We look for the surfaces that are already in frame",
       body: [
         "FullScale reads a video and finds the places a product could believably sit: a desk, a counter, a shelf, a wall behind someone's head. Those places already exist in footage that is already published.",
-        "The creator decides which of them are for sale. A brand browsing the marketplace sees only spaces a creator has opened, prices a placement against that video's real reach, and sends a request.",
+        "The creator decides which of them are for sale. A brand browsing the marketplace sees only surfaces a creator has opened, prices a placement against that video's real reach, and sends a request.",
       ],
-      takeaway: "A brand cannot see a space its creator hasn't approved.",
+      takeaway: "A brand cannot see a surface its creator hasn't approved.",
     },
     {
       rail: "The consent",
       heading: "The creator says yes three times",
       body: [
-        "Once when they open a space to the marketplace. Once when a specific brand asks for it and they accept or decline in their inbox. Once when the finished cut is in front of them and they decide whether it goes out at all.",
+        "Once when they open a surface to the marketplace. Once when a specific brand asks for it and they accept or decline in their inbox. Once when the finished cut is in front of them and they decide whether it goes out at all.",
         "None of those steps happen on a timer, and nothing publishes on its own.",
       ],
       takeaway: "We would rather lose a placement than surprise a creator with one.",
@@ -61,7 +61,7 @@ export const storyEn: StoryContent = {
       rail: "The footage",
       heading: "We don't keep your video",
       body: [
-        "To find spaces we pull a video down, take the frames we need, record where the spaces are, and delete the source. When a brand commits we pull it again at full resolution to render, then delete it again.",
+        "To find surfaces we pull a video down, take the frames we need, record where the surfaces are, and delete the source. When a brand commits we pull it again at full resolution to render, then delete it again.",
         "What we hold onto is thumbnails, coordinates and results — the parts that make a marketplace work. The library stays yours, on your channel, under your account.",
       ],
       takeaway: "Your footage is not our inventory.",

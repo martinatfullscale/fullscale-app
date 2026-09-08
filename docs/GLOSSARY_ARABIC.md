@@ -44,24 +44,22 @@ the closest thing to a direct competitor's own vocabulary.
 
 Confirmed in the same sources. Not in doubt.
 
-## 4. space — **مساحة** — *resolved, by changing the English*
+## 4. surface — **مساحة** — *settled*
 
-This was the hardest entry on the list. The English word was **surface**, which is FullScale's
-own term of art — the specific in-frame spot where a product could sit — and no dictionary could
-settle its Arabic, because the concept barely exists elsewhere.
+The English product noun stays **surface**. It was briefly changed to "space" and changed back
+on 2026-09-08: "surface" is the word the product, the code and the marketing have always used,
+and there was no reason to move the English to make the Arabic easier.
 
-It stopped being a problem on 2026-09-06, when the English term changed from *surface* to
-**space**. That is a plainer word in English, and it has a direct, unambiguous Arabic equivalent
-in **مساحة** — no coinage, no compound, no explanation needed. The two-word placeholder
-*مساحة العرض* is gone.
+The Arabic is **مساحة** regardless. A translation does not have to be literal, and مساحة — the
+ordinary word for a space or an area — is what an Arabic reader would use for the in-frame spot a
+product sits on. The near-literal alternative, سطح (a surface in the physical sense, a tabletop),
+reads as the material rather than as the sellable slot, which is the wrong half of the meaning.
 
-It still has to work as a countable noun, and it does: *4 spaces*, *approve a space*,
-*a space your creator hasn't opened* — **4 مساحات**، **الموافقة على مساحة**.
+It has to work as a countable noun and it does: *4 surfaces*, *approve a surface*, *a surface
+your creator hasn't opened* — **٤ مساحات**، **الموافقة على مساحة**.
 
-Note for whoever reviews the rest of the product: *surface* survives in the CODE — the
-`detected_surfaces` table, `surfaceType`, `surfaceId`, and 19 API response keys. That is
-deliberate. Renaming 2,889 code references is a database migration with no user-visible benefit,
-and the identifiers are not read by anyone outside the team.
+This is the one entry where English and Arabic deliberately diverge in imagery, and it is worth a
+reviewer's attention for exactly that reason.
 
 ## 5. placement (a single transaction) — **إدراج** — *unverified, and it should follow §1*
 

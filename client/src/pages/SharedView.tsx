@@ -632,7 +632,7 @@ export default function SharedView() {
                     {/* Surface info */}
                     {data.surfaces.length > 0 && (
                       <div className="text-sm">
-                        <span className="text-muted-foreground">Space: </span>
+                        <span className="text-muted-foreground">Surface: </span>
                         <Badge variant="outline">
                           {data.surfaces.find((s) => s.id === data.placement!.surfaceId)?.surfaceType || "Unknown"}
                         </Badge>
@@ -783,7 +783,7 @@ export default function SharedView() {
             {data.surfaces.length > 0 && (
               <Card>
                 <CardContent className="p-4">
-                  <h3 className="font-semibold mb-3">Detected Spaces</h3>
+                  <h3 className="font-semibold mb-3">Detected Surfaces</h3>
                   <div className="flex flex-wrap gap-1.5">
                     {data.surfaces.map((surface) => (
                       <Badge key={surface.id} variant="outline" className="text-xs">
@@ -824,7 +824,7 @@ export default function SharedView() {
             </DialogDescription>
           </DialogHeader>
           <Textarea
-            placeholder="e.g., Please adjust the product position to be more centered on the space, and increase the opacity slightly."
+            placeholder="e.g., Please adjust the product position to be more centered on the surface, and increase the opacity slightly."
             value={revisionNote}
             onChange={(e) => setRevisionNote(e.target.value)}
             rows={4}

@@ -227,7 +227,7 @@ function RoomModelSection() {
   const onForget = (m: RoomModelRow) => {
     const ok = confirm(
       `Forget ${creatorLabel(m)}'s set memory?\n\n` +
-      `${plural(m.surfaceCount, "canonical space")} will be dropped, and their next scan ` +
+      `${plural(m.surfaceCount, "canonical surface")} will be dropped, and their next scan ` +
       `will rediscover this set from scratch.\n\n` +
       `Any brand placement anchored to this set loses its cross-scan link — the rebuilt ` +
       `model gets a new identity, so those placements won't re-match automatically.`
@@ -252,7 +252,7 @@ function RoomModelSection() {
             <Camera className="w-4 h-4 text-primary" /> Set memory (room models)
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Persistent per-set space memory: one row per recurring camera setup, whose spaces
+            Persistent per-set surface memory: one row per recurring camera setup, whose surfaces
             every future scan confirms instead of re-detecting. Forgetting one makes the next scan
             rediscover that set from scratch — safe, just slower and briefly less consistent.
           </p>
@@ -299,7 +299,7 @@ function RoomModelSection() {
               <thead>
                 <tr className="text-xs text-muted-foreground text-left border-b border-white/10">
                   <th className="p-3 font-medium">Creator</th>
-                  <th className="p-3 font-medium">Spaces</th>
+                  <th className="p-3 font-medium">Surfaces</th>
                   <th className="p-3 font-medium text-right">Episodes</th>
                   <th className="p-3 font-medium text-right">Exemplars</th>
                   <th className="p-3 font-medium">Last video</th>

@@ -355,7 +355,7 @@ export default function Dashboard() {
                 timestamp: timestampStr,
                 imageUrl: normalizeFrameUrl(surface.frameUrl) || videoThumbnail,
                 surfaces: 1,
-                surfaceTypes: [surface.surfaceType || "Space"],
+                surfaceTypes: [surface.surfaceType || "Surface"],
                 context: `Detected ${surface.surfaceType || 'surface'} in video`,
                 confidence: Math.round(confidenceNum * 100),
               };
@@ -365,8 +365,8 @@ export default function Dashboard() {
               timestamp: "00:00",
               imageUrl: videoThumbnail,
               surfaces: 0,
-              surfaceTypes: ["No spaces detected yet"],
-              context: "Click 'Scan Analysis' to detect placement spaces",
+              surfaceTypes: ["No surfaces detected yet"],
+              context: "Click 'Scan Analysis' to detect placement surfaces",
               confidence: 0,
             }];
         
@@ -390,7 +390,7 @@ export default function Dashboard() {
             imageUrl: videoThumbnail,
             surfaces: 0,
             surfaceTypes: ["Scan needed"],
-            context: "Click 'Scan Analysis' to detect placement spaces",
+            context: "Click 'Scan Analysis' to detect placement surfaces",
             confidence: 0,
           }],
         });
@@ -409,7 +409,7 @@ export default function Dashboard() {
           imageUrl: videoThumbnail,
           surfaces: 0,
           surfaceTypes: ["Scan needed"],
-          context: "Click 'Scan Analysis' to detect placement spaces",
+          context: "Click 'Scan Analysis' to detect placement surfaces",
           confidence: 0,
         }],
       });

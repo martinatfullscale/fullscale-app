@@ -378,7 +378,7 @@ export default function AdminCreatorIntelligence() {
                   <SortableTh label="Followers" k="followers" sort={sort} onSort={onSort} />
                   <SortableTh label="ER%" k="er" sort={sort} onSort={onSort} />
                   <SortableTh label="Videos" k="videos" sort={sort} onSort={onSort} />
-                  <SortableTh label="Spaces" k="surfaces" sort={sort} onSort={onSort} />
+                  <SortableTh label="Surfaces" k="surfaces" sort={sort} onSort={onSort} />
                   <SortableTh label="Sellable min" k="minutes" sort={sort} onSort={onSort} />
                   <th className="p-3 font-medium text-center">Funnel (appr/req/placed/rel)</th>
                   <SortableTh label="Clips (gen/rend)" k="clips" sort={sort} onSort={onSort} />

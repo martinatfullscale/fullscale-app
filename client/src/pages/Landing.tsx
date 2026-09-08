@@ -967,7 +967,7 @@ function RealityToAugmentedTransition() {
         {/* Reality image (base - empty counter, shows when slider is left) */}
         <img 
           src={realityImg} 
-          alt="Reality - Empty counter space" 
+          alt="Reality - Empty counter surface" 
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
           data-testid="img-reality-base"
           draggable={false}
@@ -1185,7 +1185,7 @@ const DEMO_SCENES: Record<
   tech: {
     label: "Tech / Review",
     caption:
-      "Creator tech desk — boom-arm mic, monitor, clean space. Our AI lands an AirPods Pro case on the desk with lighting matched to the soft key light above.",
+      "Creator tech desk — boom-arm mic, monitor, clean surface. Our AI lands an AirPods Pro case on the desk with lighting matched to the soft key light above.",
     reality: demoTechReality,
     augmented: demoTechAugmented,
   },
@@ -1546,7 +1546,7 @@ export default function Landing() {
               Reality vs <span className="text-emerald-400">Augmented</span>
             </h2>
             <p className="text-muted-foreground text-sm md:text-lg max-w-2xl mx-auto max-[480px]:hidden">
-              Watch our AI dream products onto spaces with perfect occlusion and lighting. From flat surface to seamless product placement.
+              Watch our AI place products onto surfaces with perfect occlusion and lighting. From flat surface to seamless product placement.
             </p>
           </motion.div>
           
@@ -1567,7 +1567,7 @@ export default function Landing() {
               Live <span className="text-primary">Global Opportunity Feed</span>
             </h2>
             <p className="text-muted-foreground text-sm md:text-lg max-w-2xl mx-auto max-[480px]:hidden">
-              Real-time inventory index. Every frame scanned. Every space monetizable.
+              Real-time inventory index. Every frame scanned. Every surface monetizable.
             </p>
           </motion.div>
         </div>
@@ -2082,7 +2082,7 @@ export default function Landing() {
                   <div className="mb-10">
                     <div className="flex items-center gap-2 mb-6">
                       <Sparkles className="w-5 h-5 text-yellow-400" />
-                      <h3 className="text-lg font-bold text-white uppercase tracking-wider">The Space Engine</h3>
+                      <h3 className="text-lg font-bold text-white uppercase tracking-wider">The Surface Engine</h3>
                       <span className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 text-xs font-bold">Proprietary AI</span>
                     </div>
                     <div className="w-full max-w-4xl mx-auto">

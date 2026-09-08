@@ -859,7 +859,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       await fetchDbSurfaces(video.id);
     } catch (err) {
       toast({
-        title: "Couldn't teach space",
+        title: "Couldn't teach surface",
         description: err instanceof Error ? err.message : "Request failed",
         variant: "destructive",
       });
@@ -886,7 +886,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     ? currentDbSurfaces.map((s) => `${s.surfaceType} (${Math.round(parseFloat(s.confidence) * 100)}%)`)
     : hasScanned && detections.length > 0
       ? detections.map((d) => `${d.class} (${Math.round(d.score * 100)}%)`)
-      : ["No spaces detected - run scan"];
+      : ["No surfaces detected - run scan"];
 
   const displayCount = hasDbSurfaces && currentDbSurfaces.length > 0
     ? currentDbSurfaces.length
@@ -1142,7 +1142,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                             >
                               <Select value={teachType} onValueChange={setTeachType}>
                                 <SelectTrigger className="h-8 text-xs" data-testid="select-teach-type">
-                                  <SelectValue placeholder="Space type" />
+                                  <SelectValue placeholder="Surface type" />
                                 </SelectTrigger>
                                 <SelectContent>
                                   {TEACH_SURFACE_TYPES.map((t) => (
@@ -1221,7 +1221,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     </Badge>
                     <Badge className="bg-emerald-500/90 text-white">
                       <Target className="w-3 h-3 mr-1" />
-                      {displayCount} {dataSource === "fullscale" ? "Spaces" : hasScanned ? "Detected" : "Spaces"}
+                      {displayCount} {dataSource === "fullscale" ? "Surfaces" : hasScanned ? "Detected" : "Surfaces"}
                     </Badge>
                     {dataSource === "fullscale" && (
                       <Badge className="bg-purple-500/90 text-white">
@@ -1285,11 +1285,11 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                       data-testid="button-teach-surface"
                     >
                       <Crosshair className="w-3.5 h-3.5" />
-                      {teachArmed ? "Cancel teaching" : "Teach space"}
+                      {teachArmed ? "Cancel teaching" : "Teach surface"}
                     </Button>
                     {teachArmed && !teachRect && (
                       <span className="text-[11px] text-muted-foreground">
-                        Drag a box around the space · Esc to cancel
+                        Drag a box around the surface · Esc to cancel
                       </span>
                     )}
                   </div>
@@ -1409,7 +1409,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     <div className="flex items-center gap-2 mb-2">
                       <Target className="w-4 h-4 text-primary" />
                       <span className="text-sm font-medium text-white">
-                        {hasScanned ? "Objects Detected" : "Spaces Found"}
+                        {hasScanned ? "Objects Detected" : "Surfaces Found"}
                       </span>
                     </div>
                     <p className="text-2xl font-bold text-primary mb-2" data-testid="text-surfaces-count">
@@ -1455,7 +1455,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                       <span className="text-sm font-medium text-white">Scene Context</span>
                     </div>
                     <p className="text-sm text-muted-foreground" data-testid="text-scene-context">
-                      {currentScene?.context || 'Scan video to detect spaces'}
+                      {currentScene?.context || 'Scan video to detect surfaces'}
                     </p>
                     {/* Show surroundings from enriched data */}
                     {hasDbSurfaces && currentDbSurfaces.length > 0 && (() => {
@@ -1504,7 +1504,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     const timestamps = validSurfs.map(s => parseInt(s.timestamp) || 0).sort((a, b) => a - b);
                     const startTs = timestamps[0];
                     const endTs = timestamps[timestamps.length - 1] + 2; // Add frame interval
-                    const surfaceType = validSurfs[0]?.surfaceType || "Space";
+                    const surfaceType = validSurfs[0]?.surfaceType || "Surface";
                     // Parse temporal range from sceneContext if available
                     const contextMatch = validSurfs[0]?.sceneContext?.match(/Visible: (\d+)s - (\d+)s \((\d+)s\)/);
                     const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -1513,7 +1513,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                       <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
                         <div className="flex items-center gap-2 mb-2">
                           <Clock className="w-4 h-4 text-emerald-400" />
-                          <span className="text-sm font-medium text-white">Space Timeline</span>
+                          <span className="text-sm font-medium text-white">Surface Timeline</span>
                         </div>
                         <div className="text-sm text-emerald-300 mb-1">
                           <span className="font-semibold">{surfaceType}</span>
@@ -1532,7 +1532,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     produced one (canonical surfaces grouped by recurring
                     scene class), otherwise the flat all-surfaces list.
                     Either way every detection row is visible and clickable
-                    to jump to its scene. Spaces default to hidden from
+                    to jump to its scene. Surfaces default to hidden from
                     brands; creator approves to expose. */}
                 {hasDbSurfaces && dbSurfaces.length > 0 && (() => {
                   const sortedSurfaces = [...dbSurfaces].sort(
@@ -1715,7 +1715,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                               </div>
                               {scene.surfaces.length === 0 && (
                                 <div className="rounded-lg border border-dashed border-white/10 bg-zinc-900/40 p-2.5 text-[11px] text-muted-foreground">
-                                  No approved spaces yet — a rescan may find more in this scene.
+                                  No approved surfaces yet — a rescan may find more in this scene.
                                 </div>
                               )}
                               <div className="space-y-2">

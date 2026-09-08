@@ -216,7 +216,7 @@ export default function Opportunities() {
             <Card className="p-5">
               <div className="flex items-center gap-2 mb-2">
                 <Eye className="w-4 h-4 text-blue-400" />
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Spaces</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Surfaces</p>
               </div>
               <p className="text-3xl font-bold text-white" data-testid="text-surfaces-count">
                 {totalSurfaces}
@@ -258,7 +258,7 @@ export default function Opportunities() {
                   <Video className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
                   <h3 className="text-lg font-semibold mb-2">No Opportunities Yet</h3>
                   <p className="text-muted-foreground mb-4">
-                    Scan your videos in the Library to detect ad placement spaces
+                    Scan your videos in the Library to detect ad placement surfaces
                   </p>
                   <Button variant="default" onClick={() => window.location.href = '/library'}>
                     Go to Library
@@ -421,7 +421,7 @@ export default function Opportunities() {
                 <span className="text-lg font-bold text-emerald-400">{selectedOffer.bidAmount}</span>
               </div>
               <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-                <span className="text-sm text-muted-foreground">Target Space</span>
+                <span className="text-sm text-muted-foreground">Target Surface</span>
                 <Badge variant="outline">{selectedOffer.sceneType || "Any"}</Badge>
               </div>
               <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">

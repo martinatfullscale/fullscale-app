@@ -32,7 +32,7 @@ export const brandsEn: BrandsContent = {
     ],
     fullscale: [
       "Pick content that already has proven engagement",
-      "Our AI matches your product to contextually-relevant spaces",
+      "Our AI matches your product to contextually-relevant surfaces",
       "Test placements across multiple creators at once",
       "Scale only the variants that actually perform",
     ],
@@ -68,7 +68,7 @@ export const brandsEn: BrandsContent = {
         label: "Gaming Setup",
         sceneNumber: "Scene 3 of 3",
         description:
-          "A gaming desk at dusk — dual monitors, mechanical RGB keyboard, desk mat with RGB underglow, gaming chair blurred in the background. Drag to see a Monster Energy can land to the left of the keyboard. The can picks up the warm RGB light in its reflections and drops a clean shadow across the desk space.",
+          "A gaming desk at dusk — dual monitors, mechanical RGB keyboard, desk mat with RGB underglow, gaming chair blurred in the background. Drag to see a Monster Energy can land to the left of the keyboard. The can picks up the warm RGB light in its reflections and drops a clean shadow across the desk surface.",
         realityAlt: "Gaming desk with dual monitors, RGB keyboard, and accent lighting",
         augmentedAlt: "Same gaming desk with a Monster Energy can placed beside the keyboard",
       },
@@ -116,7 +116,7 @@ export const brandsEn: BrandsContent = {
         step: "Step 2",
         title: "Our AI scans creator content",
         description:
-          "FullScale's space engine analyzes the existing videos in your matched creators' libraries. Every flat surface, every empty frame, every moment your product could live in — identified, scored, and ranked.",
+          "FullScale's surface engine analyzes the existing videos in your matched creators' libraries. Every flat surface, every empty frame, every moment your product could live in — identified, scored, and ranked.",
       },
       {
         step: "Step 3",
@@ -145,7 +145,7 @@ export const brandsEn: BrandsContent = {
       {
         title: "A/B placement variants",
         description:
-          "Same video, two spaces, two product treatments. Find the variant that converts before you commit to a full flight.",
+          "Same video, two surfaces, two product treatments. Find the variant that converts before you commit to a full flight.",
       },
       {
         title: "Measure and scale",

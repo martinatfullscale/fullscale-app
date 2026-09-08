@@ -433,7 +433,7 @@ export default function AdminMeasurement() {
                         <tr className="border-b border-white/10 text-left text-muted-foreground">
                           <th className="p-3 font-medium text-xs">Creator</th>
                           <th className="p-3 font-medium text-xs" title="Approved / rejected — a creator who rejects nothing is rubber-stamping, not curating">Curation</th>
-                          <th className="p-3 font-medium text-xs" title="Hand-drawn spaces — the highest-intent action in the product">Taught</th>
+                          <th className="p-3 font-medium text-xs" title="Hand-drawn surfaces — the highest-intent action in the product">Taught</th>
                           <th className="p-3 font-medium text-xs">Own placements</th>
                           <th className="p-3 font-medium text-xs">Brand requests</th>
                           <th className="p-3 font-medium text-xs">Median reply</th>

@@ -1020,7 +1020,7 @@ export default function RemixEngine() {
 
   const assignProduct = useCallback(async (product: CatalogProduct) => {
     if (!selectedTrack) {
-      toast({ title: "Select a space first", description: "Click a space pill below the video." });
+      toast({ title: "Select a surface first", description: "Click a surface pill below the video." });
       return;
     }
     try {
@@ -1352,7 +1352,7 @@ export default function RemixEngine() {
             : "Placements persisted. They'll auto-load next time you open the Placement Engine.",
         });
       } else {
-        toast({ title: "No placements saved", description: "Could not match any assignments to spaces.", variant: "destructive" });
+        toast({ title: "No placements saved", description: "Could not match any assignments to surfaces.", variant: "destructive" });
       }
     } catch (err: any) {
       toast({ title: "Save failed", description: err.message, variant: "destructive" });
@@ -1725,7 +1725,7 @@ export default function RemixEngine() {
                   </div>
                 ) : (
                   <div className="px-2 py-1.5 mb-3 bg-muted/30 rounded-lg">
-                    <p className="text-xs text-muted-foreground">Select a space below the video</p>
+                    <p className="text-xs text-muted-foreground">Select a surface below the video</p>
                   </div>
                 )}
 
@@ -1790,7 +1790,7 @@ export default function RemixEngine() {
                   <div className="text-center py-8">
                     <Move className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
                     <p className="text-xs text-muted-foreground">
-                      {selectedTrack ? "Assign a product first" : "Select a space first"}
+                      {selectedTrack ? "Assign a product first" : "Select a surface first"}
                     </p>
                   </div>
                 ) : (
@@ -1896,7 +1896,7 @@ export default function RemixEngine() {
                   <div className="text-center py-8">
                     <Blend className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
                     <p className="text-xs text-muted-foreground">
-                      {selectedTrack ? "Assign a product first" : "Select a space first"}
+                      {selectedTrack ? "Assign a product first" : "Select a surface first"}
                     </p>
                   </div>
                 ) : (

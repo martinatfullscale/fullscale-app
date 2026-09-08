@@ -79,7 +79,7 @@ export default function ClipPlacementPreview({ clipId, videoId, clipTitle, onClo
     queryKey: ["/api/editorial-clips", clipId, "surfaces"],
     queryFn: async () => {
       const res = await fetchWithTimeout(`/api/editorial-clips/${clipId}/surfaces`, { credentials: "include" });
-      if (!res.ok) throw new Error("spaces unavailable");
+      if (!res.ok) throw new Error("surfaces unavailable");
       return res.json();
     },
     // While a scan runs, keep the panel live so surfaces appear as they land.
@@ -195,10 +195,10 @@ export default function ClipPlacementPreview({ clipId, videoId, clipTitle, onClo
                 </>
               ) : (
                 <>
-                  <p className="text-sm text-gray-300 mb-1">No placement spaces in this clip's range</p>
+                  <p className="text-sm text-gray-300 mb-1">No placement surfaces in this clip's range</p>
                   <p className="text-xs text-gray-500 max-w-sm mx-auto mb-4">
                     The scan found nothing sellable inside {" "}
-                    this cut. A denser scan of the range sometimes finds spaces the sparse pass missed.
+                    this cut. A denser scan of the range sometimes finds surfaces the sparse pass missed.
                   </p>
                 </>
               )}
