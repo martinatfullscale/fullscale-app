@@ -5,7 +5,8 @@
     "Set featuredRank to null to drop a piece from the landing page without removing it",
     "from the library — it still appears in the full gallery at /creates/work.",
     "Featured ranks are renumbered contiguously after overrides are applied, so removing",
-    "one does not leave a hole."
+    "one does not leave a hole.",
+    "Set \"exclude\": true to keep a piece out of the published library entirely — unreleased or client-confidential work. Excluded files are never transcoded, never uploaded, and never appear in the manifest."
   ],
   "Video to Feature - 2 - chase_united_ep1_the_booking_v1 (1080p).mp4": {
     "title": "Chase United — Ep 1: The Booking"
@@ -67,13 +68,27 @@
     "title": "Tazo × Leah — Ep 3"
   },
   "episode_1_revised_7-16_v1 (1080p).mp4": {
-    "title": "Episode 1"
+    "exclude": true,
+    "_why": "Bawse — held back at Martin's direction 2026-09-09."
   },
   "episode_2_revised_7-16_v1 (1080p).mp4": {
-    "title": "Episode 2"
+    "exclude": true,
+    "_why": "Bawse — held back at Martin's direction 2026-09-09."
   },
   "doritos__solid_black__2_30_v1 (1440p).mp4": {
     "title": "Doritos — Solid Black (2:30)",
     "brand": "Doritos"
+  },
+  "baw$e_rough_cut_tuesday_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Bawse — held back at Martin's direction 2026-09-09."
+  },
+  "bawse_revised_episode_1_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Bawse — held back at Martin's direction 2026-09-09."
+  },
+  "episode_2_rough_cut_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Bawse — held back at Martin's direction 2026-09-09."
   }
 }

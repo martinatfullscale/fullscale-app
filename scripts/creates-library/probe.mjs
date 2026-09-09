@@ -229,6 +229,7 @@ async function main() {
 
   const taken = new Set();
   const videos = [];
+  const excluded = [];
   let failed = 0;
 
   for (let i = 0; i < files.length; i++) {
@@ -236,6 +237,9 @@ async function main() {
     const full = path.join(sourceDir, name);
     const derived = deriveTitle(name);
     const ov = overrides[name] || {};
+    // Held-back work never enters the manifest at all, so it cannot be
+    // transcoded, uploaded, or rendered by accident downstream.
+    if (ov.exclude) { excluded.push(name); continue; }
 
     const title = ov.title ?? derived.title;
     const brand = ov.brand ?? derived.brand;
@@ -283,6 +287,7 @@ async function main() {
 
   console.log(`\nWrote ${OUT}`);
   console.log(`  ${videos.length} videos, ${featured.length} featured, ${failed} probe failures`);
+  if (excluded.length) console.log(`  ${excluded.length} held back by overrides (exclude: true)`);
 
   // Post-renumber this should be unfalsifiable, so a failure here means the sort
   // and the renumber disagree — worth shouting about rather than shipping.
