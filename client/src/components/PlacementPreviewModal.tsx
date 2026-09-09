@@ -34,6 +34,9 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import {
+  useTeachSurface, TEACH_SURFACE_TYPES, teachTypeLabel,
+} from "@/components/teach-surface/useTeachSurface";
 
 // ============================================================================
 // TYPES
@@ -92,6 +95,9 @@ interface PlacementPreviewModalProps {
     isHarmonized?: boolean;
     harmonizedImageUrl?: string | null;
   };
+  /** Called after a surface is taught from this modal, so the owner can
+   *  refetch and the new spot appears in the picker without a reopen. */
+  onSurfaceTaught?: () => void | Promise<void>;
 }
 
 // Transform controls for product placement
@@ -804,6 +810,7 @@ export default function PlacementPreviewModal({
   videoTitle,
   surfaces,
   initialPlacement,
+  onSurfaceTaught,
 }: PlacementPreviewModalProps) {
   // Core state
   const [selectedSurface, setSelectedSurface] = useState<Surface | null>(null);
@@ -1077,6 +1084,30 @@ export default function PlacementPreviewModal({
         ? (selectedSurface as any).sceneId
         : sceneIdFor(parseFloat(String((selectedSurface as any).timestamp ?? 0)) || 0))
     : null;
+
+  // Teaching from the placement editor. Same endpoint, same maths, same floors
+  // as the scan-review modal — the shared hook exists so the two cannot drift.
+  //
+  // The rect it measures against is the CANVAS, not an <img>: this modal draws
+  // the frame with ctx.drawImage(frame, 0, 0, canvas.width, canvas.height) onto
+  // a canvas already sized to the frame's aspect ratio, so the canvas box IS
+  // the frame box, corner to corner, with no letterboxing to subtract.
+  const teach = useTeachSurface({
+    getFrameRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
+    videoId,
+    sceneId: placementSceneId,
+    timestamp: parseFloat(String((selectedSurface as any)?.timestamp ?? 0)) || 0,
+    onTaught: onSurfaceTaught,
+  });
+
+  // The drawn box is positioned against the container, but measured against the
+  // canvas — which is centred inside it by max-w/max-h. This is the offset
+  // between the two.
+  const canvasInset = () => {
+    const c = canvasRef.current?.getBoundingClientRect();
+    const box = canvasContainerRef.current?.getBoundingClientRect();
+    return c && box ? { left: c.left - box.left, top: c.top - box.top } : { left: 0, top: 0 };
+  };
 
   // Fetch dense surface keyframes for accurate motion tracking
   const { data: denseKeyframesData, refetch: refetchKeyframes } = useQuery<{
@@ -2961,6 +2992,127 @@ export default function PlacementPreviewModal({
                     onMouseLeave={handleCanvasMouseUp}
                     style={isVideoMode ? { pointerEvents: "none" } : undefined}
                   />
+
+                  {/* ── Teach a spot ──────────────────────────────────────
+                      The detector misses things a person can plainly see — a
+                      bare wall behind an interview subject is the usual case.
+                      Drawing here registers a real surface without leaving the
+                      screen where products actually get placed.
+
+                      Sits above the canvas and only takes pointer events while
+                      armed, so it never steals the drag/scale/rotate gestures
+                      the canvas owns. */}
+                  {teach.armed && (
+                    <div
+                      className="absolute inset-0 z-30 cursor-crosshair"
+                      onPointerDown={teach.onPointerDown}
+                      onPointerMove={teach.onPointerMove}
+                      onPointerUp={teach.onPointerUp}
+                      data-testid="teach-draw-layer"
+                    >
+                      {(() => {
+                        const inset = canvasInset();
+                        const live = teach.drag
+                          ? {
+                              x: Math.min(teach.drag.x0, teach.drag.x1),
+                              y: Math.min(teach.drag.y0, teach.drag.y1),
+                              w: Math.abs(teach.drag.x1 - teach.drag.x0),
+                              h: Math.abs(teach.drag.y1 - teach.drag.y0),
+                            }
+                          : teach.rect;
+                        if (!live) return null;
+                        return (
+                          <div
+                            className="absolute border-2 border-emerald-400 bg-emerald-400/15 pointer-events-none rounded-sm"
+                            style={{
+                              left: inset.left + live.x,
+                              top: inset.top + live.y,
+                              width: live.w,
+                              height: live.h,
+                            }}
+                          />
+                        );
+                      })()}
+
+                      {/* Type + save, anchored under the drawn box and clamped
+                          inside the container so it can't render offscreen. */}
+                      {teach.rect && (() => {
+                        const inset = canvasInset();
+                        const box = canvasContainerRef.current?.getBoundingClientRect();
+                        const left = Math.max(4, Math.min(inset.left + teach.rect.x, (box?.width ?? 400) - 240));
+                        const top = Math.max(4, Math.min(inset.top + teach.rect.y + teach.rect.h + 8, (box?.height ?? 300) - 96));
+                        return (
+                          <div
+                            className="absolute z-40 w-[232px] rounded-lg border border-border bg-popover/95 backdrop-blur p-2 shadow-xl"
+                            style={{ left, top }}
+                            onPointerDown={(e) => e.stopPropagation()}
+                          >
+                            <p className="text-[11px] text-muted-foreground mb-1.5">What is this?</p>
+                            <div className="flex flex-wrap gap-1 mb-2 max-h-[92px] overflow-y-auto">
+                              {TEACH_SURFACE_TYPES.map((t) => (
+                                <button
+                                  key={t}
+                                  onClick={() => teach.setType(t)}
+                                  className={cn(
+                                    "px-1.5 py-0.5 rounded text-[11px] border transition-colors",
+                                    teach.type === t
+                                      ? "bg-emerald-500 text-white border-emerald-500"
+                                      : "border-border hover:bg-muted",
+                                  )}
+                                  data-testid={`teach-type-${t}`}
+                                >
+                                  {teachTypeLabel(t)}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="flex gap-1.5">
+                              <Button
+                                size="sm"
+                                className="h-7 text-xs flex-1"
+                                disabled={!teach.canSave}
+                                onClick={teach.save}
+                                data-testid="teach-save"
+                              >
+                                {teach.isSaving ? "Saving…" : "Add this spot"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-xs"
+                                onClick={teach.reset}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
+                  {/* Arm/disarm. Hidden while the video plays: the frame under
+                      the cursor is moving, so a box drawn on it would be
+                      stamped against a timestamp that has already passed. */}
+                  {!isVideoMode && placementSceneId != null && (
+                    <button
+                      onClick={() => (teach.armed ? teach.reset() : teach.setArmed(true))}
+                      className={cn(
+                        "absolute top-3 right-3 z-40 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors",
+                        teach.armed
+                          ? "bg-emerald-500 text-white border-emerald-500"
+                          : "bg-black/60 text-white border-white/20 hover:bg-black/80",
+                      )}
+                      data-testid="button-teach-spot"
+                    >
+                      {teach.armed ? "Cancel" : "Missing a spot?"}
+                    </button>
+                  )}
+
+                  {teach.armed && !teach.rect && (
+                    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-40 px-2.5 py-1 rounded-md bg-black/75 text-white text-[11px] pointer-events-none">
+                      Drag a box around the spot
+                    </div>
+                  )}
 
                   {/* Live-harmonized overlay. When the toggle is on AND we have
                       a fresh harmonized result AND the user isn't actively

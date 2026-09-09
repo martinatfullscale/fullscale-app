@@ -6,6 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import {
+  useTeachSurface, TEACH_SURFACE_TYPES, teachTypeLabel, teachOrientationFor,
+} from "@/components/teach-surface/useTeachSurface";
 import PlacementPreviewModal from "./PlacementPreviewModal";
 import * as tf from "@tensorflow/tfjs";
 import * as cocoSsd from "@tensorflow-models/coco-ssd";
@@ -121,18 +124,6 @@ interface SceneIndexShot {
   tEnd: number;
 }
 
-/** A drawn teach bbox: display px (relative to the frame image's rendered
- *  box) for the overlay + form anchor, plus the 0-1 normalization captured
- *  at release time so a later window resize can't skew what gets saved. */
-interface TeachRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  wrapW: number;
-  wrapH: number;
-  norm: { x: number; y: number; w: number; h: number };
-}
 
 interface SceneAnalysisModalProps {
   video: VideoWithScenes | null;
@@ -150,23 +141,6 @@ const PLACEMENT_SURFACES = [
   "oven", "toaster", "sink", "backpack", "handbag", "suitcase", "umbrella"
 ];
 
-// The scanner's canonical surface vocabulary (scanner_v2 detection prompt) —
-// what a creator can teach. Values go to the teach endpoint verbatim; the
-// label is the human-readable render ("side_table" → "Side table").
-const TEACH_SURFACE_TYPES = [
-  "desk", "table", "shelf", "counter", "nightstand", "side_table",
-  "coffee_table", "studio_desk", "floor", "rug", "couch", "wall", "door", "window",
-] as const;
-
-const teachTypeLabel = (t: string): string => {
-  const spaced = t.replace(/_/g, " ");
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-};
-
-// Same rule as the scanner's inferOrientation: walls/doors/windows are
-// vertical, everything else is horizontal.
-const teachOrientationFor = (t: string): "horizontal" | "vertical" =>
-  t === "wall" || t === "door" || t === "window" ? "vertical" : "horizontal";
 
 // True when the video can be played in-app via /api/video/:id/source.
 // We support local uploads + YT/IG/FB sources (downloaded on demand).
@@ -257,22 +231,10 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // Creator-drawn bbox teaching: armed → crosshair drag on the frame →
   // compact type form → POST to the teach endpoint, which writes the
   // surface into the set's room model so every future scan confirms it.
-  const [teachArmed, setTeachArmed] = useState(false);
-  const [teachDrag, setTeachDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  const [teachRect, setTeachRect] = useState<TeachRect | null>(null);
-  const [teachType, setTeachType] = useState<string>("");
-  const [isTeaching, setIsTeaching] = useState(false);
   // Perceptual scene index shots passed through the surfaces response —
   // the timestamp → scene-class mapping for frames without detection rows.
   const [sceneIndexShots, setSceneIndexShots] = useState<SceneIndexShot[] | null>(null);
   const { toast } = useToast();
-
-  const resetTeach = useCallback(() => {
-    setTeachArmed(false);
-    setTeachDrag(null);
-    setTeachRect(null);
-    setTeachType("");
-  }, []);
 
   // Sync localScenes when video prop changes or modal opens
   useEffect(() => {
@@ -348,26 +310,6 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     }
   }, [currentSceneIndex]);
 
-  // Teach mode is frame-anchored: anything that swaps what's on screen
-  // (scene nav, player toggle, another video, modal close) invalidates an
-  // in-progress draw — disarm instead of letting a stale box land on the
-  // wrong frame.
-  useEffect(() => {
-    resetTeach();
-  }, [open, video?.id, currentSceneIndex, showEmbedPlayer, resetTeach]);
-
-  // Escape disarms teach mode. Bubble phase + listbox guard so an open
-  // type dropdown consumes its own Escape first.
-  useEffect(() => {
-    if (!teachArmed) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (e.target instanceof HTMLElement && e.target.closest('[role="listbox"]')) return;
-      resetTeach();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [teachArmed, resetTeach]);
   
   // Fetch surfaces from database API
   const fetchDbSurfaces = async (videoId: number) => {
@@ -857,102 +799,46 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     return null;
   })();
 
-  // ── Teach-mode drag handlers ──
-  // Coordinates are captured against the frame img's rendered box (the
-  // overlay wrapper shrink-wraps to it) and normalized to 0-1 frame space
-  // at release time. Pointer capture keeps the drag alive when the cursor
-  // exits the frame; coords clamp to the box edges.
-  const teachFrameBox = () => imageRef.current?.getBoundingClientRect() ?? null;
+  // Teaching behaviour is shared with PlacementPreviewModal — the pointer
+  // maths, the release-time normalization and the save all live in the hook so
+  // the two screens cannot drift apart. Names are aliased to the ones this
+  // component's JSX already uses.
+  const {
+    armed: teachArmed, setArmed: setTeachArmed,
+    drag: teachDrag, rect: teachRect, type: teachType, setType: setTeachType,
+    isSaving: isTeaching, reset: resetTeach, save: saveTaughtSurface,
+    onPointerDown: handleTeachPointerDown,
+    onPointerMove: handleTeachPointerMove,
+    onPointerUp: handleTeachPointerUp,
+  } = useTeachSurface({
+    getFrameRect: () => imageRef.current?.getBoundingClientRect() ?? null,
+    videoId: video?.id,
+    sceneId: teachSceneId,
+    timestamp: sceneSeconds,
+    onTaught: () => { if (video?.id) return fetchDbSurfaces(video.id); },
+  });
 
-  const handleTeachPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!teachArmed || teachRect || isTeaching) return;
-    const box = teachFrameBox();
-    if (!box || box.width <= 0 || box.height <= 0) return;
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const x = Math.max(0, Math.min(e.clientX - box.left, box.width));
-    const y = Math.max(0, Math.min(e.clientY - box.top, box.height));
-    setTeachDrag({ x0: x, y0: y, x1: x, y1: y });
-  };
+  // Teach mode is frame-anchored: anything that swaps what's on screen
+  // (scene nav, player toggle, another video, modal close) invalidates an
+  // in-progress draw — disarm instead of letting a stale box land on the
+  // wrong frame.
+  useEffect(() => {
+    resetTeach();
+  }, [open, video?.id, currentSceneIndex, showEmbedPlayer, resetTeach]);
 
-  const handleTeachPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!teachDrag) return;
-    const box = teachFrameBox();
-    if (!box) return;
-    const x = Math.max(0, Math.min(e.clientX - box.left, box.width));
-    const y = Math.max(0, Math.min(e.clientY - box.top, box.height));
-    setTeachDrag(prev => (prev ? { ...prev, x1: x, y1: y } : prev));
-  };
-
-  const handleTeachPointerUp = () => {
-    if (!teachDrag) return;
-    const drag = teachDrag;
-    setTeachDrag(null);
-    const box = teachFrameBox();
-    if (!box || box.width <= 0 || box.height <= 0) return;
-    const x = Math.min(drag.x0, drag.x1);
-    const y = Math.min(drag.y0, drag.y1);
-    const w = Math.abs(drag.x1 - drag.x0);
-    const h = Math.abs(drag.y1 - drag.y0);
-    // Stray-click guard: a real surface box is at least ~1.5% of the frame
-    // in both dimensions — anything smaller never opens the form.
-    if (w < box.width * 0.015 || h < box.height * 0.015) return;
-    setTeachRect({
-      x, y, w, h,
-      wrapW: box.width,
-      wrapH: box.height,
-      norm: {
-        x: Math.max(0, Math.min(1, x / box.width)),
-        y: Math.max(0, Math.min(1, y / box.height)),
-        w: Math.max(0, Math.min(1, w / box.width)),
-        h: Math.max(0, Math.min(1, h / box.height)),
-      },
-    });
-  };
-
-  const saveTaughtSurface = async () => {
-    if (!video?.id || teachSceneId == null || !teachRect || !teachType) return;
-    setIsTeaching(true);
-    try {
-      const res = await fetchWithTimeout(`/api/video/${video.id}/scenes/${teachSceneId}/teach`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          surfaceType: teachType,
-          orientation: teachOrientationFor(teachType),
-          bbox: teachRect.norm,
-          // The frame this box was drawn against. A bbox only means anything
-          // relative to a specific frame; without this the server stamps it on
-          // the midpoint of the scene's longest shot, which may be a shot the
-          // creator never looked at.
-          timestamp: sceneSeconds,
-        }),
-      });
-      if (!res.ok) {
-        let msg = `Teach failed (${res.status})`;
-        try {
-          const body = await res.json();
-          if (body?.error) msg = body.error;
-        } catch {}
-        throw new Error(msg);
-      }
-      toast({ title: "Taught — this set will track it from now on" });
+  // Escape disarms teach mode. Bubble phase + listbox guard so an open
+  // type dropdown consumes its own Escape first.
+  useEffect(() => {
+    if (!teachArmed) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (e.target instanceof HTMLElement && e.target.closest('[role="listbox"]')) return;
       resetTeach();
-      await fetchDbSurfaces(video.id);
-    } catch (err) {
-      toast({
-        title: "Couldn't teach surface",
-        description: err instanceof Error ? err.message : "Request failed",
-        variant: "destructive",
-      });
-    } finally {
-      setIsTeaching(false);
-    }
-  };
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [teachArmed, resetTeach]);
 
-  // Rect to paint on the overlay: the live drag while the button is down,
-  // the finalized rect while the form is open.
   const teachDrawRect = teachDrag
     ? {
         x: Math.min(teachDrag.x0, teachDrag.x1),
@@ -1927,6 +1813,10 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
           onClose={() => setIsPlacementPreviewOpen(false)}
           videoId={video.id}
           videoTitle={video.title}
+          // A spot taught from inside the placement editor has to show up in
+          // its own surface picker straight away — otherwise the creator draws
+          // a box, is told it worked, and still can't place anything on it.
+          onSurfaceTaught={() => fetchDbSurfaces(video.id)}
           surfaces={dbSurfaces.map(s => ({
             id: s.id,
             // parseFloat, not parseInt: truncating to whole seconds put any
