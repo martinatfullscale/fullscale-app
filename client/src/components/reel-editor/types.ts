@@ -43,6 +43,14 @@ export interface BinSource {
   /** True when nothing local is playable yet — an imported video that has not
    *  been pulled. It still groups its clips; it just cannot be dragged. */
   unavailable?: boolean;
+  /** The real length is not known yet.
+   *
+   *  video_index.duration is a varchar and is empty or unparseable for plenty
+   *  of rows, and the fallback used to be MAX_REEL_SEC — so an 8-second video
+   *  read "1:05:00" in the bin and, dropped on the timeline, produced a block
+   *  spanning the entire 65-minute reel. Never substitute the cap for a
+   *  measurement: say it is unknown, then go and measure it. */
+  durationUnknown?: boolean;
   /** Second line on the card — "cross-video · 0.91 confidence", "118 MB". */
   meta: string;
   /** Something playable, for hover-scrub and the source monitor. */

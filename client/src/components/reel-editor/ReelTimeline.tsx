@@ -26,7 +26,11 @@ import {
  * second item.
  */
 
-const GUTTER = 148;
+// 148 -> 188. The gutter holds a lane name, a description of what the lane is
+// for ("the cut, end to end" is 19 characters), and it used to hold a badge as
+// well. At 148 with px-3 and gap-2 the text had about 46px to live in and
+// overlapped the badge beside it.
+const GUTTER = 188;
 const RULER_H = 26;
 const LANE_H: Record<Track, number> = { V2: 44, V1: 44, V0: 64, A1: 40 };
 const ORDER: Track[] = ["V2", "V1", "V0", "A1"];
@@ -239,26 +243,15 @@ export default function ReelTimeline(props: ReelTimelineProps) {
             className="flex items-center gap-2 px-3 border-b border-border/40"
             style={{ height: LANE_H[tr] }}
           >
-            <div className="min-w-0">
-              <div className="font-display text-[13px] font-extrabold leading-none text-foreground">{TRACK_NAME[tr]}</div>
-              <div className="text-[10px] text-muted-foreground leading-tight mt-0.5">{TRACK_ROLE[tr]}</div>
+            {/* The phase badge that used to sit here is gone. TRACK_PHASE is
+                "today" for all four lanes since the overlay engine shipped, so
+                it printed the identical words on every row — ~70px of the
+                gutter spent saying nothing, and the thing the name and role
+                were overlapping. */}
+            <div className="min-w-0 flex-1">
+              <div className="font-display text-[13px] font-extrabold leading-none text-foreground truncate">{TRACK_NAME[tr]}</div>
+              <div className="text-[10px] text-muted-foreground leading-snug mt-1 truncate">{TRACK_ROLE[tr]}</div>
             </div>
-            <span
-              className={`ml-auto shrink-0 px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.06em] ${
-                TRACK_PHASE[tr] === "today"
-                  ? "border border-primary/45 bg-primary/15 text-primary"
-                  : "border border-border text-muted-foreground/70"
-              }`}
-              title={
-                TRACK_PHASE[tr] === "today"
-                  ? tr === "V0"
-                    ? "Rendered by the stitcher, one plan segment per block"
-                    : "Composited by the overlay pass over the finished reel"
-                  : "Needs engine work"
-              }
-            >
-              {TRACK_PHASE[tr] === "today" ? "renders today" : "needs engine"}
-            </span>
           </div>
         ))}
       </div>

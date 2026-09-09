@@ -40,11 +40,18 @@ function Kicker({ children }: { children: React.ReactNode }) {
   );
 }
 
-function PanelHead({ kicker, children }: { kicker: string; children?: React.ReactNode }) {
+function PanelHead({ kicker, hint, children }: { kicker: string; hint?: string; children?: React.ReactNode }) {
   return (
-    <div className="shrink-0 flex items-baseline gap-2 px-3 py-2 border-b border-border/40">
-      <Kicker>{kicker}</Kicker>
-      {children}
+    <div className="shrink-0 px-3 py-2 border-b border-border/40">
+      <div className="flex items-baseline gap-2">
+        <Kicker>{kicker}</Kicker>
+        {children}
+      </div>
+      {/* "Source" and "Program" are edit-suite words. They are obvious once
+          you know them and opaque until then, and the two panels look
+          identical — same frame, same play button — so nothing on screen said
+          which was which. One line each, in plain English. */}
+      {hint && <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground">{hint}</p>}
     </div>
   );
 }
@@ -487,7 +494,10 @@ export function SourceMonitor(props: {
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden border-r border-border/40">
-      <PanelHead kicker="Source">
+      <PanelHead
+        kicker="Source"
+        hint="One clip from the bin, before it goes in. Set where it starts and ends here, then insert it."
+      >
         <span className="text-[11.5px] font-semibold truncate text-foreground">
           {source ? `${source.label} · ${KIND_LABEL[source.kind]}` : "Nothing loaded"}
         </span>
@@ -592,7 +602,10 @@ export function ProgramMonitor(props: {
 }) {
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden border-r border-border/40">
-      <PanelHead kicker="Program">
+      <PanelHead
+        kicker="Program"
+        hint="The whole reel, in order, as it will export. This is the finished thing — every block on the timeline played end to end."
+      >
         <span className="text-[11.5px] font-semibold truncate text-foreground">{props.activeLabel ?? "—"}</span>
         <span className="ml-auto font-mono text-[10.5px] tabular-nums text-muted-foreground shrink-0">
           {fmtT(props.playhead)} / {fmtT(props.total)}

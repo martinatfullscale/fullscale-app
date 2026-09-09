@@ -72,6 +72,47 @@ export default function ReelEditor() {
   const [reloadAssets, setReloadAssets] = useState(0);
   /** Sources an AI proposal brought with it — real sources with no bin card. */
   const [aiSources, setAiSources] = useState<BinSource[]>([]);
+  /**
+   * Measure the length of any source that does not know it.
+   *
+   * The server can only report what video_index.duration holds, and that
+   * column is a varchar that is frequently empty. The file itself is the
+   * authority, so ask it: one detached <video preload="metadata"> per unknown
+   * source, which fetches a few KB of container header and nothing more.
+   *
+   * Runs once per source key. A failure leaves the placeholder in place and
+   * the card keeps saying the length is unknown, which is the honest state.
+   */
+  const probed = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const pending = sources.filter((s) => s.durationUnknown && s.url && !probed.current.has(s.sk));
+    if (!pending.length) return;
+    let dead = false;
+    for (const src of pending) {
+      probed.current.add(src.sk);
+      const el = document.createElement("video");
+      el.preload = "metadata";
+      el.muted = true;
+      const done = () => {
+        const d = Number(el.duration);
+        el.removeAttribute("src");
+        el.load();
+        if (dead || !Number.isFinite(d) || d <= 0) return;
+        setSources((prev) =>
+          prev.map((p) =>
+            p.sk === src.sk
+              ? { ...p, boundEnd: d, durationSec: d, durationUnknown: false, meta: p.meta.replace(/ · length unknown$/, "") }
+              : p,
+          ),
+        );
+      };
+      el.addEventListener("loadedmetadata", done, { once: true });
+      el.addEventListener("error", () => { el.removeAttribute("src"); el.load(); }, { once: true });
+      el.src = src.url!;
+    }
+    return () => { dead = true; };
+  }, [sources]);
+
   const sourceMap = useMemo(
     // AI moments are real sources for everything downstream — the timeline
     // label, the program monitor, the build payload — they just never came
@@ -137,10 +178,15 @@ export default function ReelEditor() {
             sk: `v:${v.videoId}`,
             kind: "video",
             label: v.title,
-            meta: [v.platform, secs ? fmtT(secs) : null].filter(Boolean).join(" · ") || "source video",
+            meta: [v.platform, secs ? fmtT(secs) : "length unknown"].filter(Boolean).join(" · "),
             url: v.exportPath || null,
             boundStart: 0,
-            boundEnd: secs ?? MAX_REEL_SEC,
+            // A modest placeholder, NOT the reel cap. An unknown length used
+            // to fall back to MAX_REEL_SEC, which is how an 8-second video
+            // showed as 1:05:00 and dropped as a 65-minute block. The real
+            // value is measured from the file below.
+            boundEnd: secs ?? 10,
+            durationUnknown: secs == null,
             srcOffset: 0,
             videoId: v.videoId,
             durationSec: secs,
@@ -362,7 +408,17 @@ export default function ReelEditor() {
       const cur = blocks.find((i) => ph >= i.at - 1e-6 && ph < end(i) - 1e-6) ?? null;
 
       if (!cur) {
-        if (loadedFor.current !== null) { v.pause(); v.removeAttribute("src"); loadedFor.current = null; }
+        if (loadedFor.current !== null) {
+          v.pause();
+          v.removeAttribute("src");
+          // load() after removing src is what actually clears the surface.
+          // Without it the element keeps its last decoded frame painted, so
+          // deleting the block under the playhead left the deleted clip still
+          // showing in the program — the timeline changed and the monitor
+          // looked like nothing had happened.
+          v.load();
+          loadedFor.current = null;
+        }
         if (playing) {
           const next = ph + dt;
           if (next >= total - 1e-3) { setPh(total); setPlaying(false); }
@@ -383,6 +439,7 @@ export default function ReelEditor() {
             v.addEventListener("loadedmetadata", onMeta);
           } else {
             v.removeAttribute("src");
+            v.load();
           }
         } else if (playing && src?.url) {
           if (v.paused) v.play().catch(() => {});
