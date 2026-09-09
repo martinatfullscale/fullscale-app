@@ -103,8 +103,13 @@ export function deriveTitle(filename) {
   // Version/finalcut tokens and delivery-format suffixes, at the end only.
   // "-hd"/"-sd" ride directly on the last word (`warby_parker-hd`), so they get
   // their own pass rather than sharing the separator class.
-  s = s.replace(/[_\s-]+(v\d+|fc\d+|final|r\d+)\s*$/gi, "");
-  s = s.replace(/-(hd|sd)\s*$/gi, "");
+  // Loop to a fixed point: these stack ("90s-final_v1"), and a single pass
+  // removes only the outermost, leaving "-final" glued to the title.
+  for (let prev = null; prev !== s; ) {
+    prev = s;
+    s = s.replace(/[_\s-]+(v\d+|fc\d+|final|r\d+)\s*$/i, "");
+    s = s.replace(/-(hd|sd)\s*$/i, "");
+  }
   // Dangling separators the strips above can leave behind.
   s = s.replace(/[_\s-]+$/g, "");
 
