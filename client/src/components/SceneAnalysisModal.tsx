@@ -292,8 +292,11 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // through frames with content instead of one stale fallback scene.
   useEffect(() => {
     if (!video?.id) return;
-    if (dbSurfaces.length === 0) return;
-    const newScenes = buildScenesFromSurfaces(dbSurfaces, video.id);
+    // Not `dbSurfaces.length === 0` any more: a video the detector found
+    // nothing in is exactly the one a creator most needs to teach, and the
+    // shot list gives us frames to teach on even with zero rows.
+    if (dbSurfaces.length === 0 && !sceneIndexShots?.length) return;
+    const newScenes = mergeSceneSources(dbSurfaces, sceneIndexShots, video.id);
     if (newScenes.length === 0) return;
     setLocalScenes(newScenes);
     // Reset index if out of range; otherwise preserve user's navigation.
@@ -313,7 +316,9 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       setFrameLoaded(false);
       setFrameError(false);
     }
-  }, [dbSurfaces, video?.id]);
+    // sceneIndexShots lands in the same fetch as dbSurfaces but in its own
+    // setState, so without it here the empty-shot frames are a render behind.
+  }, [dbSurfaces, sceneIndexShots, video?.id]);
   
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -462,6 +467,79 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       });
       // Don't filter by hasFrame — frame URL may still be accessible even if server
       // fs.existsSync check returned false. UI handles broken images with fallback.
+  };
+
+  /** A detection this close to a shot's midpoint means the shot is already
+   *  represented in the carousel and doesn't need a synthetic entry. */
+  const SHOT_ALREADY_COVERED_SEC = 0.75;
+
+  /**
+   * Scenes for shots the detector returned NOTHING for.
+   *
+   * The carousel used to be built purely from detections, which made the
+   * feature circular: you could only teach a surface on a frame that already
+   * had one. A blank wall behind an interview subject — the exact case
+   * teaching exists for — was unreachable, because no detection meant no
+   * frame in the strip.
+   *
+   * The shot list is already fetched for the teach-scene resolver, so the
+   * frames are free. Their images come from GET /api/video/:id/frame/:ts,
+   * which ffmpeg-extracts any second on demand and caches it at the same
+   * canonical path the surfaces endpoint backfills from — so teaching on one
+   * of these also gives the resulting row a real frameUrl.
+   *
+   * Note this needs the source on local disk. For a link-only import the
+   * frame endpoint 404s and these entries render their broken-image
+   * fallback; that is gated behind the source-cache work, not on this.
+   */
+  const buildScenesFromShots = (
+    shots: SceneIndexShot[],
+    surfaces: any[],
+    videoId: number,
+  ): Scene[] => {
+    const detected = surfaces.map((s: any) => Number(s.timestamp) || 0);
+    const out: Scene[] = [];
+    for (const shot of shots) {
+      const mid = (shot.tStart + shot.tEnd) / 2;
+      const covered = detected.some(
+        (t) => Math.abs(t - mid) <= SHOT_ALREADY_COVERED_SEC || (t >= shot.tStart && t <= shot.tEnd),
+      );
+      if (covered) continue;
+      const ts = Math.max(0, Math.round(mid));
+      out.push({
+        id: `shot-${videoId}-${shot.shotIdx}`,
+        timestamp: `${Math.floor(ts / 60)}:${String(ts % 60).padStart(2, "0")}`,
+        rawTs: ts,
+        imageUrl: `/api/video/${videoId}/frame/${ts}`,
+        surfaces: 0,
+        surfaceTypes: [],
+        context: "No spots here — draw one",
+        confidence: 0,
+      });
+    }
+    return out;
+  };
+
+  /** Detection frames and empty-shot frames, in one timeline-ordered strip. */
+  const mergeSceneSources = (
+    surfaces: any[],
+    shots: SceneIndexShot[] | null,
+    videoId: number,
+  ): Scene[] => {
+    const fromSurfaces = surfaces.length ? buildScenesFromSurfaces(surfaces, videoId) : [];
+    const fromShots = shots?.length ? buildScenesFromShots(shots, surfaces, videoId) : [];
+    const merged = [...fromSurfaces, ...fromShots].sort(
+      (a, b) => (a.rawTs ?? 0) - (b.rawTs ?? 0),
+    );
+    // Two sources can land on the same second; the detection entry wins because
+    // it carries real bboxes and a known-good frame URL.
+    const seen = new Set<number>();
+    return merged.filter((s) => {
+      const k = Math.round(s.rawTs ?? 0);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
   };
 
   // Server-side rescan: re-extract frames + detect surfaces, then rebuild scenes
@@ -844,6 +922,11 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
           surfaceType: teachType,
           orientation: teachOrientationFor(teachType),
           bbox: teachRect.norm,
+          // The frame this box was drawn against. A bbox only means anything
+          // relative to a specific frame; without this the server stamps it on
+          // the midpoint of the scene's longest shot, which may be a shot the
+          // creator never looked at.
+          timestamp: sceneSeconds,
         }),
       });
       if (!res.ok) {

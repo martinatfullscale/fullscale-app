@@ -12929,7 +12929,7 @@ export async function registerRoutes(
       const sceneId = parseInt(req.params.sceneId);
       if (isNaN(sceneId)) return res.status(400).json({ error: "Invalid scene ID" });
 
-      const { surfaceType: rawType, orientation, bbox } = req.body || {};
+      const { surfaceType: rawType, orientation, bbox, timestamp: rawTs } = req.body || {};
       const surfaceType = typeof rawType === "string" ? rawType.toLowerCase().trim() : "";
       if (!TEACHABLE_SURFACE_TYPES.includes(surfaceType)) {
         return res.status(400).json({ error: `surfaceType must be one of: ${TEACHABLE_SURFACE_TYPES.join(", ")}` });
@@ -13059,15 +13059,35 @@ export async function registerRoutes(
       }
       const groupId = `rm${modelId}-s${surfaceIdx}`;
 
-      // Immediate visibility 1/2: one detected_surfaces row at the midpoint
-      // of the scene's longest shot, pre-approved — the creator drew this
-      // box personally, no review gate needed.
+      // Immediate visibility 1/2: one detected_surfaces row, pre-approved —
+      // the creator drew this box personally, no review gate needed.
+      //
+      // Stamp it on the frame they actually drew on when the client tells us
+      // which one that was. The old behaviour — the midpoint of the scene's
+      // longest shot — put the box on a frame the creator may never have
+      // seen, and a box is only meaningful against the frame it was drawn
+      // against. The midpoint stays as the fallback for older clients.
       const longestShot = sceneShots.reduce((a: any, b: any) =>
         (b.tEnd - b.tStart) > (a.tEnd - a.tStart) ? b : a);
       const midpoint = (longestShot.tStart + longestShot.tEnd) / 2;
+      const drawnAt = typeof rawTs === "number" && Number.isFinite(rawTs) && rawTs >= 0
+        // Only honour a timestamp that falls inside this scene's own shots —
+        // the bbox is validated against the frame, and accepting an arbitrary
+        // second would let a box be stamped on an unrelated shot.
+        && sceneShots.some((s: any) => rawTs >= s.tStart - 1 && rawTs <= s.tEnd + 1)
+        ? rawTs
+        : null;
+      const stampTs = drawnAt ?? midpoint;
+      // A frame URL at the canonical path GET /api/video/:id/frame/:ts writes
+      // to. Without it the row has frameUrl null and is filtered out of the
+      // placement editor (`surfaces.filter(s => s.frameUrl)`) until some later
+      // request happens to mint the file.
+      const stampedFrameUrl = drawnAt !== null
+        ? `/uploads/frames/${videoId}/frame_${Math.round(drawnAt)}s.jpg`
+        : null;
       const surfaceRow = await storage.insertDetectedSurface({
         videoId,
-        timestamp: midpoint.toString(),
+        timestamp: stampTs.toString(),
         surfaceType: canonicalTaughtType,
         orientation,
         confidence: "0.9",
@@ -13075,7 +13095,7 @@ export async function registerRoutes(
         boundingBoxY: bbox.y.toString(),
         boundingBoxWidth: bbox.w.toString(),
         boundingBoxHeight: bbox.h.toString(),
-        frameUrl: null,
+        frameUrl: stampedFrameUrl,
         creatorApproved: true,
         sceneId,
         surfaceGroupId: groupId,
@@ -13122,7 +13142,9 @@ export async function registerRoutes(
             screenTimeSec: typeof scene.totalSec === "number" ? scene.totalSec : Math.round(shotSec * 10) / 10,
             rowCount: 1,
             representativeRowId: surfaceRow.id,
-            frameUrl: null,
+            // Mirror the row's own frame, so an inventory consumer and the
+            // detected_surfaces row agree on which frame this box belongs to.
+            frameUrl: stampedFrameUrl,
           });
           await storage.updateVideoIndex(videoId, { sceneInventory: inventory as any });
         }
