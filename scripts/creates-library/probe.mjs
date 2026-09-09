@@ -108,6 +108,8 @@ export function deriveTitle(filename) {
   // Dangling separators the strips above can leave behind.
   s = s.replace(/[_\s-]+$/g, "");
 
+  // Plus signs come from web-download filenames and are word separators.
+  s = s.replace(/\+/g, " ");
   // "__" is a phrase break in this corpus ("bet_x_nissan__the_pull_up").
   s = s.replace(/_{2,}/g, " — ").replace(/_/g, " ");
   // A hyphen with spaces around it is a separator, not a compound word.
@@ -136,18 +138,31 @@ export function deriveTitle(filename) {
   return { title, brand, featuredRank };
 }
 
-export function slugify(title, taken) {
-  let base = title
+/**
+ * The stable identifier for a piece: object key, filename, and URL.
+ *
+ * Derived from the SOURCE FILENAME, never from the title. A title is editable
+ * display text — the moment someone fixes a typo in it, a title-derived slug
+ * would change, orphaning every transcoded file and every uploaded object key
+ * and breaking any link already shared. The source filename is the one thing
+ * this pipeline never rewrites.
+ */
+export function slugify(sourceFile, taken) {
+  let base = sourceFile
+    .replace(/\.(mp4|mov|m4v)$/i, "")
+    // Featured pieces are just renamed library files; keying on the prefix
+    // would change the id if the featured set is reshuffled.
+    .replace(/^Video to Feature\s*-\s*\d{1,2}\s*-\s*/i, "")
     .toLowerCase()
     .normalize("NFD").replace(/[̀-ͯ]/g, "")
-    .replace(/[×]/g, "x")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 70)
     .replace(/-+$/g, "");
   if (!base) base = "untitled";
-  // Collisions are real here — several campaigns differ only by a stripped
-  // version token. Suffix rather than silently overwrite an object key.
+  // Distinct files can still normalize to the same string — two encodes of one
+  // spot differing only by a stripped version token. Suffix rather than
+  // silently overwrite an object key.
   let slug = base;
   let n = 2;
   while (taken.has(slug)) slug = `${base}-${n++}`;
@@ -222,7 +237,7 @@ async function main() {
     // `??` would keep a rank when the override says null, which is exactly how a
     // piece gets un-featured — so this one asks whether the key is present.
     const featuredRank = "featuredRank" in ov ? ov.featuredRank : derived.featuredRank;
-    const slug = slugify(title, taken);
+    const slug = slugify(name, taken);
 
     const row = { slug, title, brand, featuredRank, sourceFile: name };
     try {
