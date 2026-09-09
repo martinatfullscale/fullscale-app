@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "Human corrections to the probe's derived titles, applied by probe.mjs on every run.",
+    "Keyed by sourceFile because that is the one field the pipeline never rewrites.",
+    "Set featuredRank to null to drop a piece from the landing page without removing it",
+    "from the library — it still appears in the full gallery at /creates/work.",
+    "Featured ranks are renumbered contiguously after overrides are applied, so removing",
+    "one does not leave a hole."
+  ],
+
+  "Video to Feature - 2 - chase_united_ep1_the_booking_v1 (1080p).mp4": {
+    "title": "Chase United — Ep 1: The Booking"
+  },
+
+  "Video to Feature - 5 - linkedin__reshuffle__episode_1__is_hybrid_for_me__v1 (1080p).mp4": {
+    "featuredRank": null,
+    "title": "LinkedIn — Reshuffle, Ep 1: Is Hybrid For Me?",
+    "_why": "8:36 runtime — too long for a showcase tile. Stays in the gallery alongside episodes 2-6."
+  },
+
+  "Video to Feature - 9 - alia_penner_-_warby_parker-hd_v1 (540p).mp4": {
+    "featuredRank": null,
+    "title": "Alia Penner — Warby Parker",
+    "_why": "540p master, visibly soft beside the 2160p pieces. Stays in the gallery."
+  },
+
+  "Video to Feature - 10 - The RIght Pitch.mp4": {
+    "title": "The Right Pitch"
+  },
+
+  "Video to Feature - 11- 220615_CeraVe.mp4": {
+    "title": "CeraVe",
+    "brand": "CeraVe"
+  },
+
+  "Video to Feature - 12 - Nike_Blueprint_v10_vfx_0318_supplier_JA_VO_EN_20220324_v1.mp4": {
+    "title": "Nike Blueprint",
+    "brand": "Nike"
+  }
+}
