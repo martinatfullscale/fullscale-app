@@ -49,9 +49,8 @@
     "brand": "BET"
   },
   "bet+undercover+soldier3min+e1+101121.mp4_v1 (1080p) (1).mp4": {
-    "title": "BET — Undercover Soldier, Ep 1 (3 min, alt encode)",
-    "brand": "BET",
-    "_why": "Second encode of the same cut, not byte-identical so the dedupe pass missed it. Flagged for Martin — likely drop one."
+    "exclude": true,
+    "_why": "Same cut as a piece already in the library (identical duration and resolution, different encode). Held back so it doesn't render as a second identical card. Twin of the 3-minute cut (181.27s)."
   },
   "Nike_Blueprint_v10_vfx_0318_employee_JA_VO_EN_20220324_v1.mp4": {
     "title": "Nike Blueprint — Employee Cut",
@@ -90,5 +89,22 @@
   "episode_2_rough_cut_v1 (1080p).mp4": {
     "exclude": true,
     "_why": "Bawse — held back at Martin's direction 2026-09-09."
+  },
+  "machine_gun_kelly_at_the_mtv_vmas_sponsored_by_doritos.mp4_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Same cut as a piece already in the library (identical duration and resolution, different encode). Held back so it doesn't render as a second identical card. Twin of featured #5 (60.12s)."
+  },
+  "nike_blueprint_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Same cut as a piece already in the library (identical duration and resolution, different encode). Held back so it doesn't render as a second identical card. Lighter encode of featured #10, the supplier cut (178.30s, 98.6MB vs 207.6MB)."
+  },
+  "dennys_hungry_for_education_x_sarunas_jackson_v1 (1080p) (1).mp4": {
+    "title": "Denny's Hungry for Education × Sarunas Jackson — Vertical 15s",
+    "brand": "Denny's",
+    "_why": "Different deliverable from the 3-minute film: 15.98s at 1080x1920. Checked before excluding."
+  },
+  "dennys_hungry_for_education_x_sarunas_jackson_v1 (1080p).mp4": {
+    "title": "Denny's Hungry for Education × Sarunas Jackson",
+    "brand": "Denny's"
   }
 }

@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-09-10T04:41:47.187Z",
-  "count": 157,
+  "generatedAt": "2026-09-10T13:25:35.525Z",
+  "count": 154,
   "featuredCount": 10,
   "videos": [
     {
@@ -200,17 +200,6 @@
       "height": 2160,
       "videoUrl": "/storage/creates-library/bcode-x-smirnoff-sizzle-tampa-v1-2160p.mp4",
       "posterUrl": "/storage/creates-library/bcode-x-smirnoff-sizzle-tampa-v1-2160p.jpg"
-    },
-    {
-      "slug": "bet-undercover-soldier3min-e1-101121-mp4-v1-1080p-1",
-      "title": "BET — Undercover Soldier, Ep 1 (3 min, alt encode)",
-      "brand": "BET",
-      "featuredRank": null,
-      "durationSec": 181.27,
-      "width": 1920,
-      "height": 1080,
-      "videoUrl": "/storage/creates-library/bet-undercover-soldier3min-e1-101121-mp4-v1-1080p-1.mp4",
-      "posterUrl": "/storage/creates-library/bet-undercover-soldier3min-e1-101121-mp4-v1-1080p-1.jpg"
     },
     {
       "slug": "bet-undercover-soldier3min-e1-101121-mp4-v1-1080p",
@@ -466,17 +455,6 @@
       "posterUrl": "/storage/creates-library/deleon-at-the-naacp-image-awards-2024-v1-1080p.jpg"
     },
     {
-      "slug": "dennys-hungry-for-education-x-sarunas-jackson-v1-1080p-1",
-      "title": "Denny's Hungry for Education × Sarunas Jackson",
-      "brand": "Denny's",
-      "featuredRank": null,
-      "durationSec": 15.98,
-      "width": 1080,
-      "height": 1920,
-      "videoUrl": "/storage/creates-library/dennys-hungry-for-education-x-sarunas-jackson-v1-1080p-1.mp4",
-      "posterUrl": "/storage/creates-library/dennys-hungry-for-education-x-sarunas-jackson-v1-1080p-1.jpg"
-    },
-    {
       "slug": "dennys-hungry-for-education-x-sarunas-jackson-v1-1080p",
       "title": "Denny's Hungry for Education × Sarunas Jackson",
       "brand": "Denny's",
@@ -486,6 +464,17 @@
       "height": 1080,
       "videoUrl": "/storage/creates-library/dennys-hungry-for-education-x-sarunas-jackson-v1-1080p.mp4",
       "posterUrl": "/storage/creates-library/dennys-hungry-for-education-x-sarunas-jackson-v1-1080p.jpg"
+    },
+    {
+      "slug": "dennys-hungry-for-education-x-sarunas-jackson-v1-1080p-1",
+      "title": "Denny's Hungry for Education × Sarunas Jackson — Vertical 15s",
+      "brand": "Denny's",
+      "featuredRank": null,
+      "durationSec": 15.98,
+      "width": 1080,
+      "height": 1920,
+      "videoUrl": "/storage/creates-library/dennys-hungry-for-education-x-sarunas-jackson-v1-1080p-1.mp4",
+      "posterUrl": "/storage/creates-library/dennys-hungry-for-education-x-sarunas-jackson-v1-1080p-1.jpg"
     },
     {
       "slug": "disneypixar-soul-brazil-v1-2160p",
@@ -895,17 +884,6 @@
       "posterUrl": "/storage/creates-library/los-angeles-vegansmart-brunch-v1-720p.jpg"
     },
     {
-      "slug": "machine-gun-kelly-at-the-mtv-vmas-sponsored-by-doritos-mp4-v1-1080p",
-      "title": "Machine Gun Kelly at the MTV VMAS Sponsored by Doritos",
-      "brand": null,
-      "featuredRank": null,
-      "durationSec": 60.12,
-      "width": 1920,
-      "height": 1080,
-      "videoUrl": "/storage/creates-library/machine-gun-kelly-at-the-mtv-vmas-sponsored-by-doritos-mp4-v1-1080p.mp4",
-      "posterUrl": "/storage/creates-library/machine-gun-kelly-at-the-mtv-vmas-sponsored-by-doritos-mp4-v1-1080p.jpg"
-    },
-    {
       "slug": "martell-home-x-bet-freestyle-booth-v1-1080p",
       "title": "Martell Home × BET Freestyle Booth",
       "brand": "Martell",
@@ -1058,17 +1036,6 @@
       "height": 720,
       "videoUrl": "/storage/creates-library/myth-vs-josh-hart-mike-and-ike-fortnite-challenge-v1-720p.mp4",
       "posterUrl": "/storage/creates-library/myth-vs-josh-hart-mike-and-ike-fortnite-challenge-v1-720p.jpg"
-    },
-    {
-      "slug": "nike-blueprint-v1-1080p",
-      "title": "Nike Blueprint",
-      "brand": "Nike",
-      "featuredRank": null,
-      "durationSec": 178.3,
-      "width": 1920,
-      "height": 1080,
-      "videoUrl": "/storage/creates-library/nike-blueprint-v1-1080p.mp4",
-      "posterUrl": "/storage/creates-library/nike-blueprint-v1-1080p.jpg"
     },
     {
       "slug": "nike-blueprint-v10-vfx-0318-employee-ja-vo-en-20220324-v1",
