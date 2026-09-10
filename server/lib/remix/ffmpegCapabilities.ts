@@ -28,6 +28,9 @@ export interface FfmpegCapabilities {
   ass: boolean;
   /** Ducking a music bed under speech. */
   sidechaincompress: boolean;
+  /** Output peak limiter. Mixing with `normalize=0` keeps the voice at its
+   *  real level, so a loud bed can now sum past full scale; this catches it. */
+  alimiter: boolean;
   /** Music bed mixing. */
   amix: boolean;
   /** Speed ramps on the audio side. */
@@ -48,7 +51,7 @@ let inflight: Promise<FfmpegCapabilities> | null = null;
 const FALLBACK: FfmpegCapabilities = {
   // Assume only the universally-compiled filters when the probe itself fails.
   vidstab: false, deshake: false, drawtext: false, ass: false,
-  sidechaincompress: false, amix: false, atempo: false, silencedetect: false,
+  sidechaincompress: false, amix: false, atempo: false, silencedetect: false, alimiter: false,
   trim: true, concat: true, overlay: true,
 };
 
@@ -117,6 +120,7 @@ export async function getFfmpegCapabilities(): Promise<FfmpegCapabilities> {
       drawtext: has("drawtext"),
       ass: has("ass") || has("subtitles"),
       sidechaincompress: has("sidechaincompress"),
+      alimiter: has("alimiter"),
       amix: has("amix"),
       atempo: has("atempo"),
       silencedetect: has("silencedetect"),

@@ -492,7 +492,10 @@ export async function buildEditGraph(opts: {
   // before the bed is mixed so ducking keys off the level the viewer hears.
   // Only builds a node when the level actually differs from unity: a no-op
   // volume filter would force an audio re-encode on every render.
-  const baseGain = Number(stack.baseAudioLevel);
+  // `Number(null)` is 0, not NaN, so a null gain used to pass the finite check
+  // and render the voice at volume 0. That is how every reel with a Text, PiP or
+  // Music block exported silent: -21 dB in, -91 dB out.
+  const baseGain = stack.baseAudioLevel == null ? NaN : Number(stack.baseAudioLevel);
   if (hasAudio && Number.isFinite(baseGain) && Math.abs(baseGain - 1) > 0.01) {
     const g = Math.min(2, Math.max(0, baseGain));
     audio = audio ?? [];
@@ -630,7 +633,10 @@ export async function buildEditGraph(opts: {
       const idx = inputIdx++;
       audio = audio ?? [];
       const speech = audioOutLabel ?? (hasAudio ? "[0:a]" : null);
-      const vol = Math.min(1, Math.max(0, Number(music.volume) || 0.2));
+      // `|| 0.2` treated a deliberate 0 as unset and rendered it at 20%.
+      const vol = music.volume == null || !Number.isFinite(Number(music.volume))
+        ? 0.2
+        : Math.min(1, Math.max(0, Number(music.volume)));
       const dur = outputDurationSec > 0 ? outputDurationSec : clipDurationSec;
       const fadeIn = Math.max(0, Number(music.fadeInSec) || 0);
       const fadeOut = Math.max(0, Number(music.fadeOutSec) || 0);
@@ -653,7 +659,7 @@ export async function buildEditGraph(opts: {
         const ratio = Math.min(20, Math.max(2, (Number(music.duckAmountDb) || 12) / 1.5));
         audio.push(`${speech}asplit=2[sp_mix][sp_key]`);
         audio.push(`[bed][sp_key]sidechaincompress=threshold=0.05:ratio=${ratio.toFixed(1)}:attack=20:release=350[bedduck]`);
-        audio.push(`[sp_mix][bedduck]amix=inputs=2:duration=first:dropout_transition=0[aout]`);
+        audio.push(`[sp_mix][bedduck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`);
       } else {
         if (music.ducking && !caps.sidechaincompress) {
           warnings.push(
@@ -666,9 +672,30 @@ export async function buildEditGraph(opts: {
         // "No such filter: ''". Every un-ducked music bed failed its render,
         // as did every ducked one on a server without sidechaincompress,
         // since the warning above falls through to exactly this branch.
-        audio.push(`${speech}[bed]amix=inputs=2:duration=first:dropout_transition=0[aout]`);
+        audio.push(`${speech}[bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`);
       }
-      audioOutLabel = "[aout]";
+      // Mix at real level, then catch the peaks. amix defaults to normalize=1,
+      // which divides every input by the input count — so adding any bed pulled
+      // the voice down 6 dB. With normalize=0 a loud bed can sum past full scale,
+      // so a limiter sits on the output.
+      //
+      // limit=0.794 (-2 dBFS), not the obvious 0.95. The limiter caps PCM samples
+      // exactly, but every render here then encodes AAC at 128k, and AAC overshoots
+      // the PCM peak by ~0.7 dB. Measured true peak after AAC 128k, full-scale
+      // voice plus bed:  0.95 -> +0.2 dBTP (clips)   0.891 -> -0.4   0.841 -> -0.7
+      // 0.794 -> -1.3 dBTP. 0.794 is the highest ceiling that keeps true peak under
+      // the -1 dBTP streaming platforms ask for. Quiet mixes never reach it, so it
+      // only touches peaks that would otherwise clip.
+      //
+      // level=0 because the default "auto level" adds gain on its own (measured
+      // -21.1 dB in, -20.6 dB out); latency=1 compensates the lookahead so audio
+      // stays in sync. Capability-gated: without alimiter the graph still builds.
+      if (caps.alimiter) {
+        audio.push("[aout]alimiter=limit=0.794:level=0:latency=1[alim]");
+        audioOutLabel = "[alim]";
+      } else {
+        audioOutLabel = "[aout]";
+      }
     }
   }
 
@@ -732,6 +759,6 @@ export function editStackIsActive(stack: EditStack | null | undefined): boolean 
     // was "bring my voice down" failed this gate, took the no-edit render
     // path, and came back at the original level with the slider still moved —
     // the same shape of bug the silenceCut note above describes.
-    (Number.isFinite(Number(stack.baseAudioLevel)) && Math.abs(Number(stack.baseAudioLevel) - 1) > 0.01)
+    (stack.baseAudioLevel != null && Number.isFinite(Number(stack.baseAudioLevel)) && Math.abs(Number(stack.baseAudioLevel) - 1) > 0.01)
   );
 }

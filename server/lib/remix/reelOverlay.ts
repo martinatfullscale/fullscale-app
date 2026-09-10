@@ -56,7 +56,7 @@ export const reelOverlayStackIsEmpty = (s: ReelOverlayStack | null | undefined):
   ((s.broll ?? []).length === 0 &&
     (s.textOverlays ?? []).length === 0 &&
     !s.music &&
-    !(Number.isFinite(Number(s.baseAudioLevel)) && Math.abs(Number(s.baseAudioLevel) - 1) > 0.01));
+    !(s.baseAudioLevel != null && Number.isFinite(Number(s.baseAudioLevel)) && Math.abs(Number(s.baseAudioLevel) - 1) > 0.01));
 
 /** Enough of a stitch segment to work out where its join lands. */
 export interface ReelSegmentTiming {
@@ -197,7 +197,9 @@ export async function applyReelOverlays(opts: {
       broll: stack.broll ?? null,
       textOverlays: stack.textOverlays ?? null,
       music: stack.music ?? null,
-      baseAudioLevel: stack.baseAudioLevel ?? null,
+      // `?? undefined`, never `?? null`. The edit graph read a null gain as 0 and
+      // muted the whole reel; undefined means "no gain set", which is unity.
+      baseAudioLevel: stack.baseAudioLevel ?? undefined,
     } as EditStack,
     clipDurationSec: durationSec,
     outWidth,
