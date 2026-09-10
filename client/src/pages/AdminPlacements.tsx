@@ -27,6 +27,10 @@ import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { TopBar } from "@/components/TopBar";
 import { Loader2, ClipboardCheck, Clock, Eye, CheckCircle2, AlertTriangle, Upload } from "lucide-react";
@@ -136,7 +140,78 @@ export default function AdminPlacements() {
     onError: (err: Error) => toast({ title: "Update failed", description: err.message, variant: "destructive" }),
   });
 
+  // Repair is two steps on purpose. The button used to apply straight away,
+  // so the first look at what it ran was the server log afterwards.
+  type SchemaPlan = { statements: Array<{ sql: string; reason: string }>; warnings: string[] };
+  const [schemaPlan, setSchemaPlan] = useState<SchemaPlan | null>(null);
+  const [previewingSchema, setPreviewingSchema] = useState(false);
   const [fixingSchema, setFixingSchema] = useState(false);
+
+  // Checked on load, not only when the queue fails. A missing column on a
+  // table this page never reads (stitch_plans, say) breaks reels while the
+  // queue loads fine, and the repair button used to live only on the queue's
+  // error card.
+  const { data: schemaCheck } = useQuery<{
+    ok: boolean;
+    missingTables: string[];
+    missingColumns: Array<{ table: string; column: string }>;
+    error?: string;
+  }>({
+    queryKey: ["/api/admin/schema-check"],
+    queryFn: async () => {
+      const res = await fetchWithTimeout("/api/admin/schema-check", { credentials: "include" });
+      // 503 is this endpoint's "drift found" answer, not a failure.
+      if (res.status !== 200 && res.status !== 503) throw new Error(`Schema check failed (${res.status})`);
+      return res.json();
+    },
+    retry: false,
+    staleTime: 60_000,
+  });
+  const driftSummary = !schemaCheck || schemaCheck.ok
+    ? ""
+    : schemaCheck.error
+      ? `The schema check couldn't run: ${schemaCheck.error}`
+      : [
+          schemaCheck.missingColumns.length > 0
+            ? `Missing column${schemaCheck.missingColumns.length === 1 ? "" : "s"}: ${schemaCheck.missingColumns.map((c) => `${c.table}.${c.column}`).join(", ")}.`
+            : "",
+          schemaCheck.missingTables.length > 0
+            ? `Missing table${schemaCheck.missingTables.length === 1 ? "" : "s"}: ${schemaCheck.missingTables.join(", ")}.`
+            : "",
+        ].filter(Boolean).join(" ");
+
+  const previewSchemaFix = async () => {
+    setPreviewingSchema(true);
+    try {
+      const res = await fetchWithTimeout("/api/admin/schema-fix", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `Couldn't prepare the repair (${res.status})`);
+      const statements = body.plan?.statements ?? [];
+      if (statements.length === 0) {
+        toast({
+          title: "Nothing to apply",
+          description: body.drift?.ok
+            ? "The database already matches the code."
+            : body.drift?.error
+              ? `The schema check couldn't run: ${body.drift.error}`
+              : "Drift was found but there is no statement to fix it. Check the server log.",
+        });
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/schema-check"] });
+        return;
+      }
+      setSchemaPlan({ statements, warnings: body.plan?.warnings ?? [] });
+    } catch (err: any) {
+      toast({ title: "Couldn't prepare the repair", description: err?.message, variant: "destructive" });
+    } finally {
+      setPreviewingSchema(false);
+    }
+  };
+
   const fixSchema = async () => {
     setFixingSchema(true);
     try {
@@ -168,6 +243,7 @@ export default function AdminPlacements() {
       toast({ title: "Repair failed", description: err?.message, variant: "destructive" });
     } finally {
       setFixingSchema(false);
+      setSchemaPlan(null);
     }
   };
 
@@ -436,6 +512,31 @@ export default function AdminPlacements() {
           bell notification.
         </p>
 
+        {schemaCheck && !schemaCheck.ok && (
+          <Card className="border-amber-500/30 bg-amber-500/5 mb-6" data-testid="card-schema-drift">
+            <CardContent className="p-4 flex items-start gap-3">
+              <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium mb-1">The database is behind the code</p>
+                <p className="text-xs text-muted-foreground leading-relaxed break-words">
+                  {driftSummary}
+                  {!schemaCheck.error && " Anything that reads or writes those tables fails until the change is applied."}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={previewingSchema || fixingSchema}
+                onClick={previewSchemaFix}
+                data-testid="button-review-schema-fix"
+              >
+                {previewingSchema ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+                Repair database schema
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
         {isLoading ? (
           <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
         ) : isError ? (
@@ -445,18 +546,17 @@ export default function AdminPlacements() {
               <p className="text-xs text-muted-foreground leading-relaxed mb-3">
                 {(error as Error)?.message || "Unknown error"}
               </p>
-              {/* Schema drift has a one-click repair: the deployed app holds
-                  the right DATABASE_URL, so it applies the missing tables and
-                  columns itself. Additive-only DDL — safe to run twice. */}
-              {/schema|db:push|does not exist/i.test(String((error as Error)?.message)) && (
+              {/* The same preview as the banner above. Shown here too for when
+                  the schema check itself couldn't run, so there is no banner. */}
+              {schemaCheck?.ok !== false && /schema|does not exist/i.test(String((error as Error)?.message)) && (
                 <Button
                   size="sm"
-                  disabled={fixingSchema}
-                  onClick={fixSchema}
+                  disabled={previewingSchema || fixingSchema}
+                  onClick={previewSchemaFix}
                   data-testid="button-fix-schema"
                 >
-                  {fixingSchema ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
-                  {fixingSchema ? "Repairing database…" : "Repair database schema"}
+                  {previewingSchema ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+                  Repair database schema
                 </Button>
               )}
             </CardContent>
@@ -488,6 +588,44 @@ export default function AdminPlacements() {
             </Card>
           </>
         )}
+        <AlertDialog open={!!schemaPlan} onOpenChange={(open) => { if (!open && !fixingSchema) setSchemaPlan(null); }}>
+          <AlertDialogContent className="max-w-2xl">
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Apply {schemaPlan?.statements.length ?? 0} database change{schemaPlan?.statements.length === 1 ? "" : "s"}?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                Additive only: it creates missing tables and adds missing columns. It never drops, renames or retypes anything, and running it twice changes nothing.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="max-h-64 overflow-auto rounded-md border bg-muted/40 p-3">
+              <ul className="flex flex-col gap-2.5">
+                {schemaPlan?.statements.map((st, i) => (
+                  <li key={i} className="text-xs">
+                    <p className="text-muted-foreground mb-0.5">{st.reason}</p>
+                    <code className="block font-mono text-[11px] whitespace-pre-wrap break-all">{st.sql}</code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            {schemaPlan && schemaPlan.warnings.length > 0 && (
+              <ul className="text-xs text-amber-700 dark:text-amber-400 list-disc pl-4 space-y-1">
+                {schemaPlan.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            )}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={fixingSchema}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={fixingSchema}
+                onClick={(e) => { e.preventDefault(); void fixSchema(); }}
+                data-testid="button-apply-schema-fix"
+              >
+                {fixingSchema ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+                {fixingSchema ? "Applying…" : "Apply changes"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </main>
     </div>
   );

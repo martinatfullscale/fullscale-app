@@ -598,37 +598,31 @@ async function sweepStaleTempArtifacts(): Promise<void> {
       // touching that table and the whole app reads as "laggy, everything
       // spins". Loud at boot beats diagnosing it from symptoms again.
       //
-      // And REPAIR it, not just report it. This build shipped with four tables
-      // (creator_credits, credit_grants, ai_generations, credit_purchases)
-      // absent from the deployment database — logged loudly, then left broken,
-      // because the fix lived behind an admin button nobody knew to press
-      // while the app was misbehaving. A deployment that can heal itself is
-      // worth more than a deployment that describes its own illness.
+      // And repair it. Missing COLUMNS are added automatically once the port is
+      // open. Every time a migration missed this database, the fix sat behind a
+      // manual step (an opt-in flag set nowhere, an admin button nobody opens
+      // mid-outage) while every reel build failed on a column the code already
+      // expected.
       //
-      // Safe to run unattended: the plan is STRICTLY ADDITIVE by construction
-      // — CREATE TABLE IF NOT EXISTS and ADD COLUMN IF NOT EXISTS only, never
-      // a DROP, never a type change — so it cannot destroy data and is a no-op
-      // when the schema already matches. Set SCHEMA_AUTOREPAIR=false to
-      // disable.
+      // Why this is safe unattended:
+      //   - ADD COLUMN IF NOT EXISTS only. A missing TABLE is logged, not
+      //     created: CREATE TABLE from Drizzle metadata gets a primary key and
+      //     none of the unique constraints upserts depend on.
+      //   - Not awaited: startup and the jobs below never wait on it. It became
+      //     opt-in when the 2026-08-06 deploy failed to start (8059965), a
+      //     failure that commit could not reproduce; this runs after listen.
+      //   - Each ALTER gives up after 3s without its table lock and retries,
+      //     so it can't hold readers of a busy table in a queue behind it.
+      //
+      // SCHEMA_AUTOREPAIR=false turns it off.
       try {
-        const { logSchemaDriftAtBoot, applySchemaFix } = await import("./lib/schemaCheck");
+        const { logSchemaDriftAtBoot, bootRepairDecision, runBootSchemaRepair, SCHEMA_REPAIR_WHERE } = await import("./lib/schemaCheck");
         const drift = await logSchemaDriftAtBoot();
-        const needsRepair = (drift?.missingTables?.length ?? 0) > 0 || (drift?.missingColumns?.length ?? 0) > 0;
-        // OPT-IN, not default. Automatic DDL at boot changes startup behaviour,
-        // and a deploy failed to start immediately after this shipped. Whether
-        // or not it was the cause, running unattended migrations by default is
-        // not something to leave on while startup is the thing under
-        // investigation. Set SCHEMA_AUTOREPAIR=true to enable, or click
-        // "Repair database schema" in the admin placements page.
-        if (needsRepair && process.env.SCHEMA_AUTOREPAIR === "true") {
-          log("Schema drift detected — applying additive repair (SCHEMA_AUTOREPAIR=true)...");
-          const result = await applySchemaFix();
-          const ok = (result?.applied ?? []).filter((a: any) => a.ok).length;
-          const failed = (result?.applied ?? []).filter((a: any) => !a.ok);
-          log(`Schema repair: ${ok} statement(s) applied, ${failed.length} failed`);
-          for (const f of failed) log(`  repair FAILED: ${f.sql} -> ${f.error}`);
-        } else if (needsRepair) {
-          log("Schema drift detected — NOT auto-repairing (set SCHEMA_AUTOREPAIR=true, or use the admin Repair button).");
+        const decision = bootRepairDecision(drift);
+        if (decision === "repair") {
+          void runBootSchemaRepair(drift).catch((e) => log(`[SchemaFix] boot repair crashed: ${e}`));
+        } else if (decision === "disabled") {
+          log(`Schema drift detected — auto-repair is off (SCHEMA_AUTOREPAIR=false). ${SCHEMA_REPAIR_WHERE}.`);
         }
       } catch (schemaErr) {
         log(`Schema check failed to run: ${schemaErr}`);

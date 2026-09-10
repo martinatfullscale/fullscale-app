@@ -120,10 +120,11 @@ async function buildAll() {
  * query touching that table.
  *
  * Non-interactive by construction:
- *   - no --force, so a genuinely destructive statement is REFUSED rather
- *     than auto-approved. Additive changes (the normal case) apply cleanly;
- *     a drop/rename fails the build loudly, which is the correct outcome —
- *     that decision should never be made by a deploy script.
+ *   - no --force, so drizzle-kit never auto-approves a drop or rename. It
+ *     asks instead, and with stdin closed nobody can answer: the push exits
+ *     or times out without a completion marker. That is reported below and
+ *     then SWALLOWED — it does not fail the build. The app adds missing
+ *     columns itself at boot; a missing table needs the admin repair.
  *   - a hard timeout, so a prompt or a hung connection can never wedge the
  *     deploy indefinitely.
  *
@@ -141,6 +142,12 @@ async function pushSchema(): Promise<void> {
   }
   const { spawn } = await import("child_process");
   console.log("[build] pushing schema to this environment's database...");
+  // drizzle.config.ts reads DATABASE_URL; the running app prefers
+  // DATABASE_URL_OVERRIDE (server/db.ts). With the override set, this push and
+  // the app are pointed at different databases. Say whether, never the value.
+  console.log(
+    `[build] DATABASE_URL_OVERRIDE set: ${process.env.DATABASE_URL_OVERRIDE ? "yes — the app will use it, not the DATABASE_URL this push targets" : "no"}`,
+  );
 
   // Output is CAPTURED, not inherited, because drizzle-kit's exit code is not
   // trustworthy: pointed at an unreachable database it prints ECONNREFUSED and
@@ -193,8 +200,8 @@ buildAll()
       console.error(`\n${bar}`);
       console.error("[build] SCHEMA PUSH FAILED — the build itself succeeded.");
       console.error(`[build] ${err?.message ?? err}`);
-      console.error("[build] The deployed app will log its exact schema drift at boot");
-      console.error("[build] ([SchemaCheck]) and can repair itself from the admin UI.");
+      console.error("[build] The deployed app logs its exact drift at boot ([SchemaCheck]) and");
+      console.error("[build] adds missing columns itself; a missing table needs the admin repair.");
       console.error(`${bar}\n`);
     }
   })

@@ -52,6 +52,7 @@ import path from "path";
 import fs from "fs";
 import { pipeline as streamPipeline } from "stream";
 import { release as stallRelease } from "./lib/stallWatch";
+import { SCHEMA_REMEDY, SCHEMA_REPAIR_WHERE } from "./lib/schemaCheck";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
@@ -462,14 +463,27 @@ import { startEphemeralJob, getEphemeralJob } from "./lib/jobs/ephemeralJobs";
  */
 function explainDbError(err: any, fallback: string): { status: number; error: string } {
   const msg = String(err?.message ?? err ?? "");
-  if (/column .* does not exist|relation .* does not exist/i.test(msg)) {
+  if (isSchemaDriftError(err)) {
     return {
       status: 503,
-      error: `Database schema is behind the deployed code — ${msg.split("\n")[0]}. Run \`npm run db:push\` against this environment, then reload.`,
+      error: `Database schema is behind the deployed code — ${msg.split("\n")[0]}. ${SCHEMA_REMEDY}`,
     };
   }
   return { status: 500, error: fallback };
 }
+
+/** Postgres's wording for a table or column the code expects and the database lacks. */
+function isSchemaDriftError(err: any): boolean {
+  return /column .* does not exist|relation .* does not exist/i.test(String(err?.message ?? err ?? ""));
+}
+
+/**
+ * What a creator sees when reels hit schema drift. Postgres's own sentence
+ * ("column "overlays" of relation "stitch_plans" does not exist") used to go
+ * straight to the toast; the operator detail belongs in the log.
+ */
+const REELS_SCHEMA_MESSAGE =
+  `Reels are unavailable right now: this site's database is missing an update they need. An admin can apply it with ${SCHEMA_REPAIR_WHERE}.`;
 
 /**
  * Clip-scan tracker. A clip "scan" is either a full source scan (video was
@@ -1749,7 +1763,7 @@ export async function registerRoutes(
       const drift = await checkSchemaDrift();
       res.status(drift.ok ? 200 : 503).json({
         ...drift,
-        fixEndpoint: drift.ok ? null : "POST /api/admin/schema-fix { \"confirm\": true } applies the missing pieces from inside the app",
+        fixEndpoint: drift.ok ? null : `${SCHEMA_REPAIR_WHERE}. Or POST /api/admin/schema-fix with {} to see the plan, then { "confirm": true } to apply it.`,
       });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || "Schema check failed" });
@@ -1775,7 +1789,10 @@ export async function registerRoutes(
         return res.json({ dryRun: true, drift, plan });
       }
       console.log(`[SchemaFix] ${callerEmail} confirmed schema self-repair`);
-      const result = await applySchemaFix();
+      // The full plan, tables included: a person has seen it. Short lock
+      // waits all the same, so a busy table fails fast instead of queueing
+      // every reader of it behind the ALTER.
+      const result = await applySchemaFix({ lockTimeoutMs: 3000 });
       const failed = result.applied.filter((a) => !a.ok).length;
       res.status(result.driftAfter.ok ? 200 : failed > 0 ? 500 : 200).json(result);
     } catch (err: any) {
@@ -11685,7 +11702,7 @@ export async function registerRoutes(
         return res.json({
           available: false,
           detail: missingTable
-            ? "The credits tables are not in this environment's database yet. An admin can fix it from the placements page (\"Repair database schema\") or by running `npm run db:push` against this deployment."
+            ? `The credits tables are not in this environment's database yet. An admin can create them with ${SCHEMA_REPAIR_WHERE}.`
             : `Credits are unavailable right now: ${msg}`,
           balance: 0,
           allowance: { freeImagesPerDay: 0, freeImagesUsedToday: 0, freeImagesLeft: 0, balance: 0 },
@@ -16619,10 +16636,11 @@ export async function registerRoutes(
         }
       })();
     } catch (err: any) {
-      // Gracefully handle missing stitch_plans table
-      if (err.message?.includes("stitch_plans") && err.message?.includes("does not exist")) {
-        console.warn("[Stitch] Table not yet created — run `npm run db:push` to migrate");
-        return res.status(503).json({ error: "Stitch plans feature requires database migration. Run `npm run db:push` on Replit." });
+      // stitch_plans behind the code: a missing table, or a missing column,
+      // which fails every insert just the same.
+      if (isSchemaDriftError(err) && /stitch_plans/.test(String(err?.message))) {
+        console.warn(`[Stitch] stitch_plans is behind the code: ${err.message}. ${SCHEMA_REMEDY}`);
+        return res.status(503).json({ error: REELS_SCHEMA_MESSAGE });
       }
       console.error("[Stitch Route] Error:", err.message, err.stack);
       res.status(500).json({ error: err.message || "Stitch failed" });
@@ -17270,6 +17288,12 @@ export async function registerRoutes(
       })();
     } catch (err: any) {
       console.error("[Reel Route] Error:", err.message);
+      // createStitchPlan on a database behind the code fails with Postgres's
+      // own sentence, which is what the reel builder's toast used to show.
+      if (isSchemaDriftError(err)) {
+        console.error(`[Reel] database is behind the code: ${err.message}. ${SCHEMA_REMEDY}`);
+        return res.status(503).json({ error: REELS_SCHEMA_MESSAGE });
+      }
       res.status(500).json({ error: err.message || "Failed to build reel" });
     }
   });
@@ -17281,10 +17305,16 @@ export async function registerRoutes(
       const plans = await storage.getStitchPlansByVideo(videoId);
       res.json(plans);
     } catch (err: any) {
-      // Gracefully handle missing stitch_plans table (needs db:push migration)
-      if (err.message?.includes("stitch_plans") && err.message?.includes("does not exist")) {
-        console.warn("[StitchPlans] Table not yet created — run `npm run db:push` to migrate");
+      // A missing TABLE means no reel was ever saved here, so an empty list is
+      // true. A missing COLUMN means reels exist and can't be read, and an empty
+      // list would tell someone their reels are gone.
+      if (/relation "stitch_plans" does not exist/i.test(String(err?.message))) {
+        console.warn(`[StitchPlans] stitch_plans table is missing. ${SCHEMA_REMEDY}`);
         return res.json([]);
+      }
+      if (isSchemaDriftError(err)) {
+        console.error(`[StitchPlans] database is behind the code: ${err.message}. ${SCHEMA_REMEDY}`);
+        return res.status(503).json({ error: REELS_SCHEMA_MESSAGE });
       }
       res.status(500).json({ error: err.message || "Failed to fetch stitch plans" });
     }
