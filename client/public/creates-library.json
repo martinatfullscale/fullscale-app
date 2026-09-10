@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-09-10T13:25:35.525Z",
+  "generatedAt": "2026-09-10T13:43:11.698Z",
   "count": 154,
-  "featuredCount": 10,
+  "featuredCount": 12,
   "videos": [
     {
       "slug": "anta-x-kyrie-the-journey-is-the-reward-sizzle-v1-1080p",
@@ -112,6 +112,28 @@
       "height": 1080,
       "videoUrl": "/storage/creates-library/nike-blueprint-v10-vfx-0318-supplier-ja-vo-en-20220324-v1.mp4",
       "posterUrl": "/storage/creates-library/nike-blueprint-v10-vfx-0318-supplier-ja-vo-en-20220324-v1.jpg"
+    },
+    {
+      "slug": "retool-your-school-with-the-home-depot-v1-2160p",
+      "title": "The Home Depot — Retool Your School",
+      "brand": "The Home Depot",
+      "featuredRank": 11,
+      "durationSec": 60.07,
+      "width": 3840,
+      "height": 2160,
+      "videoUrl": "/storage/creates-library/retool-your-school-with-the-home-depot-v1-2160p.mp4",
+      "posterUrl": "/storage/creates-library/retool-your-school-with-the-home-depot-v1-2160p.jpg"
+    },
+    {
+      "slug": "mountain-dew-top-five-finalists-real-change-opportunity-fund-v1-2160p",
+      "title": "Mountain Dew — Real Change Opportunity Fund: Top Five Finalists",
+      "brand": "Mountain Dew",
+      "featuredRank": 12,
+      "durationSec": 60.07,
+      "width": 3840,
+      "height": 2160,
+      "videoUrl": "/storage/creates-library/mountain-dew-top-five-finalists-real-change-opportunity-fund-v1-2160p.mp4",
+      "posterUrl": "/storage/creates-library/mountain-dew-top-five-finalists-real-change-opportunity-fund-v1-2160p.jpg"
     },
     {
       "slug": "60s-sizzle-v1-1080p",
@@ -1005,17 +1027,6 @@
       "posterUrl": "/storage/creates-library/moet-beats-bites-v5-on-vimeo-v1-360p.jpg"
     },
     {
-      "slug": "mountain-dew-top-five-finalists-real-change-opportunity-fund-v1-2160p",
-      "title": "Mountain Dew, Top Five Finalists, Real Change Opportunity Fund",
-      "brand": null,
-      "featuredRank": null,
-      "durationSec": 60.07,
-      "width": 3840,
-      "height": 2160,
-      "videoUrl": "/storage/creates-library/mountain-dew-top-five-finalists-real-change-opportunity-fund-v1-2160p.mp4",
-      "posterUrl": "/storage/creates-library/mountain-dew-top-five-finalists-real-change-opportunity-fund-v1-2160p.jpg"
-    },
-    {
       "slug": "mtvbkvma203h-v1-1080p",
       "title": "MTV for Burger King",
       "brand": "MTV",
@@ -1146,17 +1157,6 @@
       "height": 720,
       "videoUrl": "/storage/creates-library/qvc-rehearsal-v1-720p.mp4",
       "posterUrl": "/storage/creates-library/qvc-rehearsal-v1-720p.jpg"
-    },
-    {
-      "slug": "retool-your-school-with-the-home-depot-v1-2160p",
-      "title": "Retool Your School with the Home Depot",
-      "brand": null,
-      "featuredRank": null,
-      "durationSec": 60.07,
-      "width": 3840,
-      "height": 2160,
-      "videoUrl": "/storage/creates-library/retool-your-school-with-the-home-depot-v1-2160p.mp4",
-      "posterUrl": "/storage/creates-library/retool-your-school-with-the-home-depot-v1-2160p.jpg"
     },
     {
       "slug": "retool-your-school-with-the-home-depot-and-rashan-ali-v1-2160p",

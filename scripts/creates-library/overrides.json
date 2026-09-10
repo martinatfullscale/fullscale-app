@@ -22,7 +22,9 @@
     "_why": "540p master, visibly soft beside the 2160p pieces. Stays in the gallery."
   },
   "Video to Feature - 10 - The RIght Pitch.mp4": {
-    "title": "The Right Pitch"
+    "title": "The Right Pitch",
+    "posterAt": 52.5,
+    "_posterWhy": "10% in (7.2s) landed on a defocused lens-flare transition. 52.5s is the wide set shot with the show's logo on the living wall — reads as the show, no burned-in lower third."
   },
   "Video to Feature - 11- 220615_CeraVe.mp4": {
     "title": "CeraVe",
@@ -106,5 +108,19 @@
   "dennys_hungry_for_education_x_sarunas_jackson_v1 (1080p).mp4": {
     "title": "Denny's Hungry for Education × Sarunas Jackson",
     "brand": "Denny's"
+  },
+  "retool_your_school_with_the_home_depot_v1 (2160p).mp4": {
+    "featuredRank": 13,
+    "title": "The Home Depot — Retool Your School",
+    "brand": "The Home Depot",
+    "_why": "Added to the landing page by Martin 2026-09-10 to fill the grid to 12. 4K master.",
+    "_rankWhy": "13/14, not 11/12: filename ranks already use 11 (CeraVe) and 12 (Nike). Renumbered to 11/12 on output."
+  },
+  "mountain_dew,_top_five_finalists,_real_change_opportunity_fund_v1 (2160p).mp4": {
+    "featuredRank": 14,
+    "title": "Mountain Dew — Real Change Opportunity Fund: Top Five Finalists",
+    "brand": "Mountain Dew",
+    "_why": "Added to the landing page by Martin 2026-09-10 to fill the grid to 12. 4K master.",
+    "_rankWhy": "13/14, not 11/12: filename ranks already use 11 (CeraVe) and 12 (Nike). Renumbered to 11/12 on output."
   }
 }

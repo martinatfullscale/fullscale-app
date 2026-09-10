@@ -57,9 +57,11 @@ export const createsAr: CreatesContent = {
       "تفعيل برعاية مع MGK في حفل جوائز VMAs",
       "التعريف بمساحة Chelsea Factory للفنون الأدائية",
       "فيلم ملخّص من حفل VMAs مع Lil Yachty",
-      "",
+      "سلسلة مسابقة لعروض المشاريع بتحكيم Dr. Marcus Collins وRoy Broderick, Jr.",
       "فيلم للعلامة التجارية CeraVe",
       "محتوى حملة لمبادرة Blueprint من Nike",
+      "مبادرة Retool Your School من The Home Depot",
+      "أفضل خمسة متأهلين لصندوق Real Change Opportunity من Mountain Dew",
     ],
   },
 

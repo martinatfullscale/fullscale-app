@@ -55,9 +55,11 @@ export const createsEn: CreatesContent = {
       "Sponsored activation with MGK at the VMAs",
       "Introducing the Chelsea Factory performing arts space",
       "Recap film from the VMAs with Lil Yachty",
-      "",
+      "Pitch competition series judged by Dr. Marcus Collins and Roy Broderick, Jr.",
       "Brand film for CeraVe",
       "Campaign content for Nike's Blueprint initiative",
+      "The Home Depot's Retool Your School initiative",
+      "Top five finalists for Mountain Dew's Real Change Opportunity Fund",
     ],
   },
 

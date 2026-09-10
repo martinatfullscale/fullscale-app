@@ -99,10 +99,14 @@ async function transcodeOne(video, sourceDir) {
   const mp4 = path.join(OUT_DIR, `${video.slug}.mp4`);
   const jpg = path.join(OUT_DIR, `${video.slug}.jpg`);
 
-  const st = await fs.stat(src);
+  // The masters live on an external drive that is not always mounted. Without
+  // it the video cannot be re-encoded, but a poster can still be cut from the
+  // transcode we already have — so a poster fix never waits on the drive.
+  let st = null;
+  try { st = await fs.stat(src); } catch { /* master unavailable */ }
   const result = { slug: video.slug, skipped: true };
 
-  if (!(await isFresh(mp4, st.mtimeMs))) {
+  if (st && !(await isFresh(mp4, st.mtimeMs))) {
     const partial = `${mp4}.partial.mp4`;
     await run("ffmpeg", [
       "-hide_banner", "-loglevel", "error", "-y",
@@ -122,15 +126,25 @@ async function transcodeOne(video, sourceDir) {
     // truncated file that `isFresh` would then treat as done.
     await fs.rename(partial, mp4);
     result.skipped = false;
+  } else if (!st) {
+    try { await fs.access(mp4); } catch {
+      throw new Error(`master unavailable (${video.sourceFile}) and no transcode to fall back on`);
+    }
   }
 
-  if (!(await isFresh(jpg, st.mtimeMs))) {
-    // 10% in — far enough past a fade-from-black or a slate to be a real frame.
-    const at = Math.max(0.5, (video.durationSec || 10) * 0.1);
+  // With the master gone there is no source mtime to compare against, so an
+  // existing poster is kept; delete the .jpg to force a re-cut.
+  const posterSrc = st ? src : mp4;
+  if (!(await isFresh(jpg, st ? st.mtimeMs : 0))) {
+    // An explicit posterAt wins. Otherwise 10% in — far enough past a
+    // fade-from-black or a slate to usually be a real frame.
+    const at = typeof video.posterAt === "number"
+      ? video.posterAt
+      : Math.max(0.5, (video.durationSec || 10) * 0.1);
     const partial = `${jpg}.partial.jpg`;
     await run("ffmpeg", [
       "-hide_banner", "-loglevel", "error", "-y",
-      "-ss", String(at), "-i", src,
+      "-ss", String(at), "-i", posterSrc,
       "-frames:v", "1",
       "-vf", scaleFilter(tier.posterEdge),
       "-q:v", "3",

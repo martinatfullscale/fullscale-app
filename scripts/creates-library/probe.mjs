@@ -249,6 +249,10 @@ async function main() {
     const slug = slugify(name, taken);
 
     const row = { slug, title, brand, featuredRank, sourceFile: name };
+    // A chosen poster time, in seconds. The default is 10% in, which is right
+    // for most pieces and wrong whenever that moment is a slate, a fade or a
+    // defocused transition — The Right Pitch landed on a lens-flare blur.
+    if (typeof ov.posterAt === "number" && ov.posterAt >= 0) row.posterAt = ov.posterAt;
     try {
       Object.assign(row, await ffprobe(full));
     } catch (err) {
@@ -271,6 +275,25 @@ async function main() {
     if (b.featuredRank) return 1;
     return a.title.localeCompare(b.title);
   });
+
+  // Two pieces claiming the same rank is not a tie to break. The sort falls back
+  // to filename order, and because showcase descriptions are zipped by position,
+  // every card after the collision silently shows the wrong copy. Filename ranks
+  // ("Video to Feature - 11 -") and override ranks share one namespace, which is
+  // exactly how 11 and 12 got assigned twice on 2026-09-10. Fail instead.
+  const byRank = new Map();
+  for (const v of videos) {
+    if (v.featuredRank == null) continue;
+    if (!byRank.has(v.featuredRank)) byRank.set(v.featuredRank, []);
+    byRank.get(v.featuredRank).push(v.title);
+  }
+  const clashes = [...byRank].filter(([, titles]) => titles.length > 1);
+  if (clashes.length) {
+    console.error("Featured rank collision — more than one piece claims a slot:");
+    for (const [r, titles] of clashes) console.error(`  rank ${r}: ${titles.join("  |  ")}`);
+    console.error(`Ranks in use run up to ${Math.max(...byRank.keys())}; give a new override a rank above that.`);
+    process.exit(1);
+  }
 
   // Renumber contiguously. Dropping a piece from the featured set leaves a hole
   // in the source numbering, and a hole would render as a gap in the grid order.
