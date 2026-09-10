@@ -37,13 +37,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebcamPanel } from "@/components/reel-editor/BinPanels";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  AlertTriangle, ArrowLeft, Camera, ChevronsLeft, ChevronsRight, Loader2, Pause, Play,
+  AlertTriangle, ArrowLeft, Camera, ChevronsLeft, ChevronsRight, Loader2, Music, Pause, Play,
   Redo2, Scissors, Sparkles, Type as TypeIcon, Undo2, X as XIcon, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { fetchWithTimeout } from "@/lib/queryClient";
 import Timeline from "./clip-studio/Timeline";
 import MediaBin from "./clip-studio/MediaBin";
-import { BaseSegmentInspector, BrollInspector, EmptyInspector, MusicInspector, TextInspector } from "./clip-studio/Inspectors";
+import { AudioPanel, BaseSegmentInspector, BrollInspector, EmptyInspector, MusicInspector, TextInspector } from "./clip-studio/Inspectors";
 import { newGestureToken, useHistory } from "./clip-studio/useHistory";
 import { BrollTool, CaptionsTool, TranscriptTool, useAssets } from "./clip-studio/legacyTools";
 import {
@@ -126,7 +126,7 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
   const [razor, setRazor] = useState(false);
   const [snapOn, setSnapOn] = useState(true);
   const [zoom, setZoom] = useState(1);
-  const [panel, setPanel] = useState<"none" | "transcript" | "captions" | "history">("none");
+  const [panel, setPanel] = useState<"none" | "transcript" | "captions" | "history" | "audio">("none");
   const [keepBeats, setKeepBeats] = useState(false);
   /** Trim, clip-relative. Only sent when the handles were actually moved. */
   const [trim, setTrim] = useState<{ start: number; end: number } | null>(null);
@@ -288,6 +288,26 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
   };
 
   /**
+   * Gain on the clip's own audio. One setter for both places that change it —
+   * the segment inspector and the Audio panel — so they write the same edit and
+   * the same undo entry.
+   */
+  const setBaseAudio = (level: number, token?: string) => {
+    // An assembled clip renders without its edit stack (prepareEditGraphForClip
+    // returns no graph for one), so a gain change here would move the slider
+    // and change nothing in the export.
+    if (layersLocked) return;
+    const unity = Math.abs(level - 1) < 0.01;
+    patch(
+      (p) => ({ ...p, baseAudioLevel: unity ? null : level }),
+      unity ? "Clip audio unchanged" : level === 0 ? "Mute clip audio" : `Clip audio ${level.toFixed(2)}×`,
+      token,
+    );
+  };
+
+  const musicAssets = useMemo(() => assets.filter((a) => a.kind === "music"), [assets]);
+
+  /**
    * Place an asset on V1. The length comes from the SOURCE, not from a fixed
    * three seconds — the old addAt() always dropped a 3s block whatever you
    * gave it, which is why a two-second cutaway had to be hand-trimmed and a
@@ -304,6 +324,9 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
      * audio file as a video overlay input.
      */
     if (asset?.kind === "music") {
+      // uploadAsset already refused to attach a bed to an assembled clip; picking
+      // a track from the bin did not, and the render then dropped it silently.
+      if (layersLocked) return;
       patch(
         (p) => ({
           ...p,
@@ -701,13 +724,7 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
           onStabilizeStrength={(strength, token) =>
             patch((p) => ({ ...p, stabilization: { enabled: true, strength } }), `Stabilize strength ${strength}`, token)
           }
-          onBaseAudio={(level, token) =>
-            patch(
-              (p) => ({ ...p, baseAudioLevel: Math.abs(level - 1) < 0.01 ? null : level }),
-              Math.abs(level - 1) < 0.01 ? "Clip audio unchanged" : `Clip audio ${level.toFixed(2)}×`,
-              token,
-            )
-          }
+          onBaseAudio={setBaseAudio}
         />
       );
     }
@@ -1211,6 +1228,22 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
                   One entry per action, coalescing during a drag. ⌘Z / ⇧⌘Z.
                 </p>
               </PanelShell>
+            ) : panel === "audio" ? (
+              <PanelShell title="Audio" onClose={() => setPanel("none")}>
+                <AudioPanel
+                  edits={edits}
+                  locked={layersLocked}
+                  musicAssets={musicAssets}
+                  assetNames={assetNames}
+                  loading={loadingAssets}
+                  uploading={uploading}
+                  onBaseAudio={setBaseAudio}
+                  onAddMusic={(assetId) => placeAsset(assetId, 0)}
+                  onUploadMusic={(file) => { void uploadAsset(file, "music"); }}
+                  onEditMusic={() => { setSelection({ kind: "music" }); setPanel("none"); }}
+                  onRemoveMusic={() => { patch((p) => ({ ...p, music: null }), "Remove music bed"); setSelection((s) => (s?.kind === "music" ? null : s)); }}
+                />
+              </PanelShell>
             ) : (
               inspector
             )}
@@ -1247,6 +1280,7 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
               />
               <ToolBtn onClick={() => setPanel((p) => (p === "transcript" ? "none" : "transcript"))} on={panel === "transcript"} label="Transcript" testId="studio-transcript" />
               <ToolBtn onClick={() => setPanel((p) => (p === "captions" ? "none" : "captions"))} on={panel === "captions"} icon={<Sparkles className="w-3.5 h-3.5" />} label="Captions" testId="studio-captions" />
+              <ToolBtn onClick={() => setPanel((p) => (p === "audio" ? "none" : "audio"))} on={panel === "audio"} icon={<Music className="w-3.5 h-3.5" />} label="Audio" testId="studio-audio" />
             </div>
 
             <div className="flex items-center gap-3.5">
@@ -1305,6 +1339,7 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
                     : { ...cur, end: Math.min(clip.duration, Math.max(atSec, cur.start + 1)) };
                 })
               }
+              onDropMusic={(assetId) => { if (assetById.get(assetId)?.kind === "music") placeAsset(assetId, 0); }}
               onDropAsset={placeAsset}
             />
 

@@ -78,6 +78,9 @@ export interface TimelineProps {
   onTrim: (edge: "left" | "right", atSec: number, token: string) => void;
   /** An asset dropped from the bin onto V1. */
   onDropAsset: (assetId: number, at: number) => void;
+  /** A1 accepts music only; the owner decides what counts as music. A bed
+   *  spans the whole clip, so the drop position is irrelevant. */
+  onDropMusic?: (assetId: number) => void;
 }
 
 let dragSeq = 0;
@@ -86,7 +89,7 @@ export default function Timeline(props: TimelineProps) {
   const {
     duration, playhead, edits, silence, filmSrc, assetNames,
     selection, razorArmed, snapOn, zoom, layersLocked, trimLocked, trim,
-    onSeek, onSelect, onEdits, onSplit, onTrim, onDropAsset,
+    onSeek, onSelect, onEdits, onSplit, onTrim, onDropAsset, onDropMusic,
   } = props;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -501,7 +504,32 @@ export default function Timeline(props: TimelineProps) {
           </div>
 
           {/* ── A1 bed ── */}
-          <Lane height={H.a1} locked={layersLocked} className={lane} onBackground={() => onSelect(null)}>
+          {/* The lane used to render only once a bed existed, and accepted no
+              drops — so the one place a creator would look for "add music" was
+              an empty strip that did nothing. */}
+          <Lane
+            height={H.a1}
+            locked={layersLocked}
+            className={lane}
+            onBackground={() => onSelect(null)}
+            onDragOver={(e) => {
+              if (layersLocked || !onDropMusic) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "copy";
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (layersLocked || !onDropMusic) return;
+              const id = Number(e.dataTransfer.getData("application/x-fullscale-asset"));
+              if (Number.isFinite(id) && id > 0) onDropMusic(id);
+            }}
+            testId="timeline-lane-a1"
+          >
+            {!edits.music && !layersLocked && (
+              <div className="absolute inset-0 flex items-center px-2 pointer-events-none">
+                <span className="text-[10px] text-emerald-300/45 whitespace-nowrap">Drop music here, or use Audio</span>
+              </div>
+            )}
             {edits.music && (
               <div
                 onClick={(e) => { e.stopPropagation(); onSelect({ kind: "music" }); }}

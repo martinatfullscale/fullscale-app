@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { newGestureToken } from "./useHistory";
-import { Copy, Trash2 } from "lucide-react";
-import { baseGainOf, fmtTime, type BaseSegment, type BrollEdit, type StudioEdits, type TextOverlayEdit } from "./types";
+import { Copy, Trash2, Upload } from "lucide-react";
+import { baseGainOf, fmtTime, type AssetRow, type BaseSegment, type BrollEdit, type StudioEdits, type TextOverlayEdit } from "./types";
 
 /**
  * Inspectors — the six tools, redistributed.
@@ -15,7 +15,7 @@ import { baseGainOf, fmtTime, type BaseSegment, type BrollEdit, type StudioEdits
  *   Captions    → one document-level panel (a property of the clip, not a selection)
  *   Text        → V2 block
  *   B-Roll      → V1 block, plus the bin
- *   Audio       → A1 block, and clip level on the base segment
+ *   Audio       → A1 block, clip level on the base segment, and both from the toolbar panel
  *   Motion      → split: stabilization on the base, Ken Burns on the b-roll
  */
 
@@ -92,13 +92,14 @@ function Chips<T extends string | number>({
  * next drag is the next entry — which is what a person means by undo.
  */
 function Slide({
-  label, value, min, max, step, format, token, onChange,
+  label, value, min, max, step, format, token, onChange, disabled,
 }: {
   label: string; value: number; min: number; max: number; step: number;
   format?: (v: number) => string;
   /** Base name for this control. Made unique per gesture internally. */
   token: string;
   onChange: (v: number, token: string) => void;
+  disabled?: boolean;
 }) {
   const gesture = useRef<string | null>(null);
   const begin = () => { if (!gesture.current) gesture.current = newGestureToken(token); };
@@ -115,23 +116,25 @@ function Slide({
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
         onPointerDown={begin}
         onKeyDown={begin}
         onChange={(e) => { begin(); onChange(Number(e.target.value), gesture.current!); }}
         onPointerUp={end}
         onKeyUp={end}
         onBlur={end}
-        className="w-full h-1 appearance-none rounded bg-white/10 accent-primary cursor-pointer"
+        className="w-full h-1 appearance-none rounded bg-white/10 accent-primary cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
       />
     </div>
   );
 }
 
-function Toggle({ label, on, onChange, testId }: { label: string; on: boolean; onChange: (v: boolean) => void; testId?: string }) {
+function Toggle({ label, on, onChange, testId, disabled }: { label: string; on: boolean; onChange: (v: boolean) => void; testId?: string; disabled?: boolean }) {
   return (
     <button
       onClick={() => onChange(!on)}
-      className="h-8 px-2.5 rounded-lg border border-white/10 hover:border-white/20 flex items-center justify-between gap-3"
+      disabled={disabled}
+      className="h-8 px-2.5 rounded-lg border border-white/10 hover:border-white/20 flex items-center justify-between gap-3 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-white/10"
       data-testid={testId}
     >
       <span className="text-xs text-foreground/85">{label}</span>
@@ -402,6 +405,7 @@ export function BaseSegmentInspector(props: {
             step={0.05}
             format={(v) => (v === 1 ? "unchanged" : `${v.toFixed(2)}×`)}
             token="clip-audio"
+            disabled={locked}
             onChange={(v, tk) => props.onBaseAudio(v, tk)}
           />
         </Group>
@@ -708,6 +712,170 @@ export function EmptyInspector({ locked }: { locked: boolean }) {
           ? "This clip is assembled from several beats, so the layer tracks are unavailable. Collapse it to one range to use them."
           : "Click a segment on V0, a block on V1 or V2, or the bed on A1. The panel follows the selection."}
       </p>
+    </div>
+  );
+}
+
+// ── Audio panel (toolbar) ────────────────────────────────────────────────
+
+/**
+ * Clip level and the music bed, reachable without selecting anything.
+ *
+ * Both already rendered on the server. The only ways in were selecting the
+ * base segment (for level) or an A1 block (for the bed) — and A1 had no block
+ * until a bed existed, so someone looking for "add music" found no audio
+ * button in the toolbar and an empty lane that did nothing.
+ */
+export function AudioPanel(props: {
+  edits: StudioEdits;
+  /** Assembled clip: the render skips the whole edit stack, audio included. */
+  locked: boolean;
+  musicAssets: AssetRow[];
+  assetNames: Map<number, string>;
+  loading: boolean;
+  uploading: boolean;
+  onBaseAudio: (level: number, token?: string) => void;
+  onAddMusic: (assetId: number) => void;
+  onUploadMusic: (file: File) => void;
+  onEditMusic: () => void;
+  onRemoveMusic: () => void;
+}) {
+  const { edits, locked, musicAssets } = props;
+  const gain = baseGainOf(edits) ?? 1;
+  const bed = edits.music ?? null;
+  // Mirrors the server's fallback. `Number(null)` is 0, which is how a bed
+  // saved without a volume used to render silent.
+  const bedVolume = bed?.volume == null || !Number.isFinite(Number(bed.volume)) ? 0.2 : Number(bed.volume);
+  const fileRef = useRef<HTMLInputElement>(null);
+  // Un-muting returns to the level before the mute, not to unity.
+  const beforeMute = useRef(1);
+
+  return (
+    <div className="flex flex-col gap-4" data-testid="audio-panel">
+      {locked && (
+        <p className="text-[11px] leading-relaxed text-amber-300/85">
+          Audio edits don't render on an assembled clip. Re-trim it to one range to use them.
+        </p>
+      )}
+      <div className={`flex flex-col gap-4 ${locked ? "opacity-60" : ""}`}>
+        <Group label="Clip audio" note="The clip's own sound: the voice and the room.">
+          <Slide
+            label="Level"
+            value={gain}
+            min={0}
+            max={2}
+            step={0.05}
+            format={(v) => (v === 0 ? "muted" : v === 1 ? "unchanged" : `${v.toFixed(2)}×`)}
+            token="clip-audio"
+            disabled={locked}
+            onChange={(v, tk) => props.onBaseAudio(v, tk)}
+          />
+          <Toggle
+            label="Mute clip audio"
+            on={gain === 0}
+            disabled={locked}
+            onChange={(mute) => {
+              if (mute) {
+                beforeMute.current = gain;
+                props.onBaseAudio(0);
+              } else {
+                props.onBaseAudio(beforeMute.current > 0 ? beforeMute.current : 1);
+              }
+            }}
+            testId="audio-mute"
+          />
+        </Group>
+
+        <Rule />
+
+        <Group label="Music bed">
+          {bed ? (
+            <>
+              <div className="h-8 px-2.5 rounded-lg border border-emerald-400/30 bg-emerald-400/[0.06] flex items-center gap-2" data-testid="audio-bed">
+                <span className="w-2 h-2 shrink-0 bg-emerald-400" />
+                <span className="text-xs text-foreground/85 truncate">{props.assetNames.get(bed.assetId) ?? "Music"}</span>
+                <span className="ml-auto font-mono text-[10px] tabular-nums text-muted-foreground">{bedVolume.toFixed(2)}</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={props.onEditMusic}
+                  disabled={locked}
+                  className="flex-1 h-[30px] rounded-lg border border-white/10 hover:border-white/25 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="audio-edit-bed"
+                >
+                  Level, ducking, fades
+                </button>
+                <button
+                  onClick={props.onRemoveMusic}
+                  disabled={locked}
+                  className="h-[30px] px-3 rounded-lg border border-primary/40 hover:border-primary text-xs text-primary inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="audio-remove-bed"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  Remove
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="text-[11px] leading-relaxed text-muted-foreground/80">
+              No music under this clip. Pick a track below, or drag one onto the A1 lane.
+            </p>
+          )}
+        </Group>
+
+        <Group
+          label={bed ? "Swap track" : "Your music"}
+          note={bed ? "Swapping resets level, ducking and fades to the defaults." : undefined}
+        >
+          {props.loading ? (
+            <p className="text-[11px] text-muted-foreground/70">Loading your library…</p>
+          ) : musicAssets.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground/70">No tracks in your library yet.</p>
+          ) : (
+            <ul className="flex flex-col gap-1 max-h-56 overflow-y-auto" data-testid="audio-library">
+              {musicAssets.map((a) => {
+                const inUse = bed?.assetId === a.id;
+                const len = Number(a.durationSec);
+                return (
+                  <li key={a.id}>
+                    <button
+                      onClick={() => props.onAddMusic(a.id)}
+                      disabled={locked || inUse}
+                      className="w-full h-8 px-2.5 rounded-lg border border-white/10 hover:border-emerald-400/40 text-left flex items-center gap-2 disabled:cursor-default disabled:hover:border-white/10"
+                      data-testid={`audio-track-${a.id}`}
+                    >
+                      <span className="text-xs text-foreground/85 truncate">{a.name}</span>
+                      <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
+                        {inUse ? "in use" : Number.isFinite(len) && len > 0 ? fmtTime(len) : ""}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <input
+            ref={fileRef}
+            type="file"
+            accept="audio/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (f) props.onUploadMusic(f);
+            }}
+          />
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={locked || props.uploading}
+            className="h-[30px] rounded-lg border border-dashed border-white/15 hover:border-white/30 text-xs text-muted-foreground hover:text-foreground inline-flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="audio-upload"
+          >
+            <Upload className="w-3 h-3" />
+            {props.uploading ? "Uploading…" : "Upload a track"}
+          </button>
+        </Group>
+      </div>
     </div>
   );
 }
