@@ -74,12 +74,38 @@ function patchPoolCounter(): void {
 
 /** Requests still in flight, so a stall can name what was running during it. */
 const inFlight = new Map<number, { method: string; path: string; startedAt: number }>();
+
+/**
+ * Requests whose client has gone but whose handler is still running.
+ *
+ * The 2026-09-09 outage hid its culprit here. This middleware used to delete a
+ * request from `inFlight` the moment its socket closed, so a scan the browser
+ * gave up on at 30s vanished from every [Stall] line while it ran four more
+ * minutes — forking a TensorFlow child and pulling a whole video. The lines
+ * blamed the oldest SURVIVING request instead, which was idle, waiting on a
+ * child process. An abandoned handler is still consuming the machine, so it
+ * stays on the list until it actually finishes.
+ */
+const abandoned = new Map<number, { method: string; path: string; startedAt: number; abandonedAt: number }>();
+
+/** Promise-backed work with no request attached, such as a background download. */
+const background = new Map<number, { label: string; startedAt: number }>();
+
+/** Per-response end hook, so a streaming handler can report its own finish. */
+const handlerEnds = new WeakMap<object, () => void>();
+
 let seq = 0;
 
 /** Anything slower than this gets a line. Tuned to be quiet when healthy. */
 const SLOW_REQUEST_MS = 2_000;
 /** Loop delay above this means something synchronous held the thread. */
 const LOOP_BLOCK_MS = 500;
+/** A handler that never finishes must not grow the abandoned list without bound. */
+const ABANDONED_MAX = 100;
+/** An abandoned entry older than this is dropped and reported as never settling. */
+const ABANDONED_MAX_AGE_MS = 60 * 60 * 1000;
+/** Once abandoned work has run this long with no client, say so periodically. */
+const ABANDONED_SUMMARY_AFTER_MS = 30_000;
 
 function fmtPool(): string {
   try {
@@ -90,13 +116,77 @@ function fmtPool(): string {
   }
 }
 
+function secs(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 function describeInFlight(now: number): string {
-  if (inFlight.size === 0) return "nothing in flight";
-  return Array.from(inFlight.values())
-    .sort((a, b) => a.startedAt - b.startedAt)
-    .slice(0, 5)
-    .map((r) => `${r.method} ${r.path} (${((now - r.startedAt) / 1000).toFixed(1)}s)`)
+  const rows: Array<{ t: number; s: string }> = [];
+  inFlight.forEach((r) => rows.push({ t: r.startedAt, s: `${r.method} ${r.path} (${secs(now - r.startedAt)})` }));
+  abandoned.forEach((r) => rows.push({ t: r.startedAt, s: `${r.method} ${r.path} (${secs(now - r.startedAt)}, abandoned, still running)` }));
+  background.forEach((b) => rows.push({ t: b.startedAt, s: `background ${b.label} (${secs(now - b.startedAt)})` }));
+  if (rows.length === 0) return "nothing in flight";
+  return rows
+    .sort((a, b) => a.t - b.t)
+    .slice(0, 8)
+    .map((r) => r.s)
     .join(", ");
+}
+
+function recordAbandoned(
+  id: number,
+  entry: { method: string; path: string; startedAt: number; abandonedAt: number },
+): void {
+  abandoned.set(id, entry);
+  while (abandoned.size > ABANDONED_MAX) {
+    const oldestId = abandoned.keys().next().value as number;
+    const oldest = abandoned.get(oldestId)!;
+    abandoned.delete(oldestId);
+    console.warn(
+      `[Stall] ABANDONED list full (${ABANDONED_MAX}) — dropping oldest: ${oldest.method} ${oldest.path} (${secs(Date.now() - oldest.startedAt)})`,
+    );
+  }
+}
+
+function sweepAbandoned(now: number): void {
+  let lingering = 0;
+  abandoned.forEach((e, id) => {
+    const age = now - e.abandonedAt;
+    if (age > ABANDONED_MAX_AGE_MS) {
+      abandoned.delete(id);
+      console.warn(
+        `[Stall] ABANDONED handler never settled ${e.method} ${e.path} — dropped after ${Math.round((now - e.startedAt) / 60_000)}m`,
+      );
+    } else if (age > ABANDONED_SUMMARY_AFTER_MS) {
+      lingering++;
+    }
+  });
+  if (lingering > 0) {
+    console.warn(`[Stall] ${lingering} abandoned handler(s) still running with no client | ${describeInFlight(now)}`);
+  }
+}
+
+/**
+ * Track promise-backed work that has no request of its own, so it appears in
+ * the in-flight list for as long as it runs. Cleared when the promise settles.
+ */
+export function trackBackground(label: string, work: Promise<unknown>): void {
+  const id = ++seq;
+  background.set(id, { label, startedAt: Date.now() });
+  const clear = () => { background.delete(id); };
+  work.then(clear, clear);
+}
+
+/**
+ * Tell the watcher a streaming handler's work is over. A piped response whose
+ * client disconnected never calls res.end, so without this an abandoned stream
+ * would sit on the list until the age sweep dropped it.
+ */
+export function release(res: Response): void {
+  const end = handlerEnds.get(res);
+  if (end) {
+    try { end(); } catch { /* instrumentation must never throw into a handler */ }
+  }
 }
 
 /**
@@ -135,6 +225,11 @@ export function startStallWatch(): void {
   }, 5_000);
   poolTimer.unref?.();
 
+  const abandonedTimer = setInterval(() => {
+    try { sweepAbandoned(Date.now()); } catch { /* the watcher must never take the process down */ }
+  }, 60_000);
+  abandonedTimer.unref?.();
+
   console.log("[Stall] watching event-loop lag and pool saturation");
 }
 
@@ -146,45 +241,83 @@ export function stallWatchMiddleware(req: Request, res: Response, next: NextFunc
 
   const id = ++seq;
   const startedAt = Date.now();
-  inFlight.set(id, { method: req.method, path: p, startedAt });
+  const method = req.method;
+  inFlight.set(id, { method, path: p, startedAt });
   const db: ReqDb = { queries: 0, dbMs: 0 };
 
+  const logSlow = (ms: number) => {
+    if (ms < SLOW_REQUEST_MS) return;
+    // queries:N alongside the wall clock is what identifies an N+1. If dbMs
+    // is most of ms and queries is large, the request is not slow — it is
+    // slow N times, and batching is the fix rather than optimising any one
+    // query.
+    const perQuery = db.queries ? Math.round(db.dbMs / db.queries) : 0;
+    console.warn(
+      `[Stall] SLOW ${method} ${p} ${ms}ms queries:${db.queries} dbMs:${db.dbMs} (~${perQuery}ms each) ${fmtPool()}`,
+    );
+    if (db.queries >= 10) {
+      console.warn(
+        `[Stall]   ^ ${db.queries} round trips in one request — this is an N+1. Batch it; the pool and event loop will both look healthy while this happens.`,
+      );
+    }
+  };
+
   let settled = false;
+  let isAbandoned = false;
+
   const done = () => {
     if (settled) return;
     settled = true;
     inFlight.delete(id);
-    const ms = Date.now() - startedAt;
-    if (ms >= SLOW_REQUEST_MS) {
-      // queries:N alongside the wall clock is what identifies an N+1. If dbMs
-      // is most of ms and queries is large, the request is not slow — it is
-      // slow N times, and batching is the fix rather than optimising any one
-      // query.
-      const perQuery = db.queries ? Math.round(db.dbMs / db.queries) : 0;
-      console.warn(
-        `[Stall] SLOW ${req.method} ${p} ${ms}ms queries:${db.queries} dbMs:${db.dbMs} (~${perQuery}ms each) ${fmtPool()}`,
-      );
-      if (db.queries >= 10) {
-        console.warn(
-          `[Stall]   ^ ${db.queries} round trips in one request — this is an N+1. Batch it; the pool and event loop will both look healthy while this happens.`,
-        );
-      }
-    }
+    logSlow(Date.now() - startedAt);
   };
 
+  // The handler reached its end — through res.end, or release() from a
+  // streaming handler. For a live request that is simply `done`. For one whose
+  // client already left, it is the moment the abandoned work actually stops.
+  const onHandlerEnd = () => {
+    if (isAbandoned) {
+      isAbandoned = false;
+      abandoned.delete(id);
+      console.warn(`[Stall] ABANDONED handler finished ${method} ${p} — ran ${secs(Date.now() - startedAt)} in total`);
+      return;
+    }
+    done();
+  };
+  handlerEnds.set(res, onHandlerEnd);
+
+  // Node does not emit 'finish' once the client is gone, so the only reliable
+  // signal that an abandoned handler finished is its own call to end().
+  const origEnd = res.end;
+  (res as any).end = function (this: any, ...args: any[]) {
+    try { onHandlerEnd(); } catch { /* never throw from instrumentation */ }
+    return (origEnd as any).apply(this, args);
+  };
+
+  res.on("finish", done);
   // 'close' fires when the client disconnects mid-flight — the case that
   // matters most here, because an abandoned request is invisible to 'finish'
   // and is exactly what a browser timeout produces.
-  res.on("finish", done);
   res.on("close", () => {
-    if (!settled) {
-      const ms = Date.now() - startedAt;
-      console.warn(`[Stall] ABANDONED ${req.method} ${p} after ${ms}ms (client gave up) ${fmtPool()}`);
-    }
-    done();
+    if (settled) return;
+    const ms = Date.now() - startedAt;
+    console.warn(`[Stall] ABANDONED ${method} ${p} after ${ms}ms (client gave up) ${fmtPool()}`);
+    settled = true;
+    inFlight.delete(id);
+    logSlow(ms);
+    isAbandoned = true;
+    recordAbandoned(id, { method, path: p, startedAt, abandonedAt: Date.now() });
   });
 
   // Everything downstream runs inside the query-accounting context.
   patchPoolCounter();
   dbStore.run(db, () => next());
 }
+
+/** Test-only: sizes of the three tracking maps. */
+export function __stallWatchStateForTest(): { inFlight: number; abandoned: number; background: number } {
+  return { inFlight: inFlight.size, abandoned: abandoned.size, background: background.size };
+}
+
+/** Test-only: the bounded-memory paths, driven directly instead of by timers. */
+export const __stallWatchTestHooks = { recordAbandoned, sweepAbandoned, describeInFlight };

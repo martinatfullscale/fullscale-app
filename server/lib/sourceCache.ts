@@ -7,12 +7,19 @@
 // "watch next" engagement loop). So we pull on demand, stream from a temp
 // file, and discard after a TTL.
 //
-// Behavior:
-//   - First playback request → background download via existing helpers,
-//     stream to client as bytes arrive
-//   - Subsequent requests within TTL → serve cached file directly
-//   - Concurrent first-requests → deduplicated via inflight map
-//   - Background sweep evicts files older than TTL on a slow interval
+// Two ways in, and the difference matters:
+//   - getSourcePath / getPinnedSourcePath BLOCK until the file exists. Render,
+//     editorial and remix pipelines need the whole file before they can start,
+//     so they keep this contract exactly.
+//   - peekSourcePath / warmSource NEVER wait. The in-app player uses them:
+//     a miss starts the download in the background and returns at once, and
+//     the player polls until it lands. This header used to promise the player
+//     "stream to client as bytes arrive" — it never did. The route awaited the
+//     whole download before sending a byte, which on 2026-09-09 held a browser
+//     on a silent connection for four minutes of an up-to-45-minute budget.
+//
+// Concurrent callers for one video — of either kind — share a single download
+// through the inflight map. A background sweep evicts files past the TTL.
 //
 // This is per-instance cache. If we scale beyond one Replit container,
 // each instance maintains its own cache (acceptable — the cost of a
@@ -28,8 +35,11 @@ import { downloadFacebookVideo, downloadInstagramVideo } from "./socialDownloade
 import { safeDecrypt } from "./socialAnalytics";
 import { getFreshYoutubeTokenForUser } from "./youtubeAuth";
 import { isYtDlpPlatform, sourceUrlForStoredId } from "./platformSources";
+import { trackBackground } from "./stallWatch";
 
-const CACHE_DIR = path.join(os.tmpdir(), "fullscale-source-cache");
+const DEFAULT_CACHE_DIR = path.join(os.tmpdir(), "fullscale-source-cache");
+// `let` only so tests can point the cache at a temporary directory.
+let CACHE_DIR = DEFAULT_CACHE_DIR;
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const SWEEP_INTERVAL_MS = 15 * 60 * 1000; // every 15 min
 // Cap on total cache disk usage. Without this the cache could grow
@@ -55,6 +65,22 @@ const OVERSIZE_EVICT_IDLE_MS = 15 * 60 * 1000;
 const PLAYBACK_DOWNLOAD_TIMEOUT_MS = 15 * 60 * 1000;
 
 const inflight = new Map<number, Promise<string>>();
+
+// A background warm that failed, remembered briefly. Without it a player
+// polling a video that can never download would get "preparing" forever and
+// start a fresh doomed pull on every poll; with it, polls see the failure and
+// stop. Blocking callers never read this — a render retries on its own terms.
+const FAIL_MEMO_TTL_MS = 2 * 60 * 1000;
+const FAIL_MEMO_MAX = 500;
+const failMemo = new Map<number, { error: string; at: number }>();
+
+interface SourceCacheTestHooks {
+  /** Replaces every platform download: write the file to tempPath and resolve ok. */
+  download?: (video: VideoIndex, tempPath: string) => Promise<boolean>;
+  /** Point the cache at a temporary directory. */
+  cacheDir?: string;
+}
+let testHooks: SourceCacheTestHooks = {};
 
 function cachePath(videoId: number): string {
   return path.join(CACHE_DIR, `${videoId}.mp4`);
@@ -102,24 +128,84 @@ function isFresh(filePath: string): boolean {
   }
 }
 
-// Resolves the local path to a playable mp4 for the given video, downloading
-// from the source platform if not already cached. Returns the local path.
-export async function getSourcePath(video: VideoIndex): Promise<string> {
-  const filePath = (video as any).filePath as string | null | undefined;
+function memoFailure(videoId: number, error: string): void {
+  failMemo.delete(videoId); // re-insert so insertion order tracks recency
+  failMemo.set(videoId, { error, at: Date.now() });
+  while (failMemo.size > FAIL_MEMO_MAX) {
+    failMemo.delete(failMemo.keys().next().value as number);
+  }
+}
 
-  // GCS-backed uploads: filePath looks like "/storage/videos/<key>". Download
-  // the bytes to the on-disk cache so the player can stream from a real file.
-  // This is the path used by chunked-uploads (platform="fullscale") that
-  // landed in Object Storage rather than on the local workspace volume.
-  if (filePath?.startsWith("/storage/")) {
-    const target = cachePath(video.id);
-    if (fs.existsSync(target) && isFresh(target)) {
-      fs.utimesSync(target, new Date(), new Date());
-      return target;
+function liveFailure(videoId: number): string | null {
+  const m = failMemo.get(videoId);
+  if (!m) return null;
+  if (Date.now() - m.at > FAIL_MEMO_TTL_MS) {
+    failMemo.delete(videoId);
+    return null;
+  }
+  return m.error;
+}
+
+/**
+ * A playable local path if one exists RIGHT NOW, else null. Never downloads,
+ * never waits. A hit touches the cache file's mtime to extend its TTL.
+ */
+export function peekSourcePath(video: VideoIndex): string | null {
+  const filePath = (video as any).filePath as string | null | undefined;
+  const target = cachePath(video.id);
+
+  // Fast path. A file at the slot is complete by construction — downloads
+  // land at a partial name and are renamed in only after verification — so
+  // fresh-by-mtime is sufficient to serve it.
+  const freshSlot = (): string | null => {
+    try {
+      if (fs.existsSync(target) && isFresh(target)) {
+        // Touch mtime to extend TTL on active playback.
+        fs.utimesSync(target, new Date(), new Date());
+        return target;
+      }
+    } catch {
+      // Evicted between the checks — treat it as a miss.
     }
-    if (inflight.has(video.id)) return inflight.get(video.id)!;
-    const promise = (async () => {
-      fs.mkdirSync(CACHE_DIR, { recursive: true });
+    return null;
+  };
+
+  // GCS-backed uploads only ever play from the cache slot; their filePath is a
+  // storage key, not a path on this disk.
+  if (filePath?.startsWith("/storage/")) return freshSlot();
+
+  // Local-disk uploads (legacy workspace videos): serve straight from filePath.
+  if (filePath) {
+    const direct = path.resolve(process.cwd(), filePath);
+    if (fs.existsSync(direct)) return direct;
+  }
+
+  return freshSlot();
+}
+
+/**
+ * Start a download into the cache and register it as in flight. Only called
+ * when nothing is in flight for this video. The map entry is set before this
+ * returns, and removed only if it is still THIS promise when it settles.
+ */
+function startDownload(video: VideoIndex): Promise<string> {
+  const filePath = (video as any).filePath as string | null | undefined;
+  const target = cachePath(video.id);
+
+  const p: Promise<string> = (async () => {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+
+    if (testHooks.download) {
+      const temp = partialPath(video.id);
+      const ok = await testHooks.download(video, temp);
+      return promotePartial(ok, temp, target, `Download failed for video ${video.id}`);
+    }
+
+    // GCS-backed uploads: filePath looks like "/storage/videos/<key>". Download
+    // the bytes to the on-disk cache so the player can stream from a real file.
+    // This is the path used by chunked-uploads (platform="fullscale") that
+    // landed in Object Storage rather than on the local workspace volume.
+    if (filePath?.startsWith("/storage/")) {
       const objectKey = filePath.replace(/^\/storage\//, "public/");
       const { getStorageStream } = await import("./objectStorage");
       // Not downloadToTempFile: it lands at basename(objectKey), a name
@@ -137,39 +223,7 @@ export async function getSourcePath(video: VideoIndex): Promise<string> {
         throw e;
       }
       return promotePartial(true, temp, target, `Object storage download empty for video ${video.id}`);
-    })();
-    inflight.set(video.id, promise);
-    try {
-      return await promise;
-    } finally {
-      inflight.delete(video.id);
     }
-  }
-
-  // Local-disk uploads (legacy workspace videos): serve straight from filePath.
-  if (filePath) {
-    const direct = path.resolve(process.cwd(), filePath);
-    if (fs.existsSync(direct)) return direct;
-  }
-
-  const target = cachePath(video.id);
-  // Fast path. A file at the slot is complete by construction — downloads
-  // land at a partial name and are renamed in only after verification — so
-  // fresh-by-mtime is sufficient to serve it. While a download is in
-  // flight nothing exists at the slot, and concurrent callers fall through
-  // here to join the inflight promise below instead of racing the writer.
-  if (fs.existsSync(target) && isFresh(target)) {
-    // Touch mtime to extend TTL on active playback.
-    fs.utimesSync(target, new Date(), new Date());
-    return target;
-  }
-
-  if (inflight.has(video.id)) {
-    return inflight.get(video.id)!;
-  }
-
-  const promise = (async () => {
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
 
     const platform = (video as any).platform;
     const ytId = video.youtubeId;
@@ -218,12 +272,42 @@ export async function getSourcePath(video: VideoIndex): Promise<string> {
     throw new Error(`Cannot resolve source for video ${video.id} (platform=${platform})`);
   })();
 
-  inflight.set(video.id, promise);
-  try {
-    return await promise;
-  } finally {
-    inflight.delete(video.id);
-  }
+  inflight.set(video.id, p);
+  // Identity-checked: only remove the entry if it is still this download.
+  const clear = () => {
+    if (inflight.get(video.id) === p) inflight.delete(video.id);
+  };
+  p.then(clear, clear);
+  return p;
+}
+
+export type WarmStatus = "ready" | "preparing" | { failed: string };
+
+/**
+ * Make sure a source is on its way, without waiting for it. Returns "ready"
+ * when it can be streamed now, "preparing" while a download runs (starting one
+ * if needed), or the error from a download that recently failed. Safe to call
+ * on every poll: an in-flight download is joined, never duplicated.
+ */
+export function warmSource(video: VideoIndex): WarmStatus {
+  if (peekSourcePath(video)) return "ready";
+  const failed = liveFailure(video.id);
+  if (failed) return { failed };
+  if (inflight.has(video.id)) return "preparing";
+
+  const p = startDownload(video);
+  p.catch((e: any) => memoFailure(video.id, e?.message || String(e)));
+  // Visible in [Stall] in-flight lists for as long as it runs, even though no
+  // request is waiting on it.
+  trackBackground(`source-download video ${video.id}`, p);
+  return "preparing";
+}
+
+// Resolves the local path to a playable mp4 for the given video, downloading
+// from the source platform if not already cached. BLOCKS until the file
+// exists — interactive request paths must use peekSourcePath/warmSource.
+export async function getSourcePath(video: VideoIndex): Promise<string> {
+  return peekSourcePath(video) ?? (inflight.get(video.id) ?? startDownload(video));
 }
 
 /**
@@ -345,6 +429,18 @@ function sweep() {
   if (removedTtl > 0 || removedSize > 0) {
     console.log(`[Source Cache] Swept ${removedTtl} expired + ${removedSize} oldest-for-size — now ${(totalBytes / 1024 / 1024).toFixed(1)} MB / ${(CACHE_MAX_BYTES / 1024 / 1024).toFixed(0)} MB cap`);
   }
+}
+
+/**
+ * Test-only. Replaces the platform downloaders and the cache directory, and
+ * clears in-flight and failure state so each test starts clean. Pass null to
+ * restore the real behaviour.
+ */
+export function __setSourceCacheTestHooks(hooks: SourceCacheTestHooks | null): void {
+  testHooks = hooks ?? {};
+  CACHE_DIR = hooks?.cacheDir ?? DEFAULT_CACHE_DIR;
+  inflight.clear();
+  failMemo.clear();
 }
 
 // Run an initial sweep at startup so a previous process's leftovers don't

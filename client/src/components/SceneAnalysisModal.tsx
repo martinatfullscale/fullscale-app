@@ -142,6 +142,14 @@ const PLACEMENT_SURFACES = [
 ];
 
 
+/** How often the in-app player asks whether its source has finished downloading. */
+const SOURCE_POLL_MS = 5_000;
+/** Longer than the server's worst-case download budget (~45 min), so the player
+ *  only gives up after the server certainly would have. */
+const SOURCE_PREP_MAX_MS = 50 * 60 * 1000;
+/** Remounts allowed when a ready source errors — usually a cache eviction. */
+const MAX_PLAYER_REMOUNTS = 2;
+
 // True when the video can be played in-app via /api/video/:id/source.
 // We support local uploads + YT/IG/FB sources (downloaded on demand).
 function canPlayInApp(video: VideoWithScenes | null): boolean {
@@ -223,6 +231,104 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   const [playerLoadProgress, setPlayerLoadProgress] = useState(0); // 0–100
   const [playerCanPlay, setPlayerCanPlay] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
+  // Non-blocking playback. The player never opens /source until the server says
+  // the file is on local disk; until then it polls /source/status. It used to
+  // mount the <video> straight away, and the route held that connection open
+  // with no response until an entire platform download finished.
+  const [sourceStatus, setSourceStatus] = useState<"idle" | "preparing" | "ready" | "failed">("idle");
+  const [sourceError, setSourceError] = useState<string | null>(null);
+  const [playerAttempt, setPlayerAttempt] = useState(0);
+  const [playerRemounts, setPlayerRemounts] = useState(0);
+  const [sourcePollNonce, setSourcePollNonce] = useState(0);
+
+  // The modal is mounted once and reused for every video, so player state used
+  // to carry over: after one play, opening a different video auto-mounted its
+  // <video> and started a full download with no click.
+  useEffect(() => {
+    setShowEmbedPlayer(false);
+    setPlayerError(null);
+    setPlayerCanPlay(false);
+    setPlayerLoadProgress(0);
+    setSourceStatus("idle");
+    setSourceError(null);
+    setPlayerAttempt(0);
+    setPlayerRemounts(0);
+  }, [open, video?.id]);
+
+  useEffect(() => {
+    if (!open || !showEmbedPlayer || !video?.id || !canPlayInApp(video)) return;
+    if (sourceStatus === "ready" || sourceStatus === "failed") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const startedAt = Date.now();
+    const id = video.id;
+
+    const poll = async () => {
+      if (cancelled) return;
+      if (Date.now() - startedAt > SOURCE_PREP_MAX_MS) {
+        setSourceStatus("failed");
+        setSourceError("Still preparing — try again in a few minutes.");
+        return;
+      }
+      try {
+        const res = await fetchWithTimeout(`/api/video/${id}/source/status`, { credentials: "include" });
+        const data = await res.json().catch(() => ({} as any));
+        if (cancelled) return;
+        if (res.status === 401 || res.status === 403 || res.status === 404) {
+          setSourceStatus("failed");
+          setSourceError(res.status === 404 ? "Video not found." : "You don't have access to this video.");
+          return;
+        }
+        if (res.ok && data?.status === "ready") { setSourceStatus("ready"); return; }
+        if (res.ok && data?.status === "failed") {
+          setSourceStatus("failed");
+          setSourceError(data?.error || "Couldn't download this video.");
+          return;
+        }
+        if (res.ok) setSourceStatus("preparing");
+      } catch {
+        // A dropped poll is not a verdict on the video — try again next tick.
+      }
+      if (!cancelled) timer = setTimeout(poll, SOURCE_POLL_MS);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // sourceStatus is deliberately not a dependency: the loop re-schedules
+    // itself, and re-running on every status change would fire a duplicate poll.
+  }, [open, showEmbedPlayer, video?.id, sourcePollNonce]);
+
+  // A ready source can still be evicted from the server cache before or during
+  // playback. Re-check before calling the video broken, and remount at most a
+  // couple of times so a genuinely unplayable file cannot loop forever.
+  const recheckSourceAfterError = async (detail: string) => {
+    if (!video?.id) return;
+    if (playerRemounts >= MAX_PLAYER_REMOUNTS) {
+      setPlayerError(detail);
+      return;
+    }
+    try {
+      const res = await fetchWithTimeout(`/api/video/${video.id}/source/status`, { credentials: "include" });
+      const data = await res.json().catch(() => ({} as any));
+      if (data?.status === "ready") {
+        setPlayerRemounts((n) => n + 1);
+        setPlayerError(null);
+        setPlayerCanPlay(false);
+        setPlayerAttempt((n) => n + 1);
+      } else if (data?.status === "preparing") {
+        setPlayerError(null);
+        setSourceStatus("preparing");
+        setSourcePollNonce((n) => n + 1);
+      } else {
+        setSourceStatus("failed");
+        setSourceError(data?.error || detail);
+      }
+    } catch {
+      setPlayerError(detail);
+    }
+  };
 
   // Local scenes state — starts from video.scenes, rebuilt after server rescan
   const [localScenes, setLocalScenes] = useState<Scene[]>(video?.scenes || []);
@@ -930,7 +1036,15 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   <Button
                     size="sm"
                     variant={showEmbedPlayer ? "default" : "secondary"}
-                    onClick={() => setShowEmbedPlayer(s => !s)}
+                    onClick={() => {
+                      setShowEmbedPlayer(s => !s);
+                      setPlayerError(null);
+                      setPlayerCanPlay(false);
+                      setPlayerLoadProgress(0);
+                      setSourceStatus("idle");
+                      setSourceError(null);
+                      setPlayerRemounts(0);
+                    }}
                     className="absolute top-4 left-4 z-20 gap-1.5"
                     data-testid="button-toggle-inapp-player"
                   >
@@ -946,52 +1060,69 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                       Surface buffering progress so the user knows what's
                       happening instead of staring at a black box. */}
                   {showEmbedPlayer && video?.id && canPlayInApp(video) && (
-                    <div className="relative w-full" style={{ background: "#000" }}>
-                      <video
-                        src={`/api/video/${video.id}/source`}
-                        controls
-                        autoPlay
-                        playsInline
-                        preload="auto"
-                        className="w-full max-h-[70vh] object-contain"
-                        data-testid="video-inapp-player"
-                        onProgress={(e) => {
-                          // HTMLMediaElement.buffered: TimeRanges of buffered segments.
-                          // Take the end of the last buffered range as % of duration.
-                          const v = e.currentTarget;
-                          if (v.duration > 0 && v.buffered.length > 0) {
-                            const bufferedEnd = v.buffered.end(v.buffered.length - 1);
-                            const pct = Math.min(100, Math.round((bufferedEnd / v.duration) * 100));
-                            setPlayerLoadProgress(pct);
-                          }
-                        }}
-                        onCanPlay={() => setPlayerCanPlay(true)}
-                        onError={(e) => {
-                          const v = e.currentTarget;
-                          const err = v.error;
-                          setPlayerError(err ? `Code ${err.code}: ${err.message || "playback error"}` : "Failed to load video");
-                        }}
-                        onWaiting={() => setPlayerCanPlay(false)}
-                        onPlaying={() => setPlayerCanPlay(true)}
-                      />
+                    <div className="relative w-full" style={{ background: "#000", minHeight: "300px" }}>
+                      {/* Mounted only once the source is on local disk. Mounting it
+                          earlier opened a connection the server could not answer until
+                          a whole download finished. */}
+                      {sourceStatus === "ready" && (
+                        <video
+                          key={playerAttempt}
+                          src={`/api/video/${video.id}/source?nowait=1`}
+                          controls
+                          autoPlay
+                          playsInline
+                          preload="auto"
+                          className="w-full max-h-[70vh] object-contain"
+                          data-testid="video-inapp-player"
+                          onProgress={(e) => {
+                            // HTMLMediaElement.buffered: TimeRanges of buffered segments.
+                            // Take the end of the last buffered range as % of duration.
+                            const v = e.currentTarget;
+                            if (v.duration > 0 && v.buffered.length > 0) {
+                              const bufferedEnd = v.buffered.end(v.buffered.length - 1);
+                              const pct = Math.min(100, Math.round((bufferedEnd / v.duration) * 100));
+                              setPlayerLoadProgress(pct);
+                            }
+                          }}
+                          onCanPlay={() => setPlayerCanPlay(true)}
+                          onError={(e) => {
+                            const err = e.currentTarget.error;
+                            const detail = err ? `Code ${err.code}: ${err.message || "playback error"}` : "Failed to load video";
+                            void recheckSourceAfterError(detail);
+                          }}
+                          onWaiting={() => setPlayerCanPlay(false)}
+                          onPlaying={() => setPlayerCanPlay(true)}
+                        />
+                      )}
+
+                      {/* Preparing — the source is downloading in the background. */}
+                      {(sourceStatus === "idle" || sourceStatus === "preparing") && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 p-4 text-center pointer-events-none" data-testid="player-preparing">
+                          <Loader2 className="w-8 h-8 animate-spin text-emerald-400" />
+                          <div className="text-sm text-white">Preparing video…</div>
+                          <div className="text-xs text-zinc-400 max-w-sm">
+                            The first play downloads the video from its source. Long videos can take a few minutes — you can keep reviewing the scan meanwhile.
+                          </div>
+                        </div>
+                      )}
 
                       {/* Loading overlay — visible until we have enough buffered to play */}
-                      {!playerCanPlay && !playerError && (
+                      {sourceStatus === "ready" && !playerCanPlay && !playerError && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 pointer-events-none">
                           <Loader2 className="w-8 h-8 animate-spin text-emerald-400" />
                           <div className="text-sm text-white">Loading video…</div>
                           <div className="text-xs text-zinc-400">
-                            {playerLoadProgress > 0 ? `${playerLoadProgress}% buffered` : "Fetching from source"}
+                            {playerLoadProgress > 0 ? `${playerLoadProgress}% buffered` : "Starting playback"}
                           </div>
                         </div>
                       )}
 
                       {/* Error overlay */}
-                      {playerError && (
+                      {(sourceStatus === "failed" || playerError) && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/85 p-4 text-center">
                           <Video className="w-8 h-8 text-red-400" />
                           <div className="text-sm text-white">Couldn't load video</div>
-                          <div className="text-xs text-red-300 max-w-md">{playerError}</div>
+                          <div className="text-xs text-red-300 max-w-md">{sourceError ?? playerError}</div>
                         </div>
                       )}
 

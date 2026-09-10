@@ -43,13 +43,15 @@ import { addSignupToAirtable, listAirtableSignups, addBrandApplicationToAirtable
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos, fetchInstagramVideoViews } from "./lib/platformAuth";
 import { maybeRefreshSocialThumbnailsInBackground } from "./lib/socialThumbnailAutoRefresh";
 import { pLimit } from "./lib/concurrency";
-import { getSourcePath } from "./lib/sourceCache";
+import { getSourcePath, peekSourcePath, warmSource } from "./lib/sourceCache";
 import { readFileFromStorage } from "./lib/objectStorage";
 import { harmonizeProductIntoScene } from "./lib/ai/harmonization";
 import { getYtDlpPath } from "./lib/ytDlpUpdater";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { pipeline as streamPipeline } from "stream";
+import { release as stallRelease } from "./lib/stallWatch";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
@@ -5654,33 +5656,90 @@ export async function registerRoutes(
     const isOwner = await isSameCreator(String(video.userId), req.authUserId);
     if (!isOwner) return res.status(403).json({ error: "Not authorized" });
 
-    let sourcePath: string;
+    // ?nowait=1 is the non-blocking mode the in-app player uses. Without it this
+    // route awaited a whole platform download before sending a single header —
+    // up to ~45 minutes for an uncached YouTube import — and the browser sat on a
+    // silent connection the entire time (the 2026-09-09 outage). In nowait mode a
+    // miss starts the download in the background and answers 503 immediately;
+    // the player polls /source/status and mounts the <video> once it is ready.
+    //
+    // The default stays BLOCKING on purpose: a browser tab still running the old
+    // bundle cannot handle a 503 and would only show a broken player.
+    const nowait = req.query.nowait === "1";
+
+    // A path to stream, or null once a response has already been sent.
+    const resolveSource = async (): Promise<string | null> => {
+      if (!nowait) return getSourcePath(video);
+      const hit = peekSourcePath(video);
+      if (hit) return hit;
+      const warm = warmSource(video);
+      if (warm === "ready") {
+        const landed = peekSourcePath(video);
+        if (landed) return landed;
+      }
+      res.set("Cache-Control", "no-store");
+      if (typeof warm === "object") {
+        res.status(502).json({ status: "failed", error: warm.failed });
+      } else {
+        res.status(503).set("Retry-After", "5").json({ status: "preparing" });
+      }
+      return null;
+    };
+
+    let resolved: string | null;
     try {
-      sourcePath = await getSourcePath(video);
+      resolved = await resolveSource();
     } catch (err: any) {
       console.error(`[Video Source] ${videoId}: ${err.message}`);
       return res.status(502).json({ error: "Source unavailable", detail: err.message });
     }
+    if (!resolved) return;
 
     // Range request handling — required for <video> seeking and partial loads.
-    // Under cap pressure the cache sweeper can evict the file between
-    // getSourcePath returning and the stat — re-resolve once (fresh
-    // download/promote) and retry before giving up.
+    // Under cap pressure the cache sweeper can evict the file between resolving
+    // it and the stat — re-resolve once before giving up.
     let stat: fs.Stats;
     try {
-      stat = fs.statSync(sourcePath);
+      stat = fs.statSync(resolved);
     } catch (statErr: any) {
-      if (statErr?.code !== "ENOENT") throw statErr;
+      // Anything but a vanished file used to be re-thrown here, out of an async
+      // handler with no error wrapper: no response, an unhandledRejection, and a
+      // request that never settled.
+      if (statErr?.code !== "ENOENT") {
+        console.error(`[Video Source] ${videoId}: stat failed: ${statErr?.message}`);
+        return res.status(500).json({ error: "Source stat failed" });
+      }
       try {
-        sourcePath = await getSourcePath(video);
+        resolved = await resolveSource();
       } catch (err: any) {
         console.error(`[Video Source] ${videoId}: ${err.message}`);
         return res.status(502).json({ error: "Source unavailable", detail: err.message });
       }
-      stat = fs.statSync(sourcePath);
+      if (!resolved) return;
+      try {
+        stat = fs.statSync(resolved);
+      } catch (retryErr: any) {
+        console.error(`[Video Source] ${videoId}: stat failed after re-resolve: ${retryErr?.message}`);
+        return res.status(500).json({ error: "Source stat failed" });
+      }
     }
+    const sourcePath = resolved as string;
     const fileSize = stat.size;
     const range = req.headers.range as string | undefined;
+
+    // stream.pipeline rather than .pipe(res): .pipe leaves the read stream — and
+    // its file descriptor — open when the client disconnects, which a <video>
+    // does on every seek. pipeline destroys both ends on close or error.
+    // stallRelease tells the stall watcher this handler is done even when the
+    // client left first and res.end never ran.
+    const streamFile = (readStream: fs.ReadStream) => {
+      streamPipeline(readStream, res, (err: any) => {
+        stallRelease(res);
+        if (err && err.code !== "ERR_STREAM_PREMATURE_CLOSE") {
+          console.warn(`[Video Source] ${videoId}: ${err.message}`);
+        }
+      });
+    };
 
     if (range) {
       const match = range.match(/bytes=(\d+)-(\d*)/);
@@ -5699,7 +5758,7 @@ export async function registerRoutes(
         "Content-Type": "video/mp4",
         "Cache-Control": "private, max-age=3600",
       });
-      fs.createReadStream(sourcePath, { start, end }).pipe(res);
+      streamFile(fs.createReadStream(sourcePath, { start, end }));
       return;
     }
 
@@ -5709,7 +5768,26 @@ export async function registerRoutes(
       "Accept-Ranges": "bytes",
       "Cache-Control": "private, max-age=3600",
     });
-    fs.createReadStream(sourcePath).pipe(res);
+    streamFile(fs.createReadStream(sourcePath));
+  });
+
+  // Readiness for the non-blocking player. Answers immediately. The first call on
+  // a cold video is what starts its background download; every later poll joins
+  // that same download rather than starting another.
+  app.get("/api/video/:id/source/status", isFlexibleAuthenticated, async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) return res.status(404).json({ error: "Video not found" });
+
+    const isOwner = await isSameCreator(String(video.userId), req.authUserId);
+    if (!isOwner) return res.status(403).json({ error: "Not authorized" });
+
+    res.set("Cache-Control", "no-store");
+    const warm = warmSource(video);
+    if (typeof warm === "object") return res.json({ status: "failed", error: warm.failed });
+    return res.json({ status: warm });
   });
 
   // Get indexed videos for the user's library.
