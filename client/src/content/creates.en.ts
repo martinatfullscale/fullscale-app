@@ -48,15 +48,16 @@ export const createsEn: CreatesContent = {
     deck: "A showcase of content crafted at the intersection of creativity and technology",
     /** Descriptions only — the titles are proper nouns, held in the page. */
     descriptions: [
-      "Brand activation coverage at one of culture's biggest nights",
       "Sizzle reel for the ANTA x Kyrie Irving partnership",
       "Branded content series for Chase United",
-      "Campaign content for Nike's Blueprint initiative",
-      "Sponsored activation with MGK at the VMAs",
-      "Original series streaming on ROKU",
-      "Branded spot for Smirnoff in partnership with BET",
-      "Home Depot's Retool Your School initiative with Rashan Ali",
+      "Campaign content for Disney and Pixar's Soul",
       "Branded content for LEGO",
+      "Sponsored activation with MGK at the VMAs",
+      "Introducing the Chelsea Factory performing arts space",
+      "Recap film from the VMAs with Lil Yachty",
+      "",
+      "Brand film for CeraVe",
+      "Campaign content for Nike's Blueprint initiative",
     ],
   },
 

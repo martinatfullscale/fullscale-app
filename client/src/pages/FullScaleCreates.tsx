@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useContent } from "@/content";
 import { motion } from "framer-motion";
 import { Film, Play, Sparkles, Users, Zap, ArrowRight, Globe } from "lucide-react";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -18,76 +19,8 @@ import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import heroVideoUrl from "@assets/fullscale_creates_hero_loop.mp4";
 import heroVideoMobileUrl from "@assets/fullscale_creates_hero_loop_mobile.mp4";
 
-// Video showcase — real Vimeo content from vimeo.com/whtwrks
-const VIDEO_SHOWCASE = [
-  {
-    title: "Deleon at the NAACP Image Awards",
-    description: "Brand activation coverage at one of culture's biggest nights",
-    thumbnail: "https://i.vimeocdn.com/video/2011839791-0e13911c3ea48cb8e48c0601f118107660c026e782eaa20dc6f33613e52a0cfd-d_640x360",
-    tag: "Brand",
-    vimeoId: "1081125562",
-  },
-  {
-    title: "ANTA x Kyrie — The Journey is the Reward",
-    description: "Sizzle reel for the ANTA x Kyrie Irving partnership",
-    thumbnail: "https://i.vimeocdn.com/video/1751193427-8f6f48de3b0156f20b6dccd29ff7a844408ec7bf33eaa3be0d15ca4ccb696539-d_640x360",
-    tag: "Sports",
-    vimeoId: "882921661",
-  },
-  {
-    title: "Chase United Ep. 2 — The Airport",
-    description: "Branded content series for Chase United",
-    thumbnail: "https://i.vimeocdn.com/video/1681997467-f1eff679e856e4d91be65c2d4d7e516451bc5feabaf592c606c24a46e09ccaab-d_640x360",
-    tag: "Series",
-    vimeoId: "834907261",
-  },
-  {
-    title: "Nike Blueprint",
-    description: "Campaign content for Nike's Blueprint initiative",
-    thumbnail: "https://i.vimeocdn.com/video/1552867525-26f71cfc72e9e88e091b6199a38294163734a67b5c6ff7c0a741c4efd69183f8-d_640x360",
-    tag: "Campaign",
-    vimeoId: "773881582",
-  },
-  {
-    title: "Machine Gun Kelly at the MTV VMAs × Doritos",
-    description: "Sponsored activation with MGK at the VMAs",
-    thumbnail: "https://i.vimeocdn.com/video/1241264300-8544249c591846901a6df3cf6b20c3dbc8120b79bc7431759973c0ad8f1773c1-d_640x360",
-    tag: "Music",
-    vimeoId: "604858629",
-  },
-  {
-    title: "The Right Pitch on ROKU",
-    description: "Original series streaming on ROKU",
-    thumbnail: "https://i.vimeocdn.com/video/1992075312-2e02568673b7ad726568e07b6730887b5f8448f9852830ffe63d2661bff26427-d_640x360?region=us",
-    tag: "Original",
-    vimeoId: "1064709284",
-  },
-  {
-    title: "Smirnoff x BET — Ambre",
-    description: "Branded spot for Smirnoff in partnership with BET",
-    thumbnail: "https://i.vimeocdn.com/video/1701620964-ede573fc419aa4d9f0f16ce249bd4194119e866f56361bcefd96e6ddbfc17037-d_640x360?region=us",
-    tag: "Brand",
-    vimeoId: "848085934",
-  },
-  {
-    title: "Retool Your School — Home Depot × Rashan Ali",
-    description: "Home Depot's Retool Your School initiative with Rashan Ali",
-    thumbnail: "https://i.vimeocdn.com/video/863188183-5fa9e5bb245b887071a33639fc49252818eb2e070bc055f92508545906ed6078-d_640x360?region=us",
-    tag: "Brand",
-    vimeoId: "396427937",
-  },
-  {
-    title: "LEGO",
-    description: "Branded content for LEGO",
-    thumbnail: "https://i.vimeocdn.com/video/1100956605-d026d6bdce68dd4a655c2500d5e74794f055858c5e1d2e04fb201e06c991ccec-d_640x360?region=us",
-    tag: "Brand",
-    vimeoId: "531983975",
-  },
-];
+import { useCreatesLibrary, formatDuration, type CreatesVideo } from "@/lib/createsLibrary";
 
-/* Icons only. The words are in content/creates.{en,ar}.ts and zipped by
-   index inside the component, so a reordered Arabic list cannot drag an icon
-   with it. */
 const CAPABILITY_ICONS = [Film, Users, Sparkles, Zap];
 
 export default function FullScaleCreates() {
@@ -98,13 +31,17 @@ export default function FullScaleCreates() {
     () => c.capabilities.items.map((it, i) => ({ ...it, icon: CAPABILITY_ICONS[i] })),
     [c],
   );
+  // The featured ten, from the portfolio manifest. Descriptions stay in the
+  // locale files and zip by position; a piece past the end of that list simply
+  // shows no description rather than falling back to English.
+  const { featured, videos: allVideos, state: libraryState } = useCreatesLibrary();
   const SHOWCASE = useMemo(
-    () => VIDEO_SHOWCASE.map((v, i) => ({ ...v, description: c.showcase.descriptions[i] ?? v.description })),
-    [c],
+    () => featured.map((v, i) => ({ ...v, description: c.showcase.descriptions[i] ?? "" })),
+    [featured, c],
   );
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoFailed, setVideoFailed] = useState(false);
-  const [activeVideo, setActiveVideo] = useState<typeof VIDEO_SHOWCASE[number] | null>(null);
+  const [activeVideo, setActiveVideo] = useState<CreatesVideo | null>(null);
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
   );
@@ -283,7 +220,7 @@ export default function FullScaleCreates() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {SHOWCASE.map((video, idx) => (
             <motion.div
-              key={video.vimeoId}
+              key={video.slug}
               initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
@@ -291,13 +228,17 @@ export default function FullScaleCreates() {
             >
               <Card
                 className="overflow-hidden group border-white/5 hover:border-primary/20 transition-all duration-300 cursor-pointer"
-                onClick={() => video.vimeoId && setActiveVideo(video)}
+                onClick={() => setActiveVideo(video)}
               >
                 <div className="relative aspect-video bg-muted overflow-hidden">
-                  {video.thumbnail ? (
+                  {video.posterUrl ? (
                     <img
-                      src={video.thumbnail}
+                      src={video.posterUrl}
                       alt={video.title}
+                      loading="lazy"
+                      // A poster whose bytes have not landed yet must cost this
+                      // card its image, not leave a broken-image glyph.
+                      onError={(e) => { e.currentTarget.style.display = "none"; }}
                       className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                     />
                   ) : (
@@ -310,9 +251,16 @@ export default function FullScaleCreates() {
                       <Play className="w-6 h-6 text-white ml-0.5" />
                     </div>
                   </div>
-                  <Badge className="absolute top-3 right-3 text-xs" variant="secondary">
-                    {video.tag}
-                  </Badge>
+                  {video.brand && (
+                    <Badge className="absolute top-3 right-3 text-xs" variant="secondary">
+                      {video.brand}
+                    </Badge>
+                  )}
+                  {video.durationSec ? (
+                    <span className="absolute bottom-3 right-3 px-1.5 py-0.5 rounded bg-black/70 text-white text-[11px] font-mono">
+                      {formatDuration(video.durationSec)}
+                    </span>
+                  ) : null}
                 </div>
                 <CardContent className="p-5">
                   <h3 className="font-semibold text-foreground mb-1">{video.title}</h3>
@@ -323,7 +271,24 @@ export default function FullScaleCreates() {
           ))}
         </div>
 
-        {/* Vimeo Playback Modal */}
+        {/* The rest of the catalogue. A route rather than an inline expander:
+            150-odd pieces is a page, and a page is something you can send to a
+            brand. Hidden until the manifest actually resolves, so a failed
+            fetch does not advertise work that will not load. */}
+        {libraryState === "ready" && allVideos.length > SHOWCASE.length && (
+          <div className="mt-12 text-center">
+            <Link href="/creates/work">
+              <Button variant="outline" size="lg" className="gap-2" data-testid="link-see-more-work">
+                See all {allVideos.length} pieces
+                <ArrowRight className="w-4 h-4" />
+              </Button>
+            </Link>
+          </div>
+        )}
+
+        {/* Playback. Self-hosted mp4 from Object Storage — the file is encoded
+            with +faststart so it begins playing before it finishes
+            downloading. */}
         <Dialog open={!!activeVideo} onOpenChange={(open) => !open && setActiveVideo(null)}>
           <DialogContent className="max-w-4xl p-0 bg-black border-white/10 overflow-hidden">
             <DialogHeader className="p-4 pb-2">
@@ -331,14 +296,16 @@ export default function FullScaleCreates() {
                 {activeVideo?.title}
               </DialogTitle>
             </DialogHeader>
-            <div className="aspect-video w-full">
-              {activeVideo?.vimeoId && (
-                <iframe
-                  src={`https://player.vimeo.com/video/${activeVideo.vimeoId}?autoplay=1&title=0&byline=0&portrait=0`}
-                  className="w-full h-full border-0"
-                  allow="autoplay; fullscreen; picture-in-picture"
-                  allowFullScreen
-                  title={activeVideo.title}
+            <div className="aspect-video w-full bg-black">
+              {activeVideo && (
+                <video
+                  key={activeVideo.slug}
+                  src={activeVideo.videoUrl}
+                  poster={activeVideo.posterUrl}
+                  controls
+                  autoPlay
+                  playsInline
+                  className="w-full h-full"
                 />
               )}
             </div>

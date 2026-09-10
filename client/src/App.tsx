@@ -46,6 +46,7 @@ import AdminDataInventory from "@/pages/AdminDataInventory";
 import RemixEngine from "@/components/RemixEngine";
 import SharedView from "@/pages/SharedView";
 import FullScaleCreates from "@/pages/FullScaleCreates";
+import CreatesWork from "@/pages/CreatesWork";
 import Brands from "@/pages/Brands";
 import BrandOnboarding from "@/pages/BrandOnboarding";
 import BrandSignUp from "@/pages/BrandSignUp";
@@ -225,6 +226,7 @@ function Router() {
         <Route path="/studio/upload">{() => <StudioAccessGuard><StudioUpload /></StudioAccessGuard>}</Route>
         <Route path="/studio/library">{() => <StudioAccessGuard><StudioLibrary /></StudioAccessGuard>}</Route>
         <Route path="/creates" component={FullScaleCreates} />
+        <Route path="/creates/work" component={CreatesWork} />
         <Route path="/brands" component={Brands} />
         <Route path="/brands/onboarding" component={BrandOnboarding} />
         <Route path="/brand-signup" component={BrandSignUp} />
@@ -258,6 +260,7 @@ function Router() {
       <Switch>
         <Route path="/" component={Landing} />
         <Route path="/creates" component={FullScaleCreates} />
+        <Route path="/creates/work" component={CreatesWork} />
         <Route path="/brands" component={Brands} />
         <Route path="/brand-signup" component={BrandSignUp} />
         <Route path="/about" component={Story} />
@@ -290,6 +293,7 @@ function Router() {
       <Route path="/studio/pricing" component={StudioPricing} />
       <Route path="/studio/waitlist" component={StudioWaitlistPage} />
       <Route path="/creates" component={FullScaleCreates} />
+      <Route path="/creates/work" component={CreatesWork} />
       <Route path="/brands" component={Brands} />
       <Route path="/brands/onboarding" component={BrandOnboarding} />
       <Route path="/brand-signup" component={BrandSignUp} />

@@ -1782,6 +1782,45 @@ export async function registerRoutes(
     }
   });
 
+  // Signed upload URL for the FullScale Creates portfolio library.
+  //
+  // Not /api/upload/presign: that one mints its own random object key
+  // (public/videos/video-<ts>-<rand>.mp4) and rejects anything but video. The
+  // library needs the opposite — a caller-chosen, STABLE key so a piece keeps
+  // its URL across re-uploads, plus poster images alongside the video.
+  //
+  // The key is locked to one prefix and one filename shape. A caller-supplied
+  // key is otherwise an arbitrary-write primitive over the whole bucket.
+  app.post("/api/admin/creates-library/presign", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const { slug, kind } = req.body || {};
+      // Same character class the probe's slugify emits, asserted here rather
+      // than trusted: no dots, no slashes, so no traversal and no extension
+      // smuggling.
+      if (typeof slug !== "string" || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(slug)) {
+        return res.status(400).json({ error: "slug must be lowercase alphanumeric with hyphens, max 80 chars" });
+      }
+      if (kind !== "video" && kind !== "poster") {
+        return res.status(400).json({ error: 'kind must be "video" or "poster"' });
+      }
+      const ext = kind === "video" ? "mp4" : "jpg";
+      const contentType = kind === "video" ? "video/mp4" : "image/jpeg";
+      const objectKey = `public/creates-library/${slug}.${ext}`;
+
+      const { getSignedUploadUrl } = await import("./lib/objectStorage");
+      const result = await getSignedUploadUrl(objectKey, contentType, 60);
+      console.log(`[CreatesLibrary] ${callerEmail} presigned ${objectKey}`);
+      res.json({ ...result, contentType });
+    } catch (err: any) {
+      console.error("[CreatesLibrary/presign] Error:", err?.message);
+      res.status(500).json({ error: err?.message || "Failed to generate upload URL" });
+    }
+  });
+
   app.get("/api/admin/placements", async (req: any, res) => {
     try {
       const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
