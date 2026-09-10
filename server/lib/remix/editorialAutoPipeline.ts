@@ -35,6 +35,7 @@ import { buildAssSubtitles, escapeAssFilterPath } from "./captionStyler";
 import { buildCaptionFilter } from "./clipGenerator";
 import { downloadToTempFile, uploadFileToStorage, objectKeyFromServeUrl } from "../objectStorage";
 import sharp from "sharp";
+import { offsetScale, readCanvasDims } from "@shared/placementCanvas";
 
 // ── Configuration ──────────────────────────────────────────────────
 
@@ -1487,6 +1488,7 @@ async function loadBrandOverlaysForClip(
                 scale: Number(t.scale) || 0.6,
                 rotation: Number(t.rotation) || 0,
                 flipH: !!t.flipH,
+                ...(readCanvasDims(t) ?? {}),
               },
               blend: {
                 opacity: typeof b.opacity === "number" ? b.opacity : 90,
@@ -1593,7 +1595,7 @@ interface BrandOverlay {
    *  canonical exporter math — instead of the raw product PNG at the padded
    *  bbox. Absent = legacy behavior (creator never placed on this fixture). */
   creatorPlacement?: {
-    transform: { offsetX: number; offsetY: number; scale: number; rotation: number; flipH: boolean };
+    transform: { offsetX: number; offsetY: number; scale: number; rotation: number; flipH: boolean; canvasWidth?: number; canvasHeight?: number };
     blend: { opacity: number; brightness: number; contrast: number };
     /** Local path to the FULL-SCENE harmonized composite; cropped to the
      *  bbox at bake time (same precedent as the harmonized export path —
@@ -1611,8 +1613,9 @@ interface BrandOverlay {
  * pixel rect. Runs AFTER the full-res bbox refinement (which mutates
  * ov.bbox in place), so the creator's relative positioning lands on the
  * best-aligned box. Math mirrors videoExporter's fast path exactly —
- * aspect-fit × scale, center + offset scaled from the 1920×1080 preview
- * canvas convention, brightness/contrast via linear, rotate, flop, opacity
+ * aspect-fit × scale, center + offset scaled from the canvas the placement
+ * was dragged on (1920×1080 when the row doesn't record it),
+ * brightness/contrast via linear, rotate, flop, opacity
  * via alpha multiply. Harmonized placements instead crop the full-scene
  * composite to the bbox (harmonized-export precedent: the crop carries the
  * product + its cast shadow and fills the box with identity transform).
@@ -1701,10 +1704,14 @@ async function bakeCreatorOverlaySprite(
     .png()
     .toFile(spritePath);
 
-  // Offsets are client-canvas pixels; the export contract's canvas
-  // convention is 1920×1080 (what the client sends on every export).
-  const scaleX = srcWidth / 1920;
-  const scaleY = srcHeight / 1080;
+  // Offsets are pixels on the canvas the creator dragged on. Rows saved since
+  // that size was recorded say which canvas; older rows keep the 1920×1080
+  // assumption this renderer always made.
+  const { scaleX, scaleY } = offsetScale(
+    cp.transform,
+    { width: srcWidth, height: srcHeight },
+    { canvasWidth: 1920, canvasHeight: 1080 },
+  );
   const centerX = bboxPxX + bboxPxW / 2 + cp.transform.offsetX * scaleX;
   const centerY = bboxPxY + bboxPxH / 2 + cp.transform.offsetY * scaleY;
   ov.baked = {

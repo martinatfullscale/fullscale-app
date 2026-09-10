@@ -53,6 +53,8 @@ import fs from "fs";
 import { pipeline as streamPipeline } from "stream";
 import { release as stallRelease } from "./lib/stallWatch";
 import { SCHEMA_REMEDY, SCHEMA_REPAIR_WHERE } from "./lib/schemaCheck";
+import { retentionAtPlacement } from "./lib/postTimeline";
+import { sanitizeCanvasDims } from "@shared/placementCanvas";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
@@ -1682,49 +1684,20 @@ export async function registerRoutes(
             platform: e.platform,
             postUrl: e.postUrl,
             liveAt: e.liveAt,
+            editorialClipId: e.editorialClipId ?? null,
+            clipStartSec: e.clipStartSec ?? null,
             demographics: demo
               ? { age: demo.ageDistribution, gender: demo.genderDistribution, capturedAt: demo.capturedAt }
               : null,
           };
-          if (!curveRow?.curve || !Array.isArray(curveRow.curve) || curveRow.curve.length === 0) {
-            return { ...base, retention: null, reason: "no retention curve yet (below YouTube's reporting threshold, or not captured)" };
-          }
-
-          // SOURCE → POST coordinates. source_start_sec is measured from the
-          // start of the original upload; a clip-based post starts later.
-          const sourceStart = e.sourceStartSec != null ? parseFloat(String(e.sourceStartSec)) : null;
-          const clipStart = e.clipStartSec != null ? parseFloat(String(e.clipStartSec)) : 0;
-          const durationSec = curveRow.videoDurationSec != null ? parseFloat(String(curveRow.videoDurationSec)) : null;
-          if (sourceStart == null || !durationSec || durationSec <= 0) {
-            return { ...base, retention: null, reason: "missing placement timestamp or video duration — cannot position on the curve" };
-          }
-          const postRelativeSec = Math.max(0, sourceStart - clipStart);
-          const positionRatio = Math.min(1, postRelativeSec / durationSec);
-
-          const curve = curveRow.curve as Array<{ ratio: number; watchRatio: number; relativePerformance?: number | null }>;
-          // Nearest bucket at or before the placement position.
-          let at = curve[0];
-          for (const pt of curve) {
-            if (pt.ratio <= positionRatio) at = pt; else break;
-          }
-          const meanWatch = curve.reduce((sum, p) => sum + p.watchRatio, 0) / curve.length;
-
-          return {
-            ...base,
-            retention: {
-              positionRatio: Math.round(positionRatio * 1000) / 1000,
-              postRelativeSec: Math.round(postRelativeSec),
-              watchRatioAtPlacement: Math.round(at.watchRatio * 1000) / 1000,
-              videoMeanWatchRatio: Math.round(meanWatch * 1000) / 1000,
-              // >0 means more viewers than average were present at the
-              // moment the product was on screen.
-              liftVsVideoMean: Math.round((at.watchRatio - meanWatch) * 1000) / 1000,
-              relativePerformanceAtPlacement: at.relativePerformance ?? null,
-              curvePoints: curve.length,
-              capturedAt: curveRow.capturedAt,
-            },
-            reason: null,
-          };
+          // Only a curve for the post itself says who was watching while the
+          // product was on screen. The captured curve belongs to the source upload,
+          // so a clip or re-upload is reported rather than scored against it.
+          const sourcePlatformPostId = curveRow && !curveRow.platformPostId
+            ? (((await storage.getVideoById(e.sourceVideoId).catch(() => undefined)) as any)?.youtubeId ?? null)
+            : null;
+          const placed = retentionAtPlacement({ exposure: e, curve: curveRow as any, sourcePlatformPostId });
+          return { ...base, retention: placed.retention, reason: placed.reason };
         }),
       );
 
@@ -4958,6 +4931,7 @@ export async function registerRoutes(
           platform: bodyPlatform || parsed.platform,
           postUrl,
           platformPostId: parsed.platformPostId,
+          sourcePlatformPostId: ownerVideo ? ((ownerVideo as any).youtubeId ?? null) : null,
           linkSource: callerIsOwner ? "creator_confirmed" : "admin",
           candidateSource: candidateSource === "channel_match" ? "channel_match" : "manual",
           liveAt,
@@ -12316,7 +12290,9 @@ export async function registerRoutes(
   app.post("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userEmail = req.authEmail || "unknown";
-      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized, keyframes, appliesToGroupIds, editorialClipId } = req.body;
+      const { videoId, surfaceId, productId, productImageUrl, transform: rawTransform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized, keyframes, appliesToGroupIds, editorialClipId } = req.body;
+      // Offsets are canvas pixels: keep the canvas they were dragged on, when usable.
+      const transform = rawTransform && typeof rawTransform === "object" ? sanitizeCanvasDims(rawTransform) : rawTransform;
 
       if (!videoId || !surfaceId || !productImageUrl || !transform || !blend) {
         return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
@@ -12936,6 +12912,7 @@ export async function registerRoutes(
       // Defensive validation for keyframes — incomplete entries break the
       // render-time lerp (NaN propagates and product disappears).
       const updates = { ...req.body };
+      if (updates.transform && typeof updates.transform === "object") updates.transform = sanitizeCanvasDims(updates.transform);
       if ("keyframes" in updates) {
         if (Array.isArray(updates.keyframes)) {
           updates.keyframes = updates.keyframes

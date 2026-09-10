@@ -19,6 +19,7 @@ import * as path from "path";
 import sharp from "sharp";
 import { storage } from "../storage";
 import { uploadFileToStorage, downloadToTempFile } from "./objectStorage";
+import { offsetScale } from "@shared/placementCanvas";
 
 // ── Types ──
 
@@ -45,6 +46,9 @@ interface ExportPlacementData {
     scale: number;
     rotation: number;
     flipH: boolean;
+    /** The editor canvas these offsets were dragged on, when the row records it. */
+    canvasWidth?: number;
+    canvasHeight?: number;
   };
   blend: {
     opacity: number;
@@ -248,8 +252,9 @@ async function tryFastExport(
   await storage.updateVideoExportProgress(exportId, 10);
 
   const { width, height } = await getVideoResolution(absoluteVideoPath);
-  const scaleX = width / exportCtx.canvasWidth;
-  const scaleY = height / exportCtx.canvasHeight;
+  // Offsets and shadow sizes are editor-canvas pixels. offsetScale uses the
+  // canvas each placement records, and this request's canvas for rows that don't.
+  const frameSize = { width, height };
 
   const overlayPaths: string[] = [];
   const overlayPositions: Array<{ x: number; y: number }> = [];
@@ -384,8 +389,8 @@ async function tryFastExport(
     const renderedW = renderedMeta.width || finalW;
     const renderedH = renderedMeta.height || finalH;
 
-    const centerX = bboxX + bboxW / 2 + placement.transform.offsetX * scaleX;
-    const centerY = bboxY + bboxH / 2 + placement.transform.offsetY * scaleY;
+    const centerX = bboxX + bboxW / 2 + placement.transform.offsetX * offsetScale(placement.transform, frameSize, exportCtx).scaleX;
+    const centerY = bboxY + bboxH / 2 + placement.transform.offsetY * offsetScale(placement.transform, frameSize, exportCtx).scaleY;
     const left = Math.max(0, Math.round(centerX - renderedW / 2));
     const top = Math.max(0, Math.round(centerY - renderedH / 2));
 
@@ -550,8 +555,9 @@ async function compositeFrame(
   const height = metadata.height!;
 
   // Scale ratio: how much bigger is the export frame vs the preview canvas
-  const scaleX = width / exportCtx.canvasWidth;
-  const scaleY = height / exportCtx.canvasHeight;
+  // Offsets and shadow sizes are editor-canvas pixels. offsetScale uses the
+  // canvas each placement records, and this request's canvas for rows that don't.
+  const frameSize = { width, height };
 
   const composites: sharp.OverlayOptions[] = [];
 
@@ -646,8 +652,8 @@ async function compositeFrame(
         const finalH = productMeta.height || scaledH;
 
         // Center position: scale offsets from preview canvas to export resolution
-        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * scaleX);
-        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * scaleY);
+        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
+        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * offsetScale(placement.transform, frameSize, exportCtx).scaleY);
         const left = Math.round(centerX - finalW / 2);
         const top = Math.round(centerY - finalH / 2);
 
@@ -836,9 +842,9 @@ async function compositeFrame(
       let productBuffer: Buffer;
       if (placement.blend.shadowEnabled && placement.blend.shadowBlur > 0) {
         // Scale shadow params to match export resolution
-        const sBlur = Math.round(placement.blend.shadowBlur * scaleX);
-        const sOffX = Math.round(placement.blend.shadowOffsetX * scaleX);
-        const sOffY = Math.round(placement.blend.shadowOffsetY * scaleX);
+        const sBlur = Math.round(placement.blend.shadowBlur * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
+        const sOffX = Math.round(placement.blend.shadowOffsetX * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
+        const sOffY = Math.round(placement.blend.shadowOffsetY * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
 
         // Get the product PNG first
         const prodPng = await product.ensureAlpha().png().toBuffer();
@@ -904,8 +910,8 @@ async function compositeFrame(
         const finalH = productMeta.height || canvasH;
 
         // Center position: scale offsets from preview canvas to export resolution
-        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * scaleX);
-        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * scaleY);
+        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
+        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * offsetScale(placement.transform, frameSize, exportCtx).scaleY);
         const left = Math.round(centerX - finalW / 2);
         const top = Math.round(centerY - finalH / 2);
 
@@ -923,8 +929,8 @@ async function compositeFrame(
         const finalH = productMeta.height || scaledH;
 
         // Center position: scale offsets from preview canvas to export resolution
-        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * scaleX);
-        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * scaleY);
+        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
+        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * offsetScale(placement.transform, frameSize, exportCtx).scaleY);
         const left = Math.round(centerX - finalW / 2);
         const top = Math.round(centerY - finalH / 2);
 

@@ -17,6 +17,7 @@
 
 import { storage } from "../storage";
 import { getFreshYoutubeTokenForUser } from "./youtubeAuth";
+import { resolvePostTimeline, type ClipTiming } from "./postTimeline";
 
 export interface GoLiveCandidate {
   platform: "youtube";
@@ -115,6 +116,9 @@ export async function recordGoLive(args: {
   /** How the URL was discovered — provenance for analytic trust. */
   candidateSource?: "channel_match" | "manual";
   liveAt?: Date;
+  /** The source upload's own platform id (video_index.youtubeId), to tell a
+   *  post of the whole video from a clip. */
+  sourcePlatformPostId?: string | null;
 }): Promise<any> {
   const { placement } = args;
 
@@ -123,12 +127,18 @@ export async function recordGoLive(args: {
   // must map through the clip offset before joining a retention curve.
   let surfaceGroupId: string | null = null;
   let sourceStartSec: string | null = null;
+  let sourceSec: number | null = null;
   try {
     const surfaces = await storage.getDetectedSurfaces(placement.videoId);
     const surface = surfaces.find((s: any) => s.id === placement.surfaceId);
     surfaceGroupId = ((surface as any)?.surfaceGroupId as string | null) ?? null;
     const ts = surface ? parseFloat(String((surface as any).timestamp)) : NaN;
-    if (Number.isFinite(ts)) sourceStartSec = String(Math.max(0, Math.round(ts)));
+    if (Number.isFinite(ts)) {
+      sourceStartSec = String(Math.max(0, Math.round(ts)));
+      // Unrounded for mapping into a clip: a rounded second can land just
+      // outside the beat that holds it.
+      sourceSec = Math.max(0, ts);
+    }
   } catch {
     /* identity is best-effort — the exposure row is still worth having */
   }
@@ -149,6 +159,27 @@ export async function recordGoLive(args: {
     /* an unmatched exposure is meaningful too — it's organic, not treated */
   }
 
+  // Where the placement sits in the POST. Without this every clip post was
+  // read as the whole video, and no clip offset was ever written.
+  let clip: ClipTiming | null = null;
+  if (placement.editorialClipId != null) {
+    const clipRow: any = await storage.getEditorialClipById(Number(placement.editorialClipId)).catch(() => undefined);
+    if (clipRow) {
+      clip = {
+        id: clipRow.id,
+        clipStart: Number(clipRow.clipStart),
+        duration: Number(clipRow.duration),
+        segments: clipRow.segments ?? null,
+      };
+    }
+  }
+  const timeline = resolvePostTimeline({
+    platformPostId: args.platformPostId,
+    sourcePlatformPostId: args.sourcePlatformPostId ?? null,
+    clip,
+    sourceSec,
+  });
+
   const row = await storage.createPlacementExposure({
     userId: String(args.ownerUserId),
     placementId: placement.id,
@@ -161,6 +192,8 @@ export async function recordGoLive(args: {
     platformPostId: args.platformPostId,
     liveAt: args.liveAt ?? new Date(),
     sourceStartSec,
+    editorialClipId: timeline.editorialClipId,
+    clipStartSec: timeline.offsetSec != null ? String(Math.round(timeline.offsetSec * 100) / 100) : null,
     linkSource: args.linkSource,
     // A creator tapping a suggestion IS a confirmation — the earlier code
     // recorded their explicit tap as unconfirmed, inverting analytic trust.
@@ -170,7 +203,8 @@ export async function recordGoLive(args: {
   console.log(
     `[Measurement] placement_exposures: placement ${placement.id} live on ${args.platform}` +
       `${args.platformPostId ? ` (${args.platformPostId})` : ""} — fixture ${surfaceGroupId ?? "unknown"}, ` +
-      `assignment ${assignmentId ?? "none (organic)"}, via ${args.candidateSource ?? "manual"}`,
+      `assignment ${assignmentId ?? "none (organic)"}, via ${args.candidateSource ?? "manual"}, ` +
+      `post timeline ${timeline.kind}${"reason" in timeline ? ` (${timeline.reason})` : ""}`,
   );
   return row;
 }

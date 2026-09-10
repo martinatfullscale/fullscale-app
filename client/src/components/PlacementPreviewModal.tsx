@@ -37,6 +37,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   useTeachSurface, TEACH_SURFACE_TYPES, teachTypeLabel,
 } from "@/components/teach-surface/useTeachSurface";
+import { readCanvasDims } from "@shared/placementCanvas";
 
 // ============================================================================
 // TYPES
@@ -849,6 +850,43 @@ export default function PlacementPreviewModal({
   type Keyframe = { t: number; transform: PlacementTransform };
   const [keyframes, setKeyframes] = useState<Keyframe[]>([]);
 
+  // The canvas size the offsets in `transform` and `keyframes` are expressed
+  // in. Offsets are canvas pixels and the canvas follows the window, so a
+  // saved placement reopened at another window size used to shift, and no
+  // renderer could tell what size it had been saved at. null until known: the
+  // first sized frame adopts the live canvas.
+  const offsetSpaceRef = useRef<{ w: number; h: number } | null>(null);
+
+  /**
+   * Factors that bring a saved transform's offsets into the space the editor
+   * is using now. Before the first sized frame there is no such space, so the
+   * saved one is handed to the render loop, which rescales on that frame.
+   */
+  const savedOffsetScale = (savedTransform: unknown): { sx: number; sy: number } => {
+    const saved = readCanvasDims(savedTransform);
+    const space = offsetSpaceRef.current;
+    const live = canvasRef.current;
+    if (!saved) {
+      // Saved before the canvas was recorded: read it in the live canvas, as
+      // before. Drop a space still pending from an earlier load so the render
+      // loop doesn't rescale this row by someone else's canvas.
+      if (space && (!live || space.w !== live.width || space.h !== live.height)) offsetSpaceRef.current = null;
+      return { sx: 1, sy: 1 };
+    }
+    if (!space) {
+      offsetSpaceRef.current = { w: saved.canvasWidth, h: saved.canvasHeight };
+      return { sx: 1, sy: 1 };
+    }
+    return { sx: space.w / saved.canvasWidth, sy: space.h / saved.canvasHeight };
+  };
+
+  /** Recorded with every save, so each renderer knows which canvas the offsets belong to. */
+  const currentCanvasDims = (): { canvasWidth?: number; canvasHeight?: number } => {
+    const w = offsetSpaceRef.current?.w ?? canvasRef.current?.width;
+    const h = offsetSpaceRef.current?.h ?? canvasRef.current?.height;
+    return w && h ? { canvasWidth: w, canvasHeight: h } : {};
+  };
+
   // Compute the effective transform at a given playback time. Returns the
   // base transform when no keyframes, the keyframe value at exact match,
   // or a linear interpolation between bracketing keyframes. Past the last
@@ -1293,11 +1331,13 @@ export default function PlacementPreviewModal({
             setProductImage(p.productImageUrl);
             setProductSource("saved");
           }
+          // Offsets come back in the canvas they were saved on; bring them into this one.
+          const { sx: savedSx, sy: savedSy } = savedOffsetScale(p.transform);
           // Restore transform
           if (p.transform) {
             setTransform({
-              offsetX: p.transform.offsetX ?? 0,
-              offsetY: p.transform.offsetY ?? 0,
+              offsetX: (p.transform.offsetX ?? 0) * savedSx,
+              offsetY: (p.transform.offsetY ?? 0) * savedSy,
               scale: p.transform.scale ?? 0.6,
               rotation: p.transform.rotation ?? 0,
               flipH: p.transform.flipH ?? false,
@@ -1320,7 +1360,10 @@ export default function PlacementPreviewModal({
           }
           // Restore keyframes if any are saved on this placement.
           if (Array.isArray((p as any).keyframes)) {
-            setKeyframes((p as any).keyframes);
+            setKeyframes((p as any).keyframes.map((k: any) => ({
+              ...k,
+              transform: { ...k.transform, offsetX: k.transform.offsetX * savedSx, offsetY: k.transform.offsetY * savedSy },
+            })));
           } else {
             setKeyframes([]);
           }
@@ -1405,7 +1448,14 @@ export default function PlacementPreviewModal({
     if (!open || !initialPlacement) return;
     setProductImage(initialPlacement.productImageUrl);
     setProductSource("saved");
-    setTransform({ ...initialPlacement.transform });
+    const initialScale = savedOffsetScale(initialPlacement.transform);
+    setTransform({
+      offsetX: initialPlacement.transform.offsetX * initialScale.sx,
+      offsetY: initialPlacement.transform.offsetY * initialScale.sy,
+      scale: initialPlacement.transform.scale,
+      rotation: initialPlacement.transform.rotation,
+      flipH: initialPlacement.transform.flipH,
+    });
     setBlend({ ...initialPlacement.blend });
     setToolPanel("transform");
     // Restore the creator's prior harmonize choice. If they had isHarmonized
@@ -1529,6 +1579,21 @@ export default function PlacementPreviewModal({
     if (canvas.width !== Math.round(displayW) || canvas.height !== Math.round(displayH)) {
       canvas.width = Math.round(displayW);
       canvas.height = Math.round(displayH);
+    }
+
+    // Keep offsets in the space of the canvas they're drawn on.
+    const offsetSpace = offsetSpaceRef.current;
+    if (!offsetSpace) {
+      offsetSpaceRef.current = { w: canvas.width, h: canvas.height };
+    } else if (offsetSpace.w !== canvas.width || offsetSpace.h !== canvas.height) {
+      const sx = canvas.width / offsetSpace.w;
+      const sy = canvas.height / offsetSpace.h;
+      offsetSpaceRef.current = { w: canvas.width, h: canvas.height };
+      setTransform((prev) => ({ ...prev, offsetX: prev.offsetX * sx, offsetY: prev.offsetY * sy }));
+      setKeyframes((prev) => prev.length === 0 ? prev : prev.map((k) => ({
+        ...k,
+        transform: { ...k.transform, offsetX: k.transform.offsetX * sx, offsetY: k.transform.offsetY * sy },
+      })));
     }
 
     // Draw frame (from video or static image)
@@ -2549,7 +2614,7 @@ export default function PlacementPreviewModal({
           surfaceId: selectedSurface.id,
           productId: selectedCatalogProduct?.id || null,
           productImageUrl: productImage,
-          transform,
+          transform: { ...transform, ...currentCanvasDims() },
           blend,
           // Persist the creator's harmonize choice + the URL for the brand
           // preview. Render pipeline (Commit 3) will regenerate harmonization

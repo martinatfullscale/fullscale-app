@@ -565,6 +565,10 @@ export const savedPlacements = pgTable("saved_placements", {
     scale: number;
     rotation: number;
     flipH: boolean;
+    /** The editor canvas the offsets were dragged on (shared/placementCanvas.ts).
+     *  Absent on rows saved before it was recorded. */
+    canvasWidth?: number;
+    canvasHeight?: number;
   }>(),
   // Blend settings (JSON blob)
   blend: jsonb("blend").notNull().$type<{
