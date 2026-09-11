@@ -54,6 +54,7 @@ import { pipeline as streamPipeline } from "stream";
 import { release as stallRelease } from "./lib/stallWatch";
 import { SCHEMA_REMEDY, SCHEMA_REPAIR_WHERE } from "./lib/schemaCheck";
 import { retentionAtPlacement } from "./lib/postTimeline";
+import { asyncRoute } from "./lib/asyncRoute";
 import { sanitizeCanvasDims } from "@shared/placementCanvas";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
@@ -5637,7 +5638,7 @@ export async function registerRoutes(
   // leaving the app — no iframe to YouTube/IG/FB. Supports HTTP Range so
   // <video> seeking works. Source bytes never get persisted to GCS; the
   // cache is per-instance ephemeral.
-  app.get("/api/video/:id/source", isFlexibleAuthenticated, async (req: any, res) => {
+  app.get("/api/video/:id/source", isFlexibleAuthenticated, asyncRoute(async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
 
@@ -5760,12 +5761,12 @@ export async function registerRoutes(
       "Cache-Control": "private, max-age=3600",
     });
     streamFile(fs.createReadStream(sourcePath));
-  });
+  }));
 
   // Readiness for the non-blocking player. Answers immediately. The first call on
   // a cold video is what starts its background download; every later poll joins
   // that same download rather than starting another.
-  app.get("/api/video/:id/source/status", isFlexibleAuthenticated, async (req: any, res) => {
+  app.get("/api/video/:id/source/status", isFlexibleAuthenticated, asyncRoute(async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
 
@@ -5779,7 +5780,7 @@ export async function registerRoutes(
     const warm = warmSource(video);
     if (typeof warm === "object") return res.json({ status: "failed", error: warm.failed });
     return res.json({ status: warm });
-  });
+  }));
 
   // Get indexed videos for the user's library.
   // Uses isFlexibleAuthenticated + dual-id (UUID OR email) so videos
@@ -7392,7 +7393,7 @@ export async function registerRoutes(
   // anonymous callers still pass through (used by endpoints that are public
   // for brands but want owner-only behavior for the creator).
 
-  app.get("/api/video/:id/surfaces", softAuth, async (req: any, res) => {
+  app.get("/api/video/:id/surfaces", softAuth, asyncRoute(async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
       return res.status(400).json({ error: "Invalid video ID" });
@@ -7506,7 +7507,7 @@ export async function registerRoutes(
       sceneIndex,
       sceneInventory,
     });
-  });
+  }));
 
   // Creator toggles a single surface's approval state. Surfaces default to
   // creator_approved=false at scan time — brands can't see them until the

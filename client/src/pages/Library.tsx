@@ -642,6 +642,12 @@ export default function Library() {
   const [remixVideoId, setRemixVideoId] = useState<number | null>(null);
   const [distributionOpen, setDistributionOpen] = useState(false);
   const [distributionVideoId, setDistributionVideoId] = useState<number | null>(null);
+  // Which card is waiting on its surfaces request. The click used to await an
+  // un-timed fetch with nothing on screen, so a slow response was
+  // indistinguishable from a dead click. The ref is the in-flight guard (state
+  // lands too late to stop a second click); the state drives the spinner.
+  const openingVideoRef = useRef<number | null>(null);
+  const [openingVideoId, setOpeningVideoId] = useState<number | null>(null);
 
   // ----- Admin "view as user" -----
   // Reads ?as=<email> from the URL on mount and any time the URL changes.
@@ -739,6 +745,9 @@ export default function Library() {
     // In real mode, fetch actual detected surfaces from the database
     console.log(`[Library] Checking real mode: isRealMode=${isRealMode}, videoId >= 50: ${videoId >= 50}`);
     if (isRealMode && videoId >= 50) {
+      if (openingVideoRef.current === videoId) return; // already opening this one
+      openingVideoRef.current = videoId;
+      setOpeningVideoId(videoId);
       try {
         // Pass admin_email for flexible auth if user is admin.
         // includeUnapproved=true: when the owner is browsing their own
@@ -750,7 +759,9 @@ export default function Library() {
         if (isAdminUser && userEmail) params.set("admin_email", userEmail);
         const url = `/api/video/${videoId}/surfaces?${params.toString()}`;
         console.log(`[Library] Fetching surfaces from: ${url}`);
-        const res = await fetch(url, { credentials: "include" });
+        // 15s: long enough for a cold database, short enough that a stuck
+        // request becomes an error message instead of a dead-looking page.
+        const res = await fetchWithTimeout(url, { credentials: "include" }, 15_000);
         console.log(`[Library] Response status: ${res.status}`);
         if (res.ok) {
           const data = await res.json();
@@ -831,8 +842,27 @@ export default function Library() {
           setSceneModalOpen(true);
           return;
         }
+        // A failed request is not an empty scan. Falling through to the
+        // "No scan data" modal below told creators their surfaces were gone
+        // whenever the server hiccuped.
+        console.error(`[Library] Surfaces request failed: ${res.status}`);
+        toast({
+          title: "Couldn't open this video",
+          description: `The server answered ${res.status}. Try again in a moment.`,
+          variant: "destructive",
+        });
+        return;
       } catch (err) {
         console.error("[Library] Failed to fetch real surfaces:", err);
+        toast({
+          title: "Couldn't open this video",
+          description: err instanceof Error ? err.message : "The request didn't come back. Try again in a moment.",
+          variant: "destructive",
+        });
+        return;
+      } finally {
+        openingVideoRef.current = null;
+        setOpeningVideoId(null);
       }
     }
     
@@ -1696,9 +1726,20 @@ export default function Library() {
                     });
                     return;
                   }
+                  if (video.id && openingVideoId === video.id) return; // one open at a time
                   handleVideoClick(video);
                 }}
               >
+                {/* The click fetches this video's surfaces before anything opens.
+                    Say so, or a slow answer reads as a click that did nothing. */}
+                {video.id && openingVideoId === video.id && (
+                  <div
+                    className="absolute inset-0 z-20 bg-black/50 flex items-center justify-center"
+                    data-testid={`card-opening-${video.id}`}
+                  >
+                    <Loader2 className="w-5 h-5 animate-spin text-white/80" />
+                  </div>
+                )}
                 {/* Local file indicator - shows when video has local file ready for scanning */}
                 {video.hasLocalFile && (
                   <div className="absolute top-2 left-2 z-10 flex items-center gap-1.5">

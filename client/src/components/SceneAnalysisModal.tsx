@@ -433,7 +433,9 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       if (adminEmail) params.set("admin_email", adminEmail);
       const url = `/api/video/${videoId}/surfaces?${params.toString()}`;
       console.log(`[SceneAnalysisModal] Fetching: ${url}`);
-      const res = await fetch(url, { credentials: "include" });
+      // Bounded like the library's click: an unbounded fetch here left the
+      // modal's own spinner turning forever when the server didn't answer.
+      const res = await fetchWithTimeout(url, { credentials: "include" }, 15_000);
       console.log(`[SceneAnalysisModal] Response status: ${res.status}`);
       if (res.ok) {
         const data = await res.json();
@@ -848,8 +850,6 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     });
   };
 
-  if (!video || !open) return null;
-
   const totalScenes = localScenes.length;
   const safeIndex = totalScenes > 0 ? Math.min(currentSceneIndex, totalScenes - 1) : 0;
   const currentScene = totalScenes > 0 ? localScenes[Math.max(0, safeIndex)] : null;
@@ -944,6 +944,14 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [teachArmed, resetTeach]);
+
+  // Hooks must run in the same order on every render, so this guard belongs
+  // BELOW the last of them. It used to sit above useTeachSurface and the two
+  // effects under it, so a closed modal ran fewer hooks than an open one: the
+  // first click on a library video threw React's "rendered more hooks than
+  // during the previous render", and with no error boundary above it, that
+  // unmounted the whole app and left a blank page.
+  if (!video || !open) return null;
 
   const teachDrawRect = teachDrag
     ? {
