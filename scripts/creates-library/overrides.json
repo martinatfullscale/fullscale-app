@@ -1,0 +1,126 @@
+{
+  "_comment": [
+    "Human corrections to the probe's derived titles, applied by probe.mjs on every run.",
+    "Keyed by sourceFile because that is the one field the pipeline never rewrites.",
+    "Set featuredRank to null to drop a piece from the landing page without removing it",
+    "from the library — it still appears in the full gallery at /creates/work.",
+    "Featured ranks are renumbered contiguously after overrides are applied, so removing",
+    "one does not leave a hole.",
+    "Set \"exclude\": true to keep a piece out of the published library entirely — unreleased or client-confidential work. Excluded files are never transcoded, never uploaded, and never appear in the manifest."
+  ],
+  "Video to Feature - 2 - chase_united_ep1_the_booking_v1 (1080p).mp4": {
+    "title": "Chase United — Ep 1: The Booking"
+  },
+  "Video to Feature - 5 - linkedin__reshuffle__episode_1__is_hybrid_for_me__v1 (1080p).mp4": {
+    "featuredRank": null,
+    "title": "LinkedIn — Reshuffle, Ep 1: Is Hybrid For Me?",
+    "_why": "8:36 runtime — too long for a showcase tile. Stays in the gallery alongside episodes 2-6."
+  },
+  "Video to Feature - 9 - alia_penner_-_warby_parker-hd_v1 (540p).mp4": {
+    "featuredRank": null,
+    "title": "Alia Penner — Warby Parker",
+    "_why": "540p master, visibly soft beside the 2160p pieces. Stays in the gallery."
+  },
+  "Video to Feature - 10 - The RIght Pitch.mp4": {
+    "title": "The Right Pitch",
+    "posterAt": 52.5,
+    "_posterWhy": "10% in (7.2s) landed on a defocused lens-flare transition. 52.5s is the wide set shot with the show's logo on the living wall — reads as the show, no burned-in lower third."
+  },
+  "Video to Feature - 11- 220615_CeraVe.mp4": {
+    "title": "CeraVe",
+    "brand": "CeraVe"
+  },
+  "Video to Feature - 12 - Nike_Blueprint_v10_vfx_0318_supplier_JA_VO_EN_20220324_v1.mp4": {
+    "title": "Nike Blueprint",
+    "brand": "Nike"
+  },
+  "bet45intra626h_v1 (1080p).mp4": {
+    "title": "Intracellular",
+    "brand": "Intracellular"
+  },
+  "mtvbkvma203h_v1 (1080p).mp4": {
+    "title": "MTV for Burger King",
+    "brand": "MTV"
+  },
+  "bet+undercover+soldier30sec+e1+101121.mp4_v1 (1080p).mp4": {
+    "title": "BET — Undercover Soldier, Ep 1 (30s)",
+    "brand": "BET"
+  },
+  "bet+undercover+soldier3min+e1+101121.mp4_v1 (1080p).mp4": {
+    "title": "BET — Undercover Soldier, Ep 1 (3 min)",
+    "brand": "BET"
+  },
+  "bet+undercover+soldier3min+e1+101121.mp4_v1 (1080p) (1).mp4": {
+    "exclude": true,
+    "_why": "Same cut as a piece already in the library (identical duration and resolution, different encode). Held back so it doesn't render as a second identical card. Twin of the 3-minute cut (181.27s)."
+  },
+  "Nike_Blueprint_v10_vfx_0318_employee_JA_VO_EN_20220324_v1.mp4": {
+    "title": "Nike Blueprint — Employee Cut",
+    "brand": "Nike",
+    "_why": "Featured #10 is the supplier cut and is titled plain 'Nike Blueprint'; distinguishing so two cards don't read identically."
+  },
+  "tazoleah_ep1_60_16x9_v1 (1080p).mp4": {
+    "title": "Tazo × Leah — Ep 1"
+  },
+  "ep_2_60_16x9_v1 (1080p).mp4": {
+    "title": "Tazo × Leah — Ep 2"
+  },
+  "tazo_leah_ep_3_(60)_16x9_v1 (1080p).mp4": {
+    "title": "Tazo × Leah — Ep 3"
+  },
+  "episode_1_revised_7-16_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Bawse — held back at Martin's direction 2026-09-09."
+  },
+  "episode_2_revised_7-16_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Bawse — held back at Martin's direction 2026-09-09."
+  },
+  "doritos__solid_black__2_30_v1 (1440p).mp4": {
+    "title": "Doritos — Solid Black (2:30)",
+    "brand": "Doritos"
+  },
+  "baw$e_rough_cut_tuesday_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Bawse — held back at Martin's direction 2026-09-09."
+  },
+  "bawse_revised_episode_1_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Bawse — held back at Martin's direction 2026-09-09."
+  },
+  "episode_2_rough_cut_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Bawse — held back at Martin's direction 2026-09-09."
+  },
+  "machine_gun_kelly_at_the_mtv_vmas_sponsored_by_doritos.mp4_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Same cut as a piece already in the library (identical duration and resolution, different encode). Held back so it doesn't render as a second identical card. Twin of featured #5 (60.12s)."
+  },
+  "nike_blueprint_v1 (1080p).mp4": {
+    "exclude": true,
+    "_why": "Same cut as a piece already in the library (identical duration and resolution, different encode). Held back so it doesn't render as a second identical card. Lighter encode of featured #10, the supplier cut (178.30s, 98.6MB vs 207.6MB)."
+  },
+  "dennys_hungry_for_education_x_sarunas_jackson_v1 (1080p) (1).mp4": {
+    "title": "Denny's Hungry for Education × Sarunas Jackson — Vertical 15s",
+    "brand": "Denny's",
+    "_why": "Different deliverable from the 3-minute film: 15.98s at 1080x1920. Checked before excluding."
+  },
+  "dennys_hungry_for_education_x_sarunas_jackson_v1 (1080p).mp4": {
+    "title": "Denny's Hungry for Education × Sarunas Jackson",
+    "brand": "Denny's"
+  },
+  "retool_your_school_with_the_home_depot_v1 (2160p).mp4": {
+    "featuredRank": 13,
+    "title": "The Home Depot — Retool Your School",
+    "brand": "The Home Depot",
+    "_why": "Added to the landing page by Martin 2026-09-10 to fill the grid to 12. 4K master.",
+    "_rankWhy": "13/14, not 11/12: filename ranks already use 11 (CeraVe) and 12 (Nike). Renumbered to 11/12 on output."
+  },
+  "mountain_dew,_top_five_finalists,_real_change_opportunity_fund_v1 (2160p).mp4": {
+    "featuredRank": 14,
+    "title": "Mountain Dew — Real Change Opportunity Fund: Top Five Finalists",
+    "brand": "Mountain Dew",
+    "_why": "Added to the landing page by Martin 2026-09-10 to fill the grid to 12. 4K master.",
+    "_rankWhy": "13/14, not 11/12: filename ranks already use 11 (CeraVe) and 12 (Nike). Renumbered to 11/12 on output."
+  }
+}

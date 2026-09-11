@@ -3,7 +3,14 @@ import type { Express } from "express";
 import { db } from "../db";
 import { users, videoIndex } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
-import { encrypt } from "../encryption";
+import { encrypt, decrypt } from "../encryption";
+import { categorizeVideos } from "./ai/categorize";
+import { pLimit } from "./concurrency";
+import {
+  cacheInstagramThumbnail,
+  cacheFacebookThumbnail,
+  refreshSocialThumbnails,
+} from "./socialThumbnails";
 
 interface TwitchProfile {
   id: string;
@@ -33,7 +40,7 @@ interface FacebookPageData {
 async function fetchFacebookPageData(userAccessToken: string): Promise<FacebookPageData | null> {
   try {
     // Fetch Pages the user manages with fan_count (followers) and Instagram Business Account
-    const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,access_token,instagram_business_account&access_token=${userAccessToken}`;
+    const pagesUrl = `https://graph.facebook.com/v25.0/me/accounts?fields=id,name,fan_count,access_token,instagram_business_account&access_token=${userAccessToken}`;
     const pagesResponse = await fetch(pagesUrl);
     const pagesData = await pagesResponse.json();
     
@@ -57,7 +64,7 @@ async function fetchFacebookPageData(userAccessToken: string): Promise<FacebookP
     // If Instagram Business Account is connected, fetch its data
     if (page.instagram_business_account?.id) {
       const igId = page.instagram_business_account.id;
-      const igUrl = `https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${page.access_token}`;
+      const igUrl = `https://graph.facebook.com/v25.0/${igId}?fields=username,followers_count&access_token=${page.access_token}`;
       const igResponse = await fetch(igUrl);
       const igData = await igResponse.json();
       
@@ -81,10 +88,10 @@ async function fetchFacebookPageData(userAccessToken: string): Promise<FacebookP
 }
 
 // Fetch Facebook Page videos
-async function fetchFacebookPageVideos(pageId: string, accessToken: string): Promise<any[]> {
+export async function fetchFacebookPageVideos(pageId: string, accessToken: string): Promise<any[]> {
   try {
     // Include 'title' and 'name' fields - Facebook uses different fields for different video types
-    const url = `https://graph.facebook.com/v18.0/${pageId}/videos?fields=id,title,name,description,created_time,thumbnails,permalink_url,length,views,source&limit=50&access_token=${accessToken}`;
+    const url = `https://graph.facebook.com/v25.0/${pageId}/videos?fields=id,title,name,description,created_time,thumbnails,permalink_url,length,views,source&limit=50&access_token=${accessToken}`;
     const response = await fetch(url);
     const data = await response.json();
     
@@ -107,10 +114,10 @@ async function fetchFacebookPageVideos(pageId: string, accessToken: string): Pro
 }
 
 // Fetch Facebook personal profile videos (requires user_videos permission)
-async function fetchPersonalProfileVideos(accessToken: string): Promise<any[]> {
+export async function fetchPersonalProfileVideos(accessToken: string): Promise<any[]> {
   try {
     // Personal profile videos endpoint
-    const url = `https://graph.facebook.com/v18.0/me/videos?fields=id,title,description,created_time,thumbnails,permalink_url,length,views&type=uploaded&limit=50&access_token=${accessToken}`;
+    const url = `https://graph.facebook.com/v25.0/me/videos?fields=id,title,description,created_time,thumbnails,permalink_url,length,views,source&type=uploaded&limit=50&access_token=${accessToken}`;
     const response = await fetch(url);
     const data = await response.json();
     
@@ -128,17 +135,17 @@ async function fetchPersonalProfileVideos(accessToken: string): Promise<any[]> {
 }
 
 // Fetch Instagram Business media
-async function fetchInstagramMedia(igUserId: string, accessToken: string): Promise<any[]> {
+export async function fetchInstagramMedia(igUserId: string, accessToken: string): Promise<any[]> {
   try {
-    const url = `https://graph.facebook.com/v18.0/${igUserId}/media?fields=id,caption,media_type,media_url,thumbnail_url,timestamp,permalink&limit=50&access_token=${accessToken}`;
+    const url = `https://graph.facebook.com/v25.0/${igUserId}/media?fields=id,caption,media_type,media_url,thumbnail_url,timestamp,permalink&limit=50&access_token=${accessToken}`;
     const response = await fetch(url);
     const data = await response.json();
-    
+
     if (data.error) {
       console.error("[Graph API] Error fetching Instagram media:", data.error.message);
       return [];
     }
-    
+
     console.log(`[Graph API] Found ${data.data?.length || 0} Instagram media items`);
     return data.data || [];
   } catch (error) {
@@ -147,142 +154,265 @@ async function fetchInstagramMedia(igUserId: string, accessToken: string): Promi
   }
 }
 
+// Fetch view count for a single Instagram media item via the insights API.
+// Meta deprecated the legacy metrics in API v22.0:
+//   - REELS plays      → use views
+//   - VIDEO video_views → use views
+// `views` is now the single canonical metric across both media types. We try
+// it first, then fall back to the legacy metric for older media that hasn't
+// been migrated. Returns 0 on any error so a single item's insights fetch
+// failure doesn't break the whole import/backfill.
+export async function fetchInstagramVideoViews(
+  igMediaId: string,
+  mediaType: string,
+  accessToken: string,
+): Promise<number> {
+  const tryMetric = async (metric: string): Promise<number | null> => {
+    try {
+      const url = `https://graph.facebook.com/v22.0/${igMediaId}/insights?metric=${metric}&access_token=${encodeURIComponent(accessToken)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.error) {
+        // Signal "try the next metric" by returning null on metric-not-supported,
+        // 0 on real failures (token/perms/age) so we stop trying.
+        const msg = data.error.message || "";
+        if (msg.includes("metric") || msg.includes("not supported")) {
+          return null;
+        }
+        console.warn(`[IG Insights] ${igMediaId} (${mediaType}, ${metric}): ${msg}`);
+        return 0;
+      }
+      const value = data.data?.[0]?.values?.[0]?.value;
+      return typeof value === "number" ? value : 0;
+    } catch (err: any) {
+      console.warn(`[IG Insights] ${igMediaId} (${metric}) fetch failed: ${err.message}`);
+      return 0;
+    }
+  };
+
+  // v22+ canonical metric — works for both REELS and VIDEO on modern media.
+  const views = await tryMetric("views");
+  if (views !== null) return views;
+
+  // Legacy fallback for older media that the v22 metric doesn't cover.
+  const legacy = mediaType === "REELS" ? "plays" : "video_views";
+  const legacyValue = await tryMetric(legacy);
+  return legacyValue ?? 0;
+}
+
 // Import personal profile videos into video_index
 async function importPersonalVideos(userId: string, accessToken: string): Promise<number> {
   const videos = await fetchPersonalProfileVideos(accessToken);
-  let imported = 0;
-  
+
+  const candidates: typeof videos = [];
   for (const video of videos) {
+    const existing = await db.query.videoIndex.findFirst({
+      where: and(
+        eq(videoIndex.userId, userId),
+        eq(videoIndex.youtubeId, `facebook:${video.id}`),
+        eq(videoIndex.platform, "facebook")
+      )
+    });
+    if (!existing) candidates.push(video);
+  }
+
+  const categorizations = await categorizeVideos(
+    candidates.map(v => ({ title: v.title || "Untitled Video", description: v.description || "" }))
+  );
+
+  // Cache thumbnails to GCS — fbcdn URLs expire same as IG. v.source is the
+  // MP4 URL fallback for ffmpeg frame extraction.
+  const fbLimit = pLimit(5);
+  const cachedThumbnails = await Promise.all(
+    candidates.map(v => fbLimit(() =>
+      cacheFacebookThumbnail(v.id, v.thumbnails?.data?.[0]?.uri, v.source)
+    ))
+  );
+
+  let imported = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const video = candidates[i];
+    const cat = categorizations[i];
     try {
-      // Check if already exists
-      const existing = await db.query.videoIndex.findFirst({
-        where: and(
-          eq(videoIndex.userId, userId),
-          eq(videoIndex.youtubeId, `facebook:${video.id}`),
-          eq(videoIndex.platform, "facebook")
-        )
+      await db.insert(videoIndex).values({
+        userId,
+        youtubeId: `facebook:${video.id}`,
+        title: video.title || "Untitled Video",
+        description: video.description || "",
+        viewCount: video.views || 0,
+        thumbnailUrl: cachedThumbnails[i],
+        status: "Pending Scan",
+        priorityScore: 50,
+        publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
+        platform: "facebook",
+        duration: video.length ? `${Math.floor(video.length / 60)}:${String(video.length % 60).padStart(2, '0')}` : null,
+        sourceUrl: video.permalink_url || null,
+        category: cat.category,
+        subcategory: cat.subcategory,
+        isEvergreen: cat.isEvergreen,
       });
-      
-      if (!existing) {
-        await db.insert(videoIndex).values({
-          userId,
-          youtubeId: `facebook:${video.id}`,
-          title: video.title || "Untitled Video",
-          description: video.description || "",
-          viewCount: video.views || 0,
-          thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
-          status: "Pending Scan",
-          priorityScore: 50,
-          publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
-          platform: "facebook",
-          duration: video.length ? `${Math.floor(video.length / 60)}:${String(video.length % 60).padStart(2, '0')}` : null,
-          sourceUrl: video.permalink_url || null,
-        });
-        imported++;
-      }
+      imported++;
     } catch (error) {
       console.error(`[Graph API] Error importing personal video ${video.id}:`, error);
     }
   }
-  
+
   console.log(`[Graph API] Imported ${imported} new personal profile videos`);
+  await refreshSocialThumbnails(userId, "facebook", videos);
   return imported;
 }
 
 // Import Facebook videos into video_index
 async function importFacebookVideos(userId: string, pageId: string, accessToken: string): Promise<number> {
   const videos = await fetchFacebookPageVideos(pageId, accessToken);
-  let imported = 0;
-  
+
+  const candidates: Array<{ video: any; title: string }> = [];
   for (const video of videos) {
+    const existing = await db.query.videoIndex.findFirst({
+      where: and(
+        eq(videoIndex.userId, userId),
+        eq(videoIndex.youtubeId, `facebook:${video.id}`),
+        eq(videoIndex.platform, "facebook")
+      )
+    });
+    if (existing) continue;
+
+    // Try multiple fields for title: title, name, or first line of description
+    let videoTitle = video.title || video.name;
+    if (!videoTitle && video.description) {
+      const firstLine = video.description.split('\n')[0].trim();
+      videoTitle = firstLine.substring(0, 100) || "Facebook Video";
+    }
+    videoTitle = videoTitle || "Facebook Video";
+    candidates.push({ video, title: videoTitle });
+  }
+
+  const categorizations = await categorizeVideos(
+    candidates.map(c => ({ title: c.title, description: c.video.description || "" }))
+  );
+
+  // Cache thumbnails to GCS — fbcdn URLs expire same as IG. video.source is
+  // the MP4 URL fallback for ffmpeg frame extraction.
+  const fbPageLimit = pLimit(5);
+  const cachedThumbnails = await Promise.all(
+    candidates.map(c => fbPageLimit(() =>
+      cacheFacebookThumbnail(c.video.id, c.video.thumbnails?.data?.[0]?.uri, c.video.source)
+    ))
+  );
+
+  let imported = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const { video, title } = candidates[i];
+    const cat = categorizations[i];
     try {
-      // Check if already exists
-      const existing = await db.query.videoIndex.findFirst({
-        where: and(
-          eq(videoIndex.userId, userId),
-          eq(videoIndex.youtubeId, `facebook:${video.id}`),
-          eq(videoIndex.platform, "facebook")
-        )
+      await db.insert(videoIndex).values({
+        userId,
+        youtubeId: `facebook:${video.id}`,
+        title,
+        description: video.description || "",
+        viewCount: video.views || 0,
+        thumbnailUrl: cachedThumbnails[i],
+        status: "Pending Scan",
+        priorityScore: 50,
+        publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
+        platform: "facebook",
+        duration: video.length ? `${Math.floor(video.length / 60)}:${String(video.length % 60).padStart(2, '0')}` : null,
+        sourceUrl: video.permalink_url || null,
+        category: cat.category,
+        subcategory: cat.subcategory,
+        isEvergreen: cat.isEvergreen,
       });
-      
-      if (!existing) {
-        // Try multiple fields for title: title, name, or first line of description
-        let videoTitle = video.title || video.name;
-        if (!videoTitle && video.description) {
-          // Use first line of description as title (up to 100 chars)
-          const firstLine = video.description.split('\n')[0].trim();
-          videoTitle = firstLine.substring(0, 100) || "Facebook Video";
-        }
-        videoTitle = videoTitle || "Facebook Video";
-        
-        await db.insert(videoIndex).values({
-          userId,
-          youtubeId: `facebook:${video.id}`,
-          title: videoTitle,
-          description: video.description || "",
-          viewCount: video.views || 0,
-          thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
-          status: "Pending Scan",
-          priorityScore: 50,
-          publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
-          platform: "facebook",
-          duration: video.length ? `${Math.floor(video.length / 60)}:${String(video.length % 60).padStart(2, '0')}` : null,
-          sourceUrl: video.permalink_url || null,
-        });
-        imported++;
-      }
+      imported++;
     } catch (error) {
       console.error(`[Graph API] Error importing Facebook video ${video.id}:`, error);
     }
   }
-  
+
   console.log(`[Graph API] Imported ${imported} new Facebook videos`);
+  await refreshSocialThumbnails(userId, "facebook", videos);
   return imported;
 }
 
 // Import Instagram media into video_index
 async function importInstagramMedia(userId: string, igUserId: string, accessToken: string): Promise<number> {
   const media = await fetchInstagramMedia(igUserId, accessToken);
-  let imported = 0;
-  
+
+  const candidates: any[] = [];
   for (const item of media) {
+    // Only import videos and reels (not images)
+    if (item.media_type !== "VIDEO" && item.media_type !== "REELS") continue;
+
+    const existing = await db.query.videoIndex.findFirst({
+      where: and(
+        eq(videoIndex.userId, userId),
+        eq(videoIndex.youtubeId, `instagram:${item.id}`),
+        eq(videoIndex.platform, "instagram")
+      )
+    });
+    if (!existing) candidates.push(item);
+  }
+
+  const categorizations = await categorizeVideos(
+    candidates.map(item => ({
+      title: item.caption?.substring(0, 100) || "Instagram Video",
+      description: item.caption || "",
+    }))
+  );
+
+  // Fetch view counts in parallel with bounded concurrency. IG insights is a
+  // per-item endpoint (not batchable), so 50 candidates = 50 calls; cap at 5
+  // concurrent to stay well under Graph API rate limits.
+  const limit = pLimit(5);
+  const viewCounts = await Promise.all(
+    candidates.map(item => limit(() =>
+      fetchInstagramVideoViews(item.id, item.media_type, accessToken)
+    ))
+  );
+
+  // Cache thumbnails to GCS in parallel — IG's CDN URLs expire so we never
+  // store the raw URL. media_url is passed so cacheInstagramThumbnail can
+  // fall back to ffmpeg frame extraction when Graph API returns no
+  // thumbnail_url (common for older Reels).
+  const cachedThumbnails = await Promise.all(
+    candidates.map(item => limit(() =>
+      cacheInstagramThumbnail(item.id, item.thumbnail_url, item.media_url)
+    ))
+  );
+
+  let imported = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const item = candidates[i];
+    const cat = categorizations[i];
     try {
-      // Only import videos and reels (not images)
-      if (item.media_type !== "VIDEO" && item.media_type !== "REELS") {
-        continue;
-      }
-      
-      // Check if already exists
-      const existing = await db.query.videoIndex.findFirst({
-        where: and(
-          eq(videoIndex.userId, userId),
-          eq(videoIndex.youtubeId, `instagram:${item.id}`),
-          eq(videoIndex.platform, "instagram")
-        )
+      await db.insert(videoIndex).values({
+        userId,
+        youtubeId: `instagram:${item.id}`,
+        title: item.caption?.substring(0, 100) || "Instagram Video",
+        description: item.caption || "",
+        viewCount: viewCounts[i] || 0,
+        thumbnailUrl: cachedThumbnails[i],
+        status: "Pending Scan",
+        priorityScore: 50,
+        publishedAt: item.timestamp ? new Date(item.timestamp) : new Date(),
+        platform: "instagram",
+        sourceUrl: item.permalink || null,
+        category: cat.category,
+        subcategory: cat.subcategory,
+        isEvergreen: cat.isEvergreen,
       });
-      
-      if (!existing) {
-        await db.insert(videoIndex).values({
-          userId,
-          youtubeId: `instagram:${item.id}`,
-          title: item.caption?.substring(0, 100) || "Instagram Video",
-          description: item.caption || "",
-          viewCount: 0,
-          thumbnailUrl: item.thumbnail_url || item.media_url || null,
-          status: "Pending Scan",
-          priorityScore: 50,
-          publishedAt: item.timestamp ? new Date(item.timestamp) : new Date(),
-          platform: "instagram",
-          sourceUrl: item.permalink || null,
-        });
-        imported++;
-      }
+      imported++;
     } catch (error) {
       console.error(`[Graph API] Error importing Instagram media ${item.id}:`, error);
     }
   }
-  
+
   console.log(`[Graph API] Imported ${imported} new Instagram videos/reels`);
+
+  // Backfill: existing IG videos in the index that still hold a CDN URL or
+  // null get their thumbnails re-cached now too. Cheap on subsequent syncs
+  // because already-cached entries (URL on /storage/) are skipped.
+  await refreshSocialThumbnails(userId, "instagram", media);
+
   return imported;
 }
 
@@ -398,13 +528,40 @@ export async function setupPlatformAuth(app: Express) {
       const facebookModule = await import("passport-facebook");
       const FacebookStrategy = facebookModule.Strategy;
       
-      passport.use(
-        "facebook",
-        new FacebookStrategy(
+      // Facebook Login for Business, when a config id is provided.
+      //
+      // passport-facebook defaults to graphAPIVersion v3.2 — a 2018 version —
+      // and calls the CLASSIC https://www.facebook.com/<v>/dialog/oauth. Every
+      // permission this app holds is a business permission (pages_*,
+      // instagram_*, Business Asset User Profile Access) and the dashboard uses
+      // the Use Cases model, which is Facebook Login FOR BUSINESS. That flow is
+      // entered with a config_id identifying the configuration; the classic
+      // dialog cannot serve it, and Meta answers a published, unrestricted,
+      // fully-permissioned app with:
+      //
+      //   "Facebook Login is currently unavailable for this app, since we are
+      //    updating additional details for this app."
+      //
+      // which reads like a restriction and is actually a wrong-door error.
+      //
+      // META_LOGIN_CONFIG_ID comes from the dashboard: the Facebook Login for
+      // Business use case → the configuration → its ID. With it set we send
+      // config_id and OMIT scope, because the configuration defines the
+      // permission set and sending both is rejected. Without it, behaviour is
+      // exactly as before apart from a current API version.
+      const fbStrategy = new FacebookStrategy(
           {
             clientID: FACEBOOK_APP_ID,
             clientSecret: FACEBOOK_APP_SECRET,
             callbackURL: `${BASE_URL}/auth/facebook/callback`,
+            // Pinned. v3.2 has been unsupported for years; a deprecated dialog
+            // is its own source of opaque failures.
+            graphAPIVersion: "v21.0",
+            // "email" stays in profileFields deliberately: if the permission
+            // is ever granted the field populates and account-linking improves,
+            // and without it the field is simply absent — which the callback
+            // already handles. Requesting the FIELD is free; requesting the
+            // SCOPE is what review scrutinises.
             profileFields: ["id", "displayName", "email", "photos"],
             passReqToCallback: true,
           },
@@ -577,9 +734,24 @@ export async function setupPlatformAuth(app: Express) {
               done(error as Error);
             }
           }
-        )
-      );
-      console.log("[PlatformAuth] Facebook strategy configured");
+        );
+
+      // Attach config_id to the authorization request when configured. This is
+      // what turns the classic dialog into the Login-for-Business one; passport
+      // has no option for it, so we extend the params builder.
+      const META_LOGIN_CONFIG_ID = process.env.META_LOGIN_CONFIG_ID;
+      if (META_LOGIN_CONFIG_ID) {
+        const base = (fbStrategy as any).authorizationParams?.bind(fbStrategy);
+        (fbStrategy as any).authorizationParams = function (options: any) {
+          const params = base ? base(options) : {};
+          params.config_id = META_LOGIN_CONFIG_ID;
+          return params;
+        };
+        console.log(`[PlatformAuth] Facebook Login for Business — config_id ${META_LOGIN_CONFIG_ID}`);
+      }
+
+      passport.use("facebook", fbStrategy);
+      console.log(`[PlatformAuth] Facebook strategy configured (v21.0, ${META_LOGIN_CONFIG_ID ? "Login for Business" : "classic Login"})`);
     } catch (err) {
       console.error("[PlatformAuth] Failed to initialize Facebook strategy:", err);
     }
@@ -603,8 +775,98 @@ export async function setupPlatformAuth(app: Express) {
     })(req, res, next);
   });
 
+  // ── Instagram Login: connecting without a Facebook Page ───────────
+  //
+  // The Facebook route below requires a Page with a linked IG Business
+  // account. Plenty of creators have neither — an Instagram Creator account
+  // and no Page is an entirely normal setup — and for them the Facebook flow
+  // cannot work no matter what we fix on it. This is the other door.
+  app.get("/auth/instagram", async (req: any, res) => {
+    const { instagramLoginConfig, authorizeUrl } = await import("./instagramLogin");
+    const cfg = instagramLoginConfig(BASE_URL);
+    if (!cfg) {
+      console.warn("[InstagramLogin] INSTAGRAM_APP_ID / INSTAGRAM_APP_SECRET not set");
+      return res.redirect("/settings?connect=ig_not_configured");
+    }
+    // The session id doubles as CSRF state — it is already unguessable and
+    // already bound to this browser, and the callback compares it back.
+    const state = req.sessionID;
+    req.session.igLoginState = state;
+    req.session.save(() => res.redirect(authorizeUrl(cfg, state)));
+  });
+
+  app.get("/auth/instagram/callback", async (req: any, res) => {
+    const { instagramLoginConfig, exchangeCode } = await import("./instagramLogin");
+    const cfg = instagramLoginConfig(BASE_URL);
+    if (!cfg) return res.redirect("/settings?connect=ig_not_configured");
+
+    // The creator declining on Instagram's screen is a normal outcome, not an
+    // error to shout about.
+    if (req.query.error) {
+      console.log(`[InstagramLogin] declined: ${req.query.error_description || req.query.error}`);
+      return res.redirect("/settings?connect=ig_declined");
+    }
+    if (!req.query.code || req.query.state !== req.session?.igLoginState) {
+      return res.redirect("/settings?connect=ig_failed");
+    }
+    delete req.session.igLoginState;
+
+    try {
+      const { storage } = await import("../storage");
+      const authEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      const user = authEmail ? await storage.getUserByEmail(authEmail) : null;
+      if (!user) return res.redirect("/settings?connect=ig_signin_first");
+
+      const profile = await exchangeCode(cfg, String(req.query.code));
+
+      // accountType "creator" distinguishes this from the Page-linked
+      // "business" rows, so the unique index treats them as separate
+      // connections and a creator can hold both without one clobbering the
+      // other.
+      await storage.upsertSocialAccount({
+        userId: user.id,
+        platform: "instagram",
+        accountType: "creator",
+        platformAccountId: profile.igUserId,
+        handle: profile.username,
+        displayName: profile.username,
+        avatarUrl: profile.profilePictureUrl,
+        followers: profile.followers,
+        totalViews: 0,
+        accessToken: profile.accessToken,
+        scopes: ["instagram_business_basic", "instagram_business_manage_insights"],
+        tokenExpiresAt: new Date(Date.now() + profile.expiresInSec * 1000),
+      } as any);
+
+      console.log(`[InstagramLogin] connected @${profile.username} (${profile.followers} followers) for ${authEmail}`);
+      return res.redirect("/settings?connect=ig_success");
+    } catch (err: any) {
+      console.error(`[InstagramLogin] callback failed: ${err?.message}`);
+      return res.redirect("/settings?connect=ig_failed");
+    }
+  });
+
   // Facebook auth routes - works for both login and account linking
   app.get("/auth/facebook", (req: any, res, next) => {
+    // KILL SWITCH for the window where Meta itself is refusing the flow.
+    //
+    // A creator clicking Connect while the Meta app is not Live — mid App
+    // Review, or missing a required dashboard field — is bounced to Meta's own
+    // wall: "Facebook Login is currently unavailable for this app, since we
+    // are updating additional details for this app." That page says nothing
+    // about FullScale, offers only a Reload button that fails identically, and
+    // leaves the creator believing OUR product is broken. Every scope this
+    // flow requests (pages_show_list, pages_read_engagement, read_insights,
+    // instagram_basic, instagram_manage_insights) needs App Review, so this is
+    // not a state we can code our way out of — but we can decline to send
+    // people into it.
+    //
+    // Set META_CONNECT_ENABLED=false while the app is under review; unset it
+    // (or "true") the moment Meta approves.
+    if (process.env.META_CONNECT_ENABLED === "false") {
+      console.log("[PlatformAuth] Facebook connect disabled by META_CONNECT_ENABLED");
+      return res.redirect("/settings?connect=meta_unavailable");
+    }
     console.log("[PlatformAuth] Starting Facebook OAuth flow...");
     console.log("[PlatformAuth] Callback URL will be:", `${BASE_URL}/auth/facebook/callback`);
     console.log("[PlatformAuth] Session ID at start:", req.sessionID);
@@ -626,18 +888,64 @@ export async function setupPlatformAuth(app: Express) {
       if (err) {
         console.error("[PlatformAuth] Session save error:", err);
       }
-      // Request scopes for creator data access
-      // Note: pages_read_user_content requires App Review - removed for now
+      // Request scopes for creator data access + analytics.
+      //
+      // We use Facebook Login (facebook.com/dialog/oauth) to access IG Business
+      // Accounts via linked Pages. That flow uses the LEGACY scope names
+      // (instagram_basic, instagram_manage_insights), NOT the new
+      // instagram_business_* names.
+      //
+      // The instagram_business_* names are only valid for the Instagram Login
+      // flow (instagram.com/oauth/authorize), which is a different OAuth
+      // endpoint we do not use. Requesting them via Facebook Login causes
+      // "Invalid Scopes" rejection from Meta.
+      //
+      // Reverted from commit 78623a3 which incorrectly applied the IG-Login
+      // scope names to the FB-Login flow.
+      //
       // Scopes:
+      // - email, public_profile: basic identity
       // - pages_show_list: List of managed Pages
-      // - pages_read_engagement: Page insights and Instagram Business Account
-      passport.authenticate("facebook", { 
+      // - pages_read_engagement: Page insights + IG Business Account discovery
+      // - instagram_basic [App Review]: IG profile + media metadata
+      // - instagram_manage_insights [App Review]: IG media insights (impressions,
+      //   reach, plays for Reels, engagement). REQUIRED for analytics dashboard.
+      // With Login for Business the configuration owns the permission set, so
+      // scope must NOT be sent alongside config_id.
+      const cfgId = process.env.META_LOGIN_CONFIG_ID;
+      if (cfgId) {
+        return passport.authenticate("facebook")(req, res, next);
+      }
+      passport.authenticate("facebook", {
         scope: [
-          "email", 
-          "public_profile", 
-          "pages_show_list",          // List of managed Pages
-          "pages_read_engagement",    // Page insights and Instagram Business Account
-        ] 
+          // NO "email".
+          //
+          // App Review showed it at 0 API calls, so Meta offers only "increase
+          // usage" — it will not grant Advanced Access to a permission we have
+          // never demonstrably used. And we have not used it because we cannot:
+          // by the time this callback runs, the creator is ALREADY signed in
+          // with Google, and the callback returns early on that path before
+          // fbEmail is ever read. It only matters for Facebook-FIRST signup,
+          // which is not how onboarding works here.
+          //
+          // The fallback was already in place for the common case where Meta
+          // returns no email at all (users with none, or who decline it): the
+          // new-user id becomes `facebook:<profile.id>`. Dropping the scope
+          // just makes that the norm for a path almost nobody takes, and
+          // removes an unjustifiable item from the review submission.
+          "public_profile",
+          "pages_show_list",            // List of managed Pages
+          "pages_read_engagement",      // Page content/followers + IG Business Account discovery
+          "read_insights",              // FB Page /insights edge (page views/reach/follows) [App Review]
+          "instagram_basic",            // IG profile + media metadata [App Review]
+          "instagram_manage_insights",  // IG analytics (views, reach, watch time, demographics) [App Review]
+          "instagram_content_publish",  // Publish Reels via distribution scheduler [App Review]
+          // Publish video to a Page the creator manages. Meta grants this only
+          // after App Review, and omits it silently for anyone without a role
+          // on the app — so a creator can connect successfully and still not
+          // be able to post, which the publisher reports in words.
+          "pages_manage_posts",         // Page video publishing [App Review]
+        ],
       })(req, res, next);
     });
   });
@@ -761,7 +1069,10 @@ export async function setupPlatformAuth(app: Express) {
           
           console.log("[PlatformAuth] Session saved, redirecting to /dashboard");
           console.log("[PlatformAuth] ========== END FACEBOOK CALLBACK ==========");
-          return res.redirect("/dashboard");
+          // facebook_connected triggers the Page-confirmation dialog: the
+          // creator explicitly picks WHICH managed Page (and its linked IG
+          // account) to connect — pages_show_list's allowed usage, shown.
+          return res.redirect("/dashboard?facebook_connected=true");
         });
       });
     })(req, res, next);
@@ -898,93 +1209,271 @@ export async function setupPlatformAuth(app: Express) {
     }
   });
 
-  // Debug endpoint to manually test Facebook database update
-  app.get("/api/debug/test-fb-update", async (req: any, res) => {
-    const email = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email;
-    if (!email) {
-      return res.json({ error: "Not logged in with Google", session: req.session });
+  // ── Page selection (creator confirms which Page to connect) ────────────
+  // pages_show_list's allowed usage is literally "show a person the list of
+  // Pages they manage and verify that a person manages a Page" — these two
+  // endpoints implement exactly that: list the managed Pages (with linked IG
+  // accounts) after OAuth, and commit the one the creator confirms.
+
+  /** Resolve the logged-in user row + their decrypted FB USER token. */
+  async function resolveFacebookUser(req: any): Promise<{ user: any; userToken: string } | { error: string; status: number }> {
+    const email = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email || req.user?.claims?.email;
+    const sessionUserId = req.session?.userId;
+    let user: any = null;
+    if (email) {
+      user = await db.query.users.findFirst({ where: eq(users.email, email) });
     }
-    
+    if (!user && sessionUserId) {
+      user = await db.query.users.findFirst({ where: eq(users.id, sessionUserId) });
+    }
+    if (!user) return { error: "Not authenticated", status: 401 };
+    let userToken: string | null = null;
+    if (user.facebookAccessToken) {
+      try { userToken = decrypt(user.facebookAccessToken); } catch { userToken = null; }
+    }
+    // Session token from the just-completed OAuth is the freshest fallback.
+    if (!userToken && req.session?.facebookProfile?.accessToken) {
+      userToken = req.session.facebookProfile.accessToken;
+    }
+    if (!userToken) return { error: "Facebook not connected — connect Facebook first", status: 400 };
+    return { user, userToken };
+  }
+
+  const PAGE_FIELDS = "id,name,fan_count,picture{url},access_token,instagram_business_account{id,username,followers_count,profile_picture_url}";
+
+  /** Page IDs the user granted the app, straight from the token's granular
+   *  scopes. The authoritative record of consent — /me/accounts sometimes
+   *  returns [] even when Pages are plainly granted (observed live). */
+  async function fetchGrantedPageIds(userToken: string): Promise<string[]> {
     try {
-      // Find user by email
-      const user = await db.query.users.findFirst({
-        where: eq(users.email, email),
-      });
-      
-      if (!user) {
-        return res.json({ error: "User not found", email });
+      const dbgRes = await fetch(`https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(userToken)}&access_token=${encodeURIComponent(userToken)}`);
+      const dbg: any = await dbgRes.json();
+      const ids = new Set<string>();
+      for (const g of dbg?.data?.granular_scopes ?? []) {
+        if (g.scope === "pages_show_list" || g.scope === "pages_read_engagement") {
+          for (const t of g.target_ids ?? []) ids.add(String(t));
+        }
       }
-      
-      // Try updating with test data
-      const testUpdate = {
-        facebookId: "TEST_FB_ID_" + Date.now(),
-      };
-      
-      const result = await db
-        .update(users)
-        .set(testUpdate)
-        .where(eq(users.id, user.id))
-        .returning();
-      
-      // Read back the user
-      const updatedUser = await db.query.users.findFirst({
-        where: eq(users.id, user.id),
+      return Array.from(ids);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Fetch the user's managed Pages with linked IG accounts (server-side).
+   *  Primary: /me/accounts. Fallback: granular-scope page ids fetched
+   *  individually — the same mechanism that finds directly-shared IG
+   *  accounts, and immune to /me/accounts' granular-consent flakiness. */
+  async function fetchManagedPages(userToken: string): Promise<any[]> {
+    const url = `https://graph.facebook.com/v25.0/me/accounts?fields=${PAGE_FIELDS}&limit=25&access_token=${encodeURIComponent(userToken)}`;
+    const res = await fetch(url);
+    const data: any = await res.json();
+    if (data.error) throw new Error(data.error.message || "Failed to list Pages");
+    const viaMeAccounts: any[] = data.data ?? [];
+    if (viaMeAccounts.length > 0) return viaMeAccounts;
+
+    // /me/accounts says none — cross-check the actual grant.
+    const grantedIds = await fetchGrantedPageIds(userToken);
+    console.log(`[PlatformAuth] /me/accounts returned 0 pages; granular scopes grant ${grantedIds.length} page id(s)`);
+    const pages: any[] = [];
+    for (const pageId of grantedIds) {
+      try {
+        const pRes = await fetch(`https://graph.facebook.com/v25.0/${encodeURIComponent(pageId)}?fields=${PAGE_FIELDS}&access_token=${encodeURIComponent(userToken)}`);
+        const p: any = await pRes.json();
+        if (p?.id && !p.error) pages.push(p);
+      } catch { /* skip page */ }
+    }
+    return pages;
+  }
+
+  /** IG accounts the user shared with the app DIRECTLY (no Page asset) —
+   *  derived from the token's granular scopes. Common consent outcome: the
+   *  user checks IG accounts on Meta's Instagram screen but skips the Pages
+   *  screen, so /me/accounts is empty while IG access is fully granted. */
+  async function fetchDirectIgAccounts(userToken: string): Promise<any[]> {
+    try {
+      const dbgRes = await fetch(`https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(userToken)}&access_token=${encodeURIComponent(userToken)}`);
+      const dbg: any = await dbgRes.json();
+      const igIds = new Set<string>();
+      for (const g of dbg?.data?.granular_scopes ?? []) {
+        if (g.scope === "instagram_basic" || g.scope === "instagram_manage_insights") {
+          for (const t of g.target_ids ?? []) igIds.add(String(t));
+        }
+      }
+      const out: any[] = [];
+      for (const igId of Array.from(igIds)) {
+        try {
+          const igRes = await fetch(`https://graph.facebook.com/v25.0/${igId}?fields=username,followers_count,profile_picture_url&access_token=${encodeURIComponent(userToken)}`);
+          const ig: any = await igRes.json();
+          if (ig?.username) {
+            out.push({ id: igId, handle: `@${ig.username}`, followers: ig.followers_count ?? 0, pictureUrl: ig.profile_picture_url ?? null });
+          }
+        } catch { /* skip account */ }
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  // List the creator's managed Pages — NO tokens in the response. When no
+  // Pages were shared, fall back to directly-shared IG accounts so the
+  // connect flow doesn't dead-end (Page insights stay unavailable until a
+  // Page is actually shared, and the UI says so).
+  app.get("/api/facebook/pages", async (req: any, res) => {
+    try {
+      const resolved = await resolveFacebookUser(req);
+      if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
+      const pages = await fetchManagedPages(resolved.userToken);
+      const igOnly = pages.length === 0 ? await fetchDirectIgAccounts(resolved.userToken) : [];
+      res.json({
+        currentPageId: resolved.user.facebookPageId ?? null,
+        pages: pages.map((p: any) => ({
+          pageId: p.id,
+          name: p.name,
+          followers: p.fan_count ?? 0,
+          pictureUrl: p.picture?.data?.url ?? null,
+          instagram: p.instagram_business_account
+            ? {
+                id: p.instagram_business_account.id,
+                handle: p.instagram_business_account.username ? `@${p.instagram_business_account.username}` : null,
+                followers: p.instagram_business_account.followers_count ?? 0,
+                pictureUrl: p.instagram_business_account.profile_picture_url ?? null,
+              }
+            : null,
+        })),
+        igOnly,
       });
-      
-      return res.json({
-        success: true,
-        userId: user.id,
-        email: user.email,
-        updateResult: result?.length,
-        updatedFacebookId: updatedUser?.facebookId,
-      });
-    } catch (error: any) {
-      return res.json({
-        error: error.message,
-        stack: error.stack,
-      });
+    } catch (err: any) {
+      console.error("[PlatformAuth] /api/facebook/pages error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to list Pages" });
     }
   });
 
-  // Debug endpoint to check session state after OAuth
-  app.get("/api/debug/facebook-session", async (req: any, res) => {
-    const fbProfile = req.session?.facebookProfile;
-    const sessionData = {
-      sessionId: req.sessionID,
-      googleUser: req.session?.googleUser?.email || null,
-      pendingGoogleUser: req.session?.pendingGoogleUser?.email || null,
-      userId: req.session?.userId || null,
-      facebookConnected: req.session?.facebookConnected || false,
-      facebookProfile: fbProfile ? {
-        id: fbProfile.id,
-        displayName: fbProfile.displayName,
-        hasAccessToken: !!fbProfile.accessToken,
-        tokenLength: fbProfile.accessToken?.length || 0,
-      } : null,
-      replitUser: req.user?.claims?.email || null,
-    };
-    
-    // Check database for user
-    const email = sessionData.googleUser || sessionData.pendingGoogleUser;
-    let dbUser = null;
-    if (email) {
-      dbUser = await db.query.users.findFirst({
-        where: eq(users.email, email),
+  // Commit the confirmed Page. The pageId is re-verified server-side by a
+  // direct GET on the Page with the caller's token — a creator can only
+  // connect a Page they manage, and this works past the 25-Page list cap.
+  app.post("/api/facebook/select-page", async (req: any, res) => {
+    try {
+      const resolved = await resolveFacebookUser(req);
+      if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
+      const { user, userToken } = resolved;
+
+      // Instagram-only connect: the user shared IG accounts but no Page.
+      // Verified against the token's own granular scopes — a stranger's IG
+      // id won't be among the target_ids of THIS user's grant.
+      const igAccountId = String(req.body?.igAccountId || "");
+      if (igAccountId) {
+        const direct = await fetchDirectIgAccounts(userToken);
+        const ig = direct.find((d) => String(d.id) === igAccountId);
+        if (!ig) return res.status(403).json({ error: "That Instagram account wasn't shared with FullScale" });
+
+        await db.update(users).set({
+          instagramBusinessId: ig.id,
+          instagramHandle: ig.handle,
+          instagramFollowers: ig.followers ?? 0,
+          updatedAt: new Date(),
+        }).where(eq(users.id, user.id));
+
+        const { storage } = await import("../storage");
+        await storage.replaceMetaSocialAccounts(user.id);
+        await storage.upsertSocialAccount({
+          userId: user.id,
+          platform: "instagram",
+          accountType: "business",
+          platformAccountId: ig.id,
+          handle: ig.handle,
+          displayName: ig.handle,
+          avatarUrl: ig.pictureUrl ?? null,
+          followers: ig.followers ?? 0,
+          accessToken: userToken,
+          scopes: ["instagram_basic", "instagram_manage_insights"],
+        });
+
+        console.log(`[PlatformAuth] User ${user.id} connected IG-only account ${ig.handle} (no Page shared)`);
+        return res.json({ success: true, page: null, instagram: { id: ig.id, handle: ig.handle, followers: ig.followers ?? 0 } });
+      }
+
+      const pageId = String(req.body?.pageId || "");
+      if (!pageId) return res.status(400).json({ error: "pageId required" });
+
+      // Direct verify: fetch THIS page with the user token. Non-managed
+      // pages error or omit access_token, so a stranger's page can't pass.
+      const vRes = await fetch(`https://graph.facebook.com/v25.0/${encodeURIComponent(pageId)}?fields=id,name,fan_count,picture{url},access_token,instagram_business_account{id,username,followers_count,profile_picture_url}&access_token=${encodeURIComponent(userToken)}`);
+      const page: any = await vRes.json();
+      if (page?.error || !page?.id || !page?.access_token) {
+        return res.status(403).json({ error: "You don't manage that Page" });
+      }
+
+      const ig = page.instagram_business_account ?? null;
+      const pageToken: string = page.access_token; // page token: required by the Page /insights edge
+
+      await db.update(users).set({
+        facebookPageId: page.id,
+        facebookPageName: page.name,
+        facebookFollowers: page.fan_count ?? 0,
+        instagramBusinessId: ig?.id ?? null,
+        instagramHandle: ig?.username ? `@${ig.username}` : null,
+        instagramFollowers: ig?.followers_count ?? 0,
+        updatedAt: new Date(),
+      }).where(eq(users.id, user.id));
+
+      // Mirror into social_accounts so analytics + snapshots pick them up.
+      // Replace any previously-selected Page/IG rows for this user so the
+      // snapshot cron doesn't keep polling a Page they've switched away from.
+      const { storage } = await import("../storage");
+      await storage.replaceMetaSocialAccounts(user.id);
+
+      const scopes = ["pages_show_list", "pages_read_engagement", "read_insights", "instagram_basic", "instagram_manage_insights"];
+      // FB row → PAGE token (Page /insights rejects user tokens).
+      await storage.upsertSocialAccount({
+        userId: user.id,
+        platform: "facebook",
+        accountType: "business",
+        platformAccountId: page.id,
+        handle: page.name,
+        displayName: page.name,
+        avatarUrl: page.picture?.data?.url ?? null,
+        followers: page.fan_count ?? 0,
+        accessToken: pageToken,
+        scopes,
       });
+      if (ig?.id) {
+        // IG row → USER token: the IG-insights consumers (backfill,
+        // refresh-analytics, snapshot job) all read with the user token.
+        await storage.upsertSocialAccount({
+          userId: user.id,
+          platform: "instagram",
+          accountType: "business",
+          platformAccountId: ig.id,
+          handle: ig.username ? `@${ig.username}` : null,
+          displayName: ig.username ? `@${ig.username}` : null,
+          avatarUrl: ig.profile_picture_url ?? null,
+          followers: ig.followers_count ?? 0,
+          accessToken: userToken,
+          scopes,
+        });
+      }
+
+      console.log(`[PlatformAuth] User ${user.id} confirmed Page ${page.id} (${page.name})${ig ? ` + IG ${ig.username}` : ""}`);
+      res.json({
+        success: true,
+        page: { pageId: page.id, name: page.name, followers: page.fan_count ?? 0 },
+        instagram: ig ? { id: ig.id, handle: ig.username ? `@${ig.username}` : null, followers: ig.followers_count ?? 0 } : null,
+      });
+    } catch (err: any) {
+      console.error("[PlatformAuth] /api/facebook/select-page error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to connect Page" });
     }
-    
-    res.json({
-      session: sessionData,
-      dbUser: dbUser ? {
-        id: dbUser.id,
-        email: dbUser.email,
-        facebookId: dbUser.facebookId,
-        facebookPageId: dbUser.facebookPageId,
-        facebookPageName: dbUser.facebookPageName,
-        hasToken: !!dbUser.facebookAccessToken,
-      } : null,
-    });
   });
+
+  // NOTE: Facebook debug endpoints (test-fb-update, facebook-session,
+  // fb-insights-test) were REMOVED for security. They decrypted and returned
+  // users' Facebook/Instagram access tokens in the HTTP response and were
+  // reachable via an ungated ?admin_email= param, allowing token exfiltration
+  // for any creator whose email an attacker knew. They served their diagnostic
+  // purpose during the FB/IG analytics bring-up and are no longer needed.
+
 
   // Disconnect Facebook - clears Facebook and Instagram data
   app.delete("/api/auth/facebook", async (req: any, res) => {
@@ -1018,11 +1507,22 @@ export async function setupPlatformAuth(app: Express) {
         instagramHandle: null,
         instagramFollowers: null,
       }).where(eq(users.id, user.id));
-      
+
+      // Remove the mirrored social_accounts rows (+ their snapshots) so the
+      // analytics job stops polling, and drop the session token fallback so
+      // the Page endpoints don't keep working post-disconnect.
+      try {
+        const { storage } = await import("../storage");
+        await storage.replaceMetaSocialAccounts(user.id);
+      } catch (e: any) {
+        console.warn("[Facebook Disconnect] social_accounts cleanup failed:", e?.message);
+      }
+
       // Clear session data
       if (req.session?.facebookProfile) {
         delete req.session.facebookProfile;
       }
+      req.session.facebookConnected = false;
       
       console.log("[Facebook Disconnect] Cleared Facebook/Instagram data for:", userEmail);
       res.json({ success: true });

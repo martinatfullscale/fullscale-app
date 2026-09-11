@@ -1,5 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { Upload, FileVideo, Loader2, CheckCircle, AlertCircle, Download, Play, Rocket, ShoppingCart, Users, Megaphone } from "lucide-react";
+
+const UPLOAD_TIMEOUT_MS = 30 * 60_000; // files, not JSON — see AdminPlacements
+
 
 type PipelineStatus = "idle" | "uploading" | "extracting" | "script_ready" | "queued" | "processing" | "parsing" | "generating" | "adding-voice" | "assembling" | "complete" | "failed";
 
@@ -60,7 +64,7 @@ const STAGE_ORDER: PipelineStatus[] = [
 function StudioUsageBadge() {
   const [usage, setUsage] = useState<{ videosGenerated: number; videosLimit: number; tier: string } | null>(null);
   useEffect(() => {
-    fetch("/api/studio/me")
+    fetchWithTimeout("/api/studio/me")
       .then(r => r.json())
       .then(data => {
         if (data.usage && data.subscription) {
@@ -141,10 +145,10 @@ export default function StudioUpload() {
       formData.append("file", file);
       formData.append("deckIntent", deckIntent);
 
-      const response = await fetch("/api/studio/extract", {
+      const response = await fetchWithTimeout("/api/studio/extract", {
         method: "POST",
         body: formData,
-      });
+      }, UPLOAD_TIMEOUT_MS);
 
       if (!response.ok) {
         const data = await response.json();
@@ -172,7 +176,7 @@ export default function StudioUpload() {
     setError(null);
 
     try {
-      const response = await fetch(`/api/studio/videos/${jobId}/generate-from-script`, {
+      const response = await fetchWithTimeout(`/api/studio/videos/${jobId}/generate-from-script`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ storyScript }),
@@ -213,7 +217,7 @@ export default function StudioUpload() {
 
     pollRef.current = window.setInterval(async () => {
       try {
-        const response = await fetch(`/api/studio/videos/${id}`);
+        const response = await fetchWithTimeout(`/api/studio/videos/${id}`);
         if (!response.ok) return;
 
         const data = await response.json();
@@ -275,7 +279,7 @@ export default function StudioUpload() {
   const cancelUpload = async () => {
     if (!jobId) return;
     try {
-      await fetch(`/api/studio/videos/${jobId}/cancel`, { method: "POST" });
+      await fetchWithTimeout(`/api/studio/videos/${jobId}/cancel`, { method: "POST" });
     } catch (err) {
       // Non-fatal — still stop polling
     }

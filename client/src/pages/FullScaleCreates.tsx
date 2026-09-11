@@ -1,6 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { useMemo } from "react";
+import { useContent } from "@/content";
 import { motion } from "framer-motion";
 import { Film, Play, Sparkles, Users, Zap, ArrowRight, Globe } from "lucide-react";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,100 +19,29 @@ import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import heroVideoUrl from "@assets/fullscale_creates_hero_loop.mp4";
 import heroVideoMobileUrl from "@assets/fullscale_creates_hero_loop_mobile.mp4";
 
-// Video showcase — real Vimeo content from vimeo.com/whtwrks
-const VIDEO_SHOWCASE = [
-  {
-    title: "Deleon at the NAACP Image Awards",
-    description: "Brand activation coverage at one of culture's biggest nights",
-    thumbnail: "https://i.vimeocdn.com/video/2011839791-0e13911c3ea48cb8e48c0601f118107660c026e782eaa20dc6f33613e52a0cfd-d_640x360",
-    tag: "Brand",
-    vimeoId: "1081125562",
-  },
-  {
-    title: "ANTA x Kyrie — The Journey is the Reward",
-    description: "Sizzle reel for the ANTA x Kyrie Irving partnership",
-    thumbnail: "https://i.vimeocdn.com/video/1751193427-8f6f48de3b0156f20b6dccd29ff7a844408ec7bf33eaa3be0d15ca4ccb696539-d_640x360",
-    tag: "Sports",
-    vimeoId: "882921661",
-  },
-  {
-    title: "Chase United Ep. 2 — The Airport",
-    description: "Branded content series for Chase United",
-    thumbnail: "https://i.vimeocdn.com/video/1681997467-f1eff679e856e4d91be65c2d4d7e516451bc5feabaf592c606c24a46e09ccaab-d_640x360",
-    tag: "Series",
-    vimeoId: "834907261",
-  },
-  {
-    title: "Nike Blueprint",
-    description: "Campaign content for Nike's Blueprint initiative",
-    thumbnail: "https://i.vimeocdn.com/video/1552867525-26f71cfc72e9e88e091b6199a38294163734a67b5c6ff7c0a741c4efd69183f8-d_640x360",
-    tag: "Campaign",
-    vimeoId: "773881582",
-  },
-  {
-    title: "Machine Gun Kelly at the MTV VMAs × Doritos",
-    description: "Sponsored activation with MGK at the VMAs",
-    thumbnail: "https://i.vimeocdn.com/video/1241264300-8544249c591846901a6df3cf6b20c3dbc8120b79bc7431759973c0ad8f1773c1-d_640x360",
-    tag: "Music",
-    vimeoId: "604858629",
-  },
-  {
-    title: "The Right Pitch on ROKU",
-    description: "Original series streaming on ROKU",
-    thumbnail: "https://i.vimeocdn.com/video/1992075312-2e02568673b7ad726568e07b6730887b5f8448f9852830ffe63d2661bff26427-d_640x360?region=us",
-    tag: "Original",
-    vimeoId: "1064709284",
-  },
-  {
-    title: "Smirnoff x BET — Ambre",
-    description: "Branded spot for Smirnoff in partnership with BET",
-    thumbnail: "https://i.vimeocdn.com/video/1701620964-ede573fc419aa4d9f0f16ce249bd4194119e866f56361bcefd96e6ddbfc17037-d_640x360?region=us",
-    tag: "Brand",
-    vimeoId: "848085934",
-  },
-  {
-    title: "Retool Your School — Home Depot × Rashan Ali",
-    description: "Home Depot's Retool Your School initiative with Rashan Ali",
-    thumbnail: "https://i.vimeocdn.com/video/863188183-5fa9e5bb245b887071a33639fc49252818eb2e070bc055f92508545906ed6078-d_640x360?region=us",
-    tag: "Brand",
-    vimeoId: "396427937",
-  },
-  {
-    title: "LEGO",
-    description: "Branded content for LEGO",
-    thumbnail: "https://i.vimeocdn.com/video/1100956605-d026d6bdce68dd4a655c2500d5e74794f055858c5e1d2e04fb201e06c991ccec-d_640x360?region=us",
-    tag: "Brand",
-    vimeoId: "531983975",
-  },
-];
+import { useCreatesLibrary, formatDuration, type CreatesVideo } from "@/lib/createsLibrary";
 
-const CAPABILITIES = [
-  {
-    icon: Film,
-    title: "Content Production",
-    description: "From concept to final cut — full-service video production for digital creators",
-  },
-  {
-    icon: Users,
-    title: "Creator Partnerships",
-    description: "Strategic partnerships that connect brands with authentic creator voices",
-  },
-  {
-    icon: Sparkles,
-    title: "AI-Enhanced Workflow",
-    description: "Leveraging AI tools to accelerate production while preserving the human touch",
-  },
-  {
-    icon: Zap,
-    title: "Distribution & Reach",
-    description: "Multi-platform content strategy to maximize audience engagement and impact",
-  },
-];
+const CAPABILITY_ICONS = [Film, Users, Sparkles, Zap];
 
 export default function FullScaleCreates() {
+  const c = useContent("creates");
+  /* Same shapes the JSX already reads: icons and the real campaign titles stay
+     here, the words come from the locale. */
+  const CAPABILITIES = useMemo(
+    () => c.capabilities.items.map((it, i) => ({ ...it, icon: CAPABILITY_ICONS[i] })),
+    [c],
+  );
+  // The featured ten, from the portfolio manifest. Descriptions stay in the
+  // locale files and zip by position; a piece past the end of that list simply
+  // shows no description rather than falling back to English.
+  const { featured, videos: allVideos, state: libraryState } = useCreatesLibrary();
+  const SHOWCASE = useMemo(
+    () => featured.map((v, i) => ({ ...v, description: c.showcase.descriptions[i] ?? "" })),
+    [featured, c],
+  );
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoFailed, setVideoFailed] = useState(false);
-  const [activeVideo, setActiveVideo] = useState<typeof VIDEO_SHOWCASE[number] | null>(null);
+  const [activeVideo, setActiveVideo] = useState<CreatesVideo | null>(null);
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
   );
@@ -158,10 +91,13 @@ export default function FullScaleCreates() {
           <a href="/">
             <img src={logoUrl} alt="FullScale" className="h-7" />
           </a>
-          <Badge variant="outline" className="text-xs font-medium">
-            <Film className="w-3 h-3 mr-1" />
-            Creates
-          </Badge>
+          <div className="flex items-center gap-3">
+            <LanguageSwitcher />
+            <Badge variant="outline" className="text-xs font-medium">
+              <Film className="w-3 h-3 mr-1" />
+              Creates
+            </Badge>
+          </div>
         </div>
       </header>
 
@@ -197,18 +133,18 @@ export default function FullScaleCreates() {
           >
             <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/10 border border-white/20 text-white text-sm font-medium mb-6 backdrop-blur-sm">
               <Film className="w-4 h-4" />
-              FullScale Creates
+              {c.badge}
             </div>
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6 text-white">
-              Content That Connects
+              {c.hero.title}
             </h1>
             <p className="text-lg md:text-xl text-white/80 leading-relaxed max-w-2xl mx-auto mb-8">
-              We build and curate content for audiences that demand something real. AI accelerates the craft — but the creator drives the story. That partnership is where the magic lands.
+              {c.hero.deck}
             </p>
             <div className="flex items-center justify-center gap-4">
-              <a href="mailto:fullscale_info@gofullscale.co">
+              <a href="mailto:martin@gofullscale.ai">
                 <Button size="lg" className="gap-2">
-                  Work With Us
+                  {c.hero.ctaPrimary}
                   <ArrowRight className="w-4 h-4" />
                 </Button>
               </a>
@@ -216,7 +152,7 @@ export default function FullScaleCreates() {
                 document.getElementById("showcase")?.scrollIntoView({ behavior: "smooth" });
               }}>
                 <Play className="w-4 h-4" />
-                See Our Work
+                {c.hero.ctaSecondary}
               </Button>
             </div>
           </motion.div>
@@ -233,9 +169,9 @@ export default function FullScaleCreates() {
             transition={{ duration: 0.5 }}
             className="text-center mb-12"
           >
-            <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-3">What We Do</h2>
+            <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-3">{c.capabilities.title}</h2>
             <p className="text-muted-foreground max-w-lg mx-auto">
-              End-to-end content production for creators and brands who value authenticity
+              {c.capabilities.deck}
             </p>
           </motion.div>
 
@@ -275,16 +211,16 @@ export default function FullScaleCreates() {
           transition={{ duration: 0.5 }}
           className="text-center mb-12"
         >
-          <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-3">Our Work</h2>
+          <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-3">{c.showcase.title}</h2>
           <p className="text-muted-foreground max-w-lg mx-auto">
-            A showcase of content crafted at the intersection of creativity and technology
+            {c.showcase.deck}
           </p>
         </motion.div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {VIDEO_SHOWCASE.map((video, idx) => (
+          {SHOWCASE.map((video, idx) => (
             <motion.div
-              key={video.vimeoId}
+              key={video.slug}
               initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
@@ -292,13 +228,17 @@ export default function FullScaleCreates() {
             >
               <Card
                 className="overflow-hidden group border-white/5 hover:border-primary/20 transition-all duration-300 cursor-pointer"
-                onClick={() => video.vimeoId && setActiveVideo(video)}
+                onClick={() => setActiveVideo(video)}
               >
                 <div className="relative aspect-video bg-muted overflow-hidden">
-                  {video.thumbnail ? (
+                  {video.posterUrl ? (
                     <img
-                      src={video.thumbnail}
+                      src={video.posterUrl}
                       alt={video.title}
+                      loading="lazy"
+                      // A poster whose bytes have not landed yet must cost this
+                      // card its image, not leave a broken-image glyph.
+                      onError={(e) => { e.currentTarget.style.display = "none"; }}
                       className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                     />
                   ) : (
@@ -311,9 +251,16 @@ export default function FullScaleCreates() {
                       <Play className="w-6 h-6 text-white ml-0.5" />
                     </div>
                   </div>
-                  <Badge className="absolute top-3 right-3 text-xs" variant="secondary">
-                    {video.tag}
-                  </Badge>
+                  {video.brand && (
+                    <Badge className="absolute top-3 right-3 text-xs" variant="secondary">
+                      {video.brand}
+                    </Badge>
+                  )}
+                  {video.durationSec ? (
+                    <span className="absolute bottom-3 right-3 px-1.5 py-0.5 rounded bg-black/70 text-white text-[11px] font-mono">
+                      {formatDuration(video.durationSec)}
+                    </span>
+                  ) : null}
                 </div>
                 <CardContent className="p-5">
                   <h3 className="font-semibold text-foreground mb-1">{video.title}</h3>
@@ -324,7 +271,24 @@ export default function FullScaleCreates() {
           ))}
         </div>
 
-        {/* Vimeo Playback Modal */}
+        {/* The rest of the catalogue. A route rather than an inline expander:
+            150-odd pieces is a page, and a page is something you can send to a
+            brand. Hidden until the manifest actually resolves, so a failed
+            fetch does not advertise work that will not load. */}
+        {libraryState === "ready" && allVideos.length > SHOWCASE.length && (
+          <div className="mt-12 text-center">
+            <Link href="/creates/work">
+              <Button variant="outline" size="lg" className="gap-2" data-testid="link-see-more-work">
+                See all {allVideos.length} pieces
+                <ArrowRight className="w-4 h-4" />
+              </Button>
+            </Link>
+          </div>
+        )}
+
+        {/* Playback. Self-hosted mp4 from Object Storage — the file is encoded
+            with +faststart so it begins playing before it finishes
+            downloading. */}
         <Dialog open={!!activeVideo} onOpenChange={(open) => !open && setActiveVideo(null)}>
           <DialogContent className="max-w-4xl p-0 bg-black border-white/10 overflow-hidden">
             <DialogHeader className="p-4 pb-2">
@@ -332,14 +296,16 @@ export default function FullScaleCreates() {
                 {activeVideo?.title}
               </DialogTitle>
             </DialogHeader>
-            <div className="aspect-video w-full">
-              {activeVideo?.vimeoId && (
-                <iframe
-                  src={`https://player.vimeo.com/video/${activeVideo.vimeoId}?autoplay=1&title=0&byline=0&portrait=0`}
-                  className="w-full h-full border-0"
-                  allow="autoplay; fullscreen; picture-in-picture"
-                  allowFullScreen
-                  title={activeVideo.title}
+            <div className="aspect-video w-full bg-black">
+              {activeVideo && (
+                <video
+                  key={activeVideo.slug}
+                  src={activeVideo.videoUrl}
+                  poster={activeVideo.posterUrl}
+                  controls
+                  autoPlay
+                  playsInline
+                  className="w-full h-full"
                 />
               )}
             </div>
@@ -358,10 +324,10 @@ export default function FullScaleCreates() {
           >
             <div className="text-5xl mb-6 opacity-20">"</div>
             <p className="text-xl md:text-2xl text-foreground leading-relaxed font-medium mb-6">
-              We believe in the power of real stories told by real people. When creators own the narrative and the tools work in service of that vision, the content doesn't just perform, it connects.
+              {c.philosophy.body}
             </p>
             <p className="text-muted-foreground text-sm uppercase tracking-widest">
-              The FullScale Creates Philosophy
+              {c.philosophy.title}
             </p>
           </motion.div>
         </div>
@@ -377,21 +343,21 @@ export default function FullScaleCreates() {
           className="text-center"
         >
           <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-4">
-            Ready to Create Something Real?
+            {c.cta.title}
           </h2>
           <p className="text-muted-foreground max-w-md mx-auto mb-8">
-            Whether you're a creator looking to produce premium content or a brand seeking authentic partnerships.
+            {c.cta.deck}
           </p>
           <div className="flex items-center justify-center gap-4 flex-wrap">
             <a href="mailto:fullscale_info@gofullscale.co">
               <Button size="lg" className="gap-2">
                 <Globe className="w-4 h-4" />
-                Get in Touch
+                {c.cta.ctaPrimary}
               </Button>
             </a>
             <a href="/marketplace">
               <Button size="lg" variant="outline" className="gap-2">
-                Explore Marketplace
+                {c.cta.ctaSecondary}
                 <ArrowRight className="w-4 h-4" />
               </Button>
             </a>

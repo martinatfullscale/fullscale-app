@@ -13,14 +13,34 @@ import * as path from "path";
 import * as fs from "fs";
 import type { PlatformConfig } from "./clipDetector";
 import type { CaptionSegment } from "./clipGenerator";
+import { withRenderSlot } from "./renderQueue";
 
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface StitchSegment {
-  start: number;    // absolute timestamp in source video (seconds)
-  end: number;      // absolute timestamp in source video (seconds)
+  start: number;    // absolute timestamp in the SEGMENT'S source video (seconds)
+  end: number;      // absolute timestamp in the SEGMENT'S source video (seconds)
   transitionIn: "cut" | "crossfade" | "branded_wipe";
   transitionDuration?: number; // seconds, default 0.5
+  /**
+   * Per-segment source. When set, this segment is cut from THIS file instead of
+   * the stitch's default videoPath — the one change that lets a reel pull beats
+   * from more than one video. Absent = the single-video default.
+   */
+  sourcePath?: string;
+  /**
+   * Normalize this segment's loudness to a fixed target (EBU R128) during
+   * extraction. Set on every segment of a MULTI-SOURCE reel so beats cut from
+   * different videos don't jump in volume at each junction — the audible seam
+   * that a hard cut between two sources otherwise produces.
+   */
+  normalizeAudio?: boolean;
+  /**
+   * The source is a still image (AI-generated or uploaded), not a video. It is
+   * held for the segment's duration with a slow zoom and a silent audio track,
+   * rather than seeked/cut.
+   */
+  isImage?: boolean;
 }
 
 export interface StitchInput {
@@ -30,6 +50,15 @@ export interface StitchInput {
   platformConfig: PlatformConfig;
   captionsEnabled: boolean;
   captionSegments?: CaptionSegment[]; // timestamps relative to final output start
+  /**
+   * Preferred over captionSegments: one caption group per stitch segment,
+   * index-aligned with `segments`, timestamps relative to that SEGMENT's
+   * start. The stitcher remaps them onto the output timeline of whichever
+   * stitch mode actually renders — callers can't know that up front, because
+   * branded-card availability is decided here at render time (a pre-remapped
+   * xfade timeline drifts 1.3s per junction when the card path runs).
+   */
+  captionsBySegment?: Array<CaptionSegment[] | undefined>;
   outputDir: string;
   planId: number;
   /** Brand product for transition card generation (Phase 3) */
@@ -59,6 +88,12 @@ const STITCH_CONFIG = {
   THUMBNAIL_WIDTH: 360,
   FFMPEG_TIMEOUT_MS: 600000, // 10 minutes — stitching is heavier
   DEFAULT_CROSSFADE_DURATION: 0.5,
+  CARD_DURATION_SEC: 0.8, // branded interstitial length — caption remap depends on it
+  // All concat parts must share these audio params for -c copy to hold —
+  // the card is synthesized at this rate, so segments must be forced to it
+  // (sources are commonly 48kHz/mono, which would corrupt the copied stream).
+  AUDIO_SAMPLE_RATE: "44100",
+  AUDIO_CHANNELS: "2",
 };
 
 // ── Main Stitch Function ───────────────────────────────────────────
@@ -70,7 +105,16 @@ const STITCH_CONFIG = {
  * - If all transitions are "cut": Use FFmpeg concat demuxer (fast)
  * - If any transitions are "crossfade": Use filter_complex with xfade (quality)
  */
-export async function stitchSegments(input: StitchInput): Promise<StitchOutput> {
+export function stitchSegments(input: StitchInput): Promise<StitchOutput> {
+  // Gated by the global render queue — a stitch runs N segment extractions plus
+  // a concat/xfade encode, the heaviest single render in the app.
+  return withRenderSlot(
+    `stitchSegments(video ${input.videoId}, ${input.segments.length} segments)`,
+    () => stitchSegmentsUngated(input),
+  );
+}
+
+async function stitchSegmentsUngated(input: StitchInput): Promise<StitchOutput> {
   const {
     videoPath, videoId, segments, platformConfig,
     captionsEnabled, captionSegments, outputDir, planId,
@@ -92,8 +136,12 @@ export async function stitchSegments(input: StitchInput): Promise<StitchOutput> 
     const tempDir = path.join(outputDir, `temp_stitch_${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
-    // Phase 3: Generate transition card placeholders for branded_wipe segments
+    // Branded wipes: generate the card image and render it into a short
+    // interstitial video matched to the segment encoding, then splice it
+    // between segments. Previously the card was generated and DISCARDED
+    // ('for now, falls back to crossfade').
     const hasBrandedWipe = segments.some((seg, i) => i > 0 && seg.transitionIn === "branded_wipe");
+    let cardVideoPath: string | null = null;
     if (hasBrandedWipe && input.brandProduct) {
       try {
         const { generateTransitionCard } = await import("../ai/image-gen/assetGenerator");
@@ -103,25 +151,29 @@ export async function stitchSegments(input: StitchInput): Promise<StitchOutput> 
           targetPlatform: platformConfig.name.toLowerCase(),
           style: "minimal",
         });
-        if (cardResult.success) {
-          console.log(`[ClipStitcher] Transition card generated: ${cardResult.assetPath}`);
-          // Note: When Seeddance API is live, this card MP4 will be inserted between segments.
-          // For now, branded_wipe falls back to crossfade with the placeholder recorded.
+        if (cardResult.success && cardResult.assetPath && fs.existsSync(cardResult.assetPath)) {
+          cardVideoPath = path.join(tempDir, "brand_card.mp4");
+          await renderCardVideo(cardResult.assetPath, platformConfig, cardVideoPath);
+          console.log(`[ClipStitcher] Branded transition card rendered: ${cardVideoPath}`);
         }
       } catch (err: any) {
-        console.warn(`[ClipStitcher] Transition card generation failed: ${err.message}`);
+        console.warn(`[ClipStitcher] Transition card generation failed (falling back to crossfade): ${err.message}`);
+        cardVideoPath = null;
       }
     }
 
-    // Determine if we need crossfade or can do simple concat
-    // branded_wipe falls back to crossfade until Seeddance transition cards produce real video
     const hasCrossfade = segments.some(
-      (seg, i) => i > 0 && (seg.transitionIn === "crossfade" || seg.transitionIn === "branded_wipe")
+      (seg, i) => i > 0 && (seg.transitionIn === "crossfade" || (seg.transitionIn === "branded_wipe" && !cardVideoPath))
     );
 
     if (segments.length === 1) {
       // Single segment — just extract it
       await extractSegment(videoPath, segments[0], platformConfig, outputPath);
+    } else if (hasBrandedWipe && cardVideoPath) {
+      // Real branded wipes: concat with the card spliced at wipe junctions.
+      // (Crossfade junctions render as cuts in this mode — the concat
+      // demuxer can't mix with xfade; the card IS the transition.)
+      await stitchWithBrandedCards(videoPath, segments, platformConfig, tempDir, outputPath, cardVideoPath);
     } else if (!hasCrossfade) {
       // All cuts — use fast concat demuxer
       await stitchWithConcatDemuxer(videoPath, segments, platformConfig, tempDir, outputPath);
@@ -135,10 +187,23 @@ export async function stitchSegments(input: StitchInput): Promise<StitchOutput> 
       return { ...emptyResult, error: "Stitched output not created" };
     }
 
+    // Captions: remap per-segment groups onto the timeline of the mode that
+    // ACTUALLY rendered (card splices add time, xfades consume it) — falling
+    // back to caller-flattened captionSegments for legacy callers.
+    let effectiveCaptions = captionSegments;
+    if (input.captionsBySegment && input.captionsBySegment.some((g) => g && g.length > 0)) {
+      const mode: StitchMode = segments.length > 1 && hasBrandedWipe && cardVideoPath
+        ? "card"
+        : segments.length > 1 && hasCrossfade
+          ? "xfade"
+          : "concat";
+      effectiveCaptions = remapCaptionsForMode(segments, input.captionsBySegment, mode);
+    }
+
     // Apply caption burn-in if needed (post-stitch)
-    if (captionsEnabled && captionSegments && captionSegments.length > 0) {
+    if (captionsEnabled && effectiveCaptions && effectiveCaptions.length > 0) {
       const captionedPath = outputPath.replace(".mp4", "_captioned.mp4");
-      await burnCaptions(outputPath, captionSegments, platformConfig, captionedPath);
+      await burnCaptions(outputPath, effectiveCaptions, platformConfig, captionedPath);
       if (fs.existsSync(captionedPath)) {
         fs.unlinkSync(outputPath);
         fs.renameSync(captionedPath, outputPath);
@@ -179,6 +244,66 @@ export async function stitchSegments(input: StitchInput): Promise<StitchOutput> 
 
 // ── Single Segment Extraction ──────────────────────────────────────
 
+/** Render a still card image into a short interstitial video whose encode
+ *  parameters exactly match extractSegment's output, so the concat demuxer
+ *  can -c copy the spliced sequence. */
+async function renderCardVideo(
+  cardImagePath: string,
+  config: PlatformConfig,
+  outputPath: string,
+  durationSec: number = STITCH_CONFIG.CARD_DURATION_SEC,
+): Promise<void> {
+  const args = [
+    "-nostdin", "-y",
+    "-loop", "1", "-i", cardImagePath,
+    "-f", "lavfi", "-i", `anullsrc=r=${STITCH_CONFIG.AUDIO_SAMPLE_RATE}:cl=stereo`,
+    "-t", durationSec.toString(),
+    "-vf", `scale=${config.targetWidth}:${config.targetHeight}:force_original_aspect_ratio=decrease,pad=${config.targetWidth}:${config.targetHeight}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p,fade=t=in:st=0:d=0.15,fade=t=out:st=${(durationSec - 0.15).toFixed(2)}:d=0.15`,
+    "-r", config.targetFps.toString(),
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "-preset", STITCH_CONFIG.PRESET,
+    "-crf", STITCH_CONFIG.CRF.toString(),
+    "-c:a", "aac", "-b:a", STITCH_CONFIG.AUDIO_BITRATE,
+    "-shortest",
+    "-movflags", "+faststart",
+    outputPath,
+  ];
+  await runFFmpeg(args);
+}
+
+/** Concat segments with the branded card spliced at every branded_wipe
+ *  junction. All parts share extractSegment's encoding so -c copy holds. */
+async function stitchWithBrandedCards(
+  videoPath: string,
+  segments: StitchSegment[],
+  config: PlatformConfig,
+  tempDir: string,
+  outputPath: string,
+  cardVideoPath: string,
+): Promise<void> {
+  console.log(`[ClipStitcher] Branded-card stitch: ${segments.length} segments`);
+  const parts: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    if (i > 0 && segments[i].transitionIn === "branded_wipe") {
+      parts.push(cardVideoPath);
+    }
+    const segPath = path.join(tempDir, `seg_${i}.mp4`);
+    await extractSegment(videoPath, segments[i], config, segPath);
+    parts.push(segPath);
+  }
+
+  const concatListPath = path.join(tempDir, "concat_cards.txt");
+  fs.writeFileSync(concatListPath, parts.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n"));
+  await runFFmpeg([
+    "-nostdin", "-y",
+    "-f", "concat", "-safe", "0",
+    "-i", concatListPath,
+    "-c", "copy",
+    "-movflags", "+faststart",
+    outputPath,
+  ]);
+}
+
 async function extractSegment(
   videoPath: string,
   segment: StitchSegment,
@@ -187,18 +312,53 @@ async function extractSegment(
 ): Promise<void> {
   const duration = segment.end - segment.start;
   const filters = buildScaleFilters(config);
+  // Each segment cuts from its own source when one is set — this is what makes
+  // a multi-video reel possible. Falls back to the stitch's single videoPath.
+  const source = segment.sourcePath ?? videoPath;
+
+  // A still image (AI-generated or uploaded) is held as a clip: loop the frame
+  // for `duration`, over a synthesised silent track so the concat/xfade audio
+  // map lines up with the video segments around it. A gentle zoom gives it
+  // life instead of reading as a freeze.
+  if (segment.isImage) {
+    const w = config.targetWidth, h = config.targetHeight;
+    const frames = Math.max(1, Math.round(duration * config.targetFps));
+    // Scale up first so zoompan has pixels to push into, then a slow ~6% push.
+    const imgVf = `scale=${w * 2}:${h * 2},zoompan=z='min(zoom+0.0006,1.06)':d=${frames}:s=${w}x${h}:fps=${config.targetFps},setsar=1`;
+    await runFFmpeg([
+      "-nostdin", "-y",
+      "-loop", "1", "-i", source,
+      "-f", "lavfi", "-i", `anullsrc=channel_layout=stereo:sample_rate=${STITCH_CONFIG.AUDIO_SAMPLE_RATE}`,
+      "-t", duration.toString(),
+      "-vf", imgVf,
+      "-r", config.targetFps.toString(),
+      "-c:v", "libx264", "-pix_fmt", "yuv420p",
+      "-preset", STITCH_CONFIG.PRESET,
+      "-crf", STITCH_CONFIG.CRF.toString(),
+      "-c:a", "aac", "-b:a", STITCH_CONFIG.AUDIO_BITRATE,
+      "-ar", STITCH_CONFIG.AUDIO_SAMPLE_RATE, "-ac", STITCH_CONFIG.AUDIO_CHANNELS,
+      "-map", "0:v", "-map", "1:a",
+      "-movflags", "+faststart",
+      outputPath,
+    ]);
+    return;
+  }
 
   const args = [
     "-nostdin", "-y",
     "-ss", segment.start.toString(),
-    "-i", videoPath,
+    "-i", source,
     "-t", duration.toString(),
     "-vf", filters.join(","),
     "-r", config.targetFps.toString(),
+    // Loudness normalization for cross-source reels — each segment is brought
+    // to the same target so volume doesn't jump between videos.
+    ...(segment.normalizeAudio ? ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"] : []),
     "-c:v", "libx264", "-pix_fmt", "yuv420p",
     "-preset", STITCH_CONFIG.PRESET,
     "-crf", STITCH_CONFIG.CRF.toString(),
     "-c:a", "aac", "-b:a", STITCH_CONFIG.AUDIO_BITRATE,
+    "-ar", STITCH_CONFIG.AUDIO_SAMPLE_RATE, "-ac", STITCH_CONFIG.AUDIO_CHANNELS,
     "-shortest",
     "-movflags", "+faststart",
     outputPath,
@@ -333,7 +493,60 @@ async function stitchWithXfade(
   await runFFmpeg(args, STITCH_CONFIG.FFMPEG_TIMEOUT_MS);
 }
 
+// ── Caption Remap (mode-aware) ─────────────────────────────────────
+
+type StitchMode = "card" | "concat" | "xfade";
+
+/**
+ * Remap per-segment captions (times relative to each segment's start) onto
+ * the OUTPUT timeline of the mode actually rendered:
+ * - card:   hard-cut concat; each branded_wipe junction ADDS a card's length.
+ * - xfade:  crossfades overlap 0.5s; cuts render as 0.1s micro-fades.
+ * - concat: true zero-overlap cuts (also single-segment) — plain offsets.
+ */
+function remapCaptionsForMode(
+  segments: StitchSegment[],
+  captionsBySegment: Array<CaptionSegment[] | undefined>,
+  mode: StitchMode,
+): CaptionSegment[] {
+  const out: CaptionSegment[] = [];
+  let offset = 0;
+  for (let i = 0; i < segments.length; i++) {
+    if (i > 0) {
+      if (mode === "card") {
+        if (segments[i].transitionIn === "branded_wipe") offset += STITCH_CONFIG.CARD_DURATION_SEC;
+      } else if (mode === "xfade") {
+        offset -= segments[i].transitionIn === "cut"
+          ? 0.1
+          : (segments[i].transitionDuration ?? STITCH_CONFIG.DEFAULT_CROSSFADE_DURATION);
+      }
+    }
+    for (const c of captionsBySegment[i] || []) {
+      out.push({ ...c, startTime: Math.max(0, c.startTime + offset), endTime: Math.max(0, c.endTime + offset) });
+    }
+    offset += segments[i].end - segments[i].start;
+  }
+  return out;
+}
+
 // ── Caption Burn-in (post-stitch) ──────────────────────────────────
+
+/**
+ * Escape caption text for an FFmpeg drawtext `text='...'` value.
+ * The value passes two quote/backslash-aware unescape passes (graph tokenizer,
+ * then the option splitter that splits on `:` after quotes are stripped), and
+ * the filter uses `expansion=none` to disable drawtext's third expansion pass.
+ * Order: double backslashes, escape colons, then quotes via the two-level
+ * close/`\\`+`\'`/reopen idiom — the single-level `'\''` collapses at level 1
+ * and silently swallows the remaining options. (Kept in sync with
+ * clipGenerator.escapeDrawtext — see the full derivation there.)
+ */
+function escapeDrawtext(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "'\\\\\\''");
+}
 
 async function burnCaptions(
   inputPath: string,
@@ -347,12 +560,9 @@ async function burnCaptions(
   const yPos = Math.round(config.targetHeight * 0.82);
 
   const drawTextParts = captionSegments.map(seg => {
-    const escapedText = seg.text
-      .replace(/'/g, "\\'")
-      .replace(/:/g, "\\:")
-      .replace(/\\/g, "\\\\");
+    const escapedText = escapeDrawtext(seg.text);
 
-    return `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=${yPos}:enable='between(t,${seg.startTime},${seg.endTime})'`;
+    return `drawtext=text='${escapedText}':expansion=none:fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=${yPos}:enable='between(t,${seg.startTime},${seg.endTime})'`;
   });
 
   const args = [

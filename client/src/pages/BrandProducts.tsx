@@ -29,7 +29,10 @@ import {
   CheckCircle,
   AlertTriangle,
 } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, fetchWithTimeout } from "@/lib/queryClient";
+
+const UPLOAD_TIMEOUT_MS = 30 * 60_000; // files, not JSON — see AdminPlacements
+
 
 interface BrandProduct {
   id: number;
@@ -85,11 +88,11 @@ export default function BrandProducts() {
 
   const uploadMutation = useMutation({
     mutationFn: async (formData: FormData) => {
-      const res = await fetch("/api/brand-products", {
+      const res = await fetchWithTimeout("/api/brand-products", {
         method: "POST",
         body: formData,
         credentials: "include",
-      });
+      }, UPLOAD_TIMEOUT_MS);
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || "Upload failed");

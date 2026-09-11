@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { TopBar } from "@/components/TopBar";
 import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2, ToggleLeft, ToggleRight, Link2, RefreshCw, Globe, Copy, ExternalLink } from "lucide-react";
 import { SiFacebook, SiInstagram } from "react-icons/si";
@@ -12,7 +13,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { UploadModal } from "@/components/UploadModal";
 import { YouTubeVideoPicker } from "@/components/YouTubeVideoPicker";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AnalyticsOverview } from "@/components/AnalyticsOverview";
+import { OnboardingChecklist } from "@/components/OnboardingChecklist";
 import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisModal";
 import { useLocation } from "wouter";
 import { Switch } from "@/components/ui/switch";
@@ -59,6 +62,16 @@ interface IndexedVideo {
   isEvergreen: boolean | null;
   duration: string | null;
   adOpportunities?: number;
+  editorialStatus?: string | null;
+}
+
+// Returns true if a video has work in flight that the UI should poll to track.
+// Used to throttle dashboard polling when everything is settled.
+function isVideoInProgress(v: IndexedVideo): boolean {
+  if (v.status === "Pending Scan" || v.status === "Scanning") return true;
+  const ed = v.editorialStatus;
+  if (ed === "queued" || ed === "transcribing" || ed === "analyzing" || ed === "rendering" || ed === "processing") return true;
+  return false;
 }
 
 interface VideoIndexResponse {
@@ -72,6 +85,101 @@ const demoCampaigns = [
   { brand: "Squarespace", content: "Tech Review", status: "Paid", amount: "$1,200", statusColor: "bg-blue-500/20 text-blue-400" },
   { brand: "Coca-Cola", content: "Summer Vlog", status: "Pending", amount: "$3,100", statusColor: "bg-yellow-500/20 text-yellow-400" },
 ];
+
+// Real brand-placement campaigns for the creator (replaces the pitch-mode
+// demo table in real mode — previously real users had no campaigns surface
+// on the dashboard at all; the data lived only in /inbox).
+function RealBrandCampaigns() {
+  const { toast } = useToast();
+  const { data: pending } = useQuery<{ placements: any[] }>({
+    queryKey: ["/api/creator/placements/inbox", "pending_creator_review"],
+    queryFn: async () => {
+      const res = await fetchWithTimeout("/api/creator/placements/inbox?status=pending_creator_review", { credentials: "include" });
+      if (!res.ok) return { placements: [] };
+      return res.json();
+    },
+    refetchInterval: 30_000,
+  });
+  const { data: approved } = useQuery<{ placements: any[] }>({
+    queryKey: ["/api/creator/placements/inbox", "creator_approved"],
+    queryFn: async () => {
+      const res = await fetchWithTimeout("/api/creator/placements/inbox?status=creator_approved,pending_brand_review,brand_approved", { credentials: "include" });
+      if (!res.ok) return { placements: [] };
+      return res.json();
+    },
+    refetchInterval: 60_000,
+  });
+
+  const rows = [
+    ...(pending?.placements ?? []).map((p: any) => ({ ...p, _kind: "pending" })),
+    ...(approved?.placements ?? []).map((p: any) => ({ ...p, _kind: "active" })),
+  ].slice(0, 6);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.3 }}
+      className="bg-white/5 rounded-xl border border-white/5 overflow-hidden"
+    >
+      <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
+        <p className="text-sm font-semibold text-white">Brand Campaigns</p>
+        <a href="/inbox" className="text-xs text-primary hover:underline">Open inbox →</a>
+      </div>
+      <div className="divide-y divide-white/5">
+        {rows.map((p: any) => (
+          <div key={`${p._kind}-${p.id}`} className="px-6 py-4 flex flex-wrap items-center justify-between gap-3" data-testid={`row-real-campaign-${p.id}`}>
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="font-semibold text-white truncate">{p.product?.name || `Product #${p.brandProductId}`}</span>
+              <span className="text-muted-foreground text-sm truncate">{p.video?.title || `Video #${p.videoId}`}</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                p._kind === "pending" ? "bg-amber-500/15 text-amber-400" : "bg-emerald-500/15 text-emerald-400"
+              }`}>
+                {p._kind === "pending" ? "Needs review" : p.status === "brand_approved" ? "Live" : "Active"}
+              </span>
+              {p.status === "brand_approved" && (
+                <button
+                  className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                  data-testid={`release-link-${p.id}`}
+                  onClick={async () => {
+                    // Open synchronously so Safari doesn't popup-block the
+                    // navigation that follows the awaited fetch.
+                    const w = window.open("about:blank", "_blank");
+                    if (w) w.opener = null;
+                    try {
+                      const res = await fetchWithTimeout(`/api/placements/${p.id}/release-link`, { credentials: "include" });
+                      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Unavailable");
+                      const rel = await res.json();
+                      if (w) w.location.href = rel.url;
+                      else window.open(rel.url, "_blank", "noopener");
+                    } catch (err: any) {
+                      w?.close();
+                      toast({ title: "Release page unavailable", description: err.message, variant: "destructive" });
+                    }
+                  }}
+                >
+                  <ExternalLink className="w-3 h-3" /> Release page
+                </button>
+              )}
+              <span className="font-semibold text-white">
+                {p.creatorPayoutCents ? `$${(p.creatorPayoutCents / 100).toFixed(2)}` : ""}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+
+/** Shared with the Earnings page so the same cents never print two ways. */
+const usdFromCents = (cents: number): string =>
+  (cents / 100).toLocaleString(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2 });
 
 const chartData = [
   { month: "Aug", height: "45%", revenue: "$8.2k" },
@@ -213,7 +321,10 @@ export default function Dashboard() {
     };
 
     try {
-      const res = await fetch(`/api/video/${video.id}/surfaces`, { credentials: "include" });
+      // Owner viewing their own dashboard — show all surfaces, not just
+      // creatorApproved=true. Without this, freshly scanned videos look
+      // empty because every new surface defaults to unapproved.
+      const res = await fetchWithTimeout(`/api/video/${video.id}/surfaces?includeUnapproved=true`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
         
@@ -339,7 +450,7 @@ export default function Dashboard() {
   const { data: youtubeStatus, isLoading: isCheckingYoutube } = useQuery<YoutubeStatus>({
     queryKey: ["/api/auth/youtube/status", isPitchMode],
     queryFn: async () => {
-      const res = await fetch("/api/auth/youtube/status", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/auth/youtube/status", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch YouTube status");
       return res.json();
     },
@@ -349,7 +460,7 @@ export default function Dashboard() {
   const { data: channelData, isLoading: isLoadingChannel } = useQuery<YoutubeChannel>({
     queryKey: ["/api/youtube/channel", isPitchMode],
     queryFn: async () => {
-      const res = await fetch("/api/youtube/channel", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/youtube/channel", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch channel data");
       return res.json();
     },
@@ -376,14 +487,28 @@ export default function Dashboard() {
       return res.json();
     },
     enabled: isPitchMode || (isRealMode && !!youtubeStatus?.connected),
-    refetchInterval: isPitchMode ? undefined : 5000,
+    // Adaptive polling: 5s when any video has work in flight (scan/render),
+    // 60s when everything is settled. Cuts idle traffic ~12× while preserving
+    // responsiveness during active scans and editorial pipelines.
+    refetchInterval: isPitchMode ? undefined : (query) => {
+      const data = query.state.data as VideoIndexResponse | undefined;
+      if (!data?.videos) return 5000;
+      return data.videos.some(isVideoInProgress) ? 5000 : 60000;
+    },
     staleTime: 0,
+  });
+
+  // Same source as the Earnings page — see the note on realModeStats below.
+  const { data: earningsData, isError: earningsError } = useQuery<{ totals: { accruedCents: number } }>({
+    queryKey: ["/api/creator/earnings"],
+    enabled: isRealMode,
+    staleTime: 60_000,
   });
 
   const { data: marketplaceStats } = useQuery<MarketplaceStats>({
     queryKey: ["/api/marketplace/stats", isPitchMode],
     queryFn: async () => {
-      const res = await fetch("/api/marketplace/stats", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/marketplace/stats", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch marketplace stats");
       return res.json();
     },
@@ -395,7 +520,7 @@ export default function Dashboard() {
   const { data: platformStats } = useQuery<PlatformAuthStatus>({
     queryKey: ["/api/platform-auth/status"],
     queryFn: async () => {
-      const res = await fetch("/api/platform-auth/status", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/platform-auth/status", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch platform status");
       return res.json();
     },
@@ -438,9 +563,21 @@ export default function Dashboard() {
     return "--";
   };
   
+  // The revenue tile was the string "$0" in every real session, which is a
+  // claim ("you have earned nothing") dressed as a placeholder. It now shows
+  // the same accrued figure the Earnings page computes, from the same query,
+  // so the two pages cannot disagree about a creator's money.
+  const accruedCents = (earningsData?.totals?.accruedCents ?? 0);
   const realModeStats = {
-    revenue: "$0",
-    revenueGrowth: "Connect to track",
+    // Same formatter as the Earnings page (cents included). Rounding to
+    // whole dollars here made the two pages print different numbers for the
+    // same figure, which is exactly the drift this tile exists to avoid.
+    revenue: earningsData ? usdFromCents(accruedCents) : "—",
+    revenueGrowth: earningsError
+      ? "Couldn't load earnings"
+      : earningsData
+        ? (accruedCents > 0 ? "Accrued — not yet paid out" : "No approved placements yet")
+        : "Loading…",
     activeBids: String(marketplaceStats?.activeBids || 0),
     avgCpm: "--",
     globalReach: calculateTotalReach(),
@@ -450,7 +587,7 @@ export default function Dashboard() {
 
   const scanMutation = useMutation({
     mutationFn: async (videoId: number) => {
-      const res = await fetch(`/api/video-scan/${videoId}`, { 
+      const res = await fetchWithTimeout(`/api/video-scan/${videoId}`, { 
         method: "POST", 
         credentials: "include" 
       });
@@ -468,7 +605,7 @@ export default function Dashboard() {
 
   const batchScanMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/video-scan/batch", { 
+      const res = await fetchWithTimeout("/api/video-scan/batch", { 
         method: "POST", 
         credentials: "include" 
       });
@@ -485,7 +622,7 @@ export default function Dashboard() {
 
   const disconnectMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/auth/youtube", { method: "DELETE", credentials: "include" });
+      const res = await fetchWithTimeout("/api/auth/youtube", { method: "DELETE", credentials: "include" });
       if (!res.ok) throw new Error("Failed to disconnect");
       return res.json();
     },
@@ -499,7 +636,7 @@ export default function Dashboard() {
 
   const syncYouTubeMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/youtube/sync", { method: "POST", credentials: "include" });
+      const res = await fetchWithTimeout("/api/youtube/sync", { method: "POST", credentials: "include" });
       if (!res.ok) throw new Error("Failed to sync");
       return res.json();
     },
@@ -515,6 +652,62 @@ export default function Dashboard() {
     },
   });
 
+  // Post-connect import choice: "Import all" vs "Let me pick" — previously
+  // the connect flow just toasted and the user had to find the import
+  // button themselves.
+  const [importChoiceOpen, setImportChoiceOpen] = useState(false);
+  // The OAuth callback appends youtube_connected on EVERY round-trip,
+  // reconnects included — and "Import all" resets already-scanned videos to
+  // "Pending Scan". Defer the dialog until the library query settles and only
+  // prompt when it's actually empty (first connect).
+  const [importChoicePending, setImportChoicePending] = useState(false);
+
+  // Facebook post-connect: the creator confirms WHICH managed Page (and its
+  // linked Instagram account) to connect — never auto-picked.
+  const [pageSelectOpen, setPageSelectOpen] = useState(false);
+  const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
+  const { data: fbPages, isLoading: fbPagesLoading, isError: fbPagesError, error: fbPagesErrorObj } = useQuery<{
+    currentPageId: string | null;
+    pages: Array<{ pageId: string; name: string; followers: number; pictureUrl: string | null; instagram: { id: string; handle: string | null; followers: number; pictureUrl: string | null } | null }>;
+    igOnly: Array<{ id: string; handle: string; followers: number; pictureUrl: string | null }>;
+  }>({
+    queryKey: ["/api/facebook/pages"],
+    queryFn: async () => {
+      const res = await fetchWithTimeout("/api/facebook/pages", { credentials: "include" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to list Pages");
+      return res.json();
+    },
+    enabled: pageSelectOpen,
+  });
+  const confirmPageMutation = useMutation({
+    mutationFn: async (target: { pageId?: string; igAccountId?: string }) => {
+      const res = await fetchWithTimeout("/api/facebook/select-page", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(target),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to connect");
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      setPageSelectOpen(false);
+      toast({
+        title: data.page ? `Connected: ${data.page.name}` : `Connected: ${data.instagram?.handle || "Instagram"}`,
+        description: data.page
+          ? (data.instagram?.handle
+              ? `Linked Instagram ${data.instagram.handle} is connected too — analytics will start flowing.`
+              : "Page connected. No linked Instagram professional account was found on this Page.")
+          : "Instagram connected. Link a Facebook Page later to add Page-level analytics.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform-auth/status"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Couldn't connect", description: err.message, variant: "destructive" });
+    },
+  });
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("youtube_connected") === "true") {
@@ -524,6 +717,11 @@ export default function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/youtube/status"] });
       queryClient.invalidateQueries({ queryKey: ["/api/youtube/channel"] });
       queryClient.invalidateQueries({ queryKey: ["/api/youtube/videos"] });
+      setImportChoicePending(true);
+    }
+    if (params.get("facebook_connected") === "true") {
+      window.history.replaceState({}, "", "/dashboard");
+      setPageSelectOpen(true);
     }
     if (params.get("youtube_error")) {
       const errorMsg = decodeURIComponent(params.get("youtube_error") || "An error occurred.");
@@ -532,6 +730,21 @@ export default function Dashboard() {
       window.history.replaceState({}, "", "/dashboard");
     }
   }, [toast, queryClient]);
+
+  useEffect(() => {
+    // videoIndexData === undefined means the query hasn't RUN yet (it stays
+    // disabled until youtubeStatus resolves, and a disabled query reports
+    // isLoading=false in react-query v5) — deciding then would re-open the
+    // dialog on every reconnect. Wait for a real response; an empty library
+    // comes back as {videos: []}, not undefined.
+    if (!importChoicePending || isLoadingVideoIndex || videoIndexData === undefined) return;
+    setImportChoicePending(false);
+    if ((videoIndexData.videos || []).length === 0) {
+      setImportChoiceOpen(true);
+    }
+    // Non-empty library: a reconnect — the Sync button covers deliberate
+    // re-imports without prompting a destructive default.
+  }, [importChoicePending, isLoadingVideoIndex, videoIndexData]);
 
   const handleConnect = () => {
     // If not logged in via Google OAuth, redirect to Google login first
@@ -592,8 +805,11 @@ export default function Dashboard() {
           </div>
         )}
         
-        {/* Demo Mode badge for non-authenticated users */}
-        {!isSuperAdmin && showDemoMode && (
+        {/* Demo Mode badge — ONLY when demo content is actually active.
+            It used to also key on !hasRealData, which stamped "DEMO MODE"
+            on every freshly-approved creator's real (empty) dashboard —
+            the worst possible first impression. */}
+        {!isSuperAdmin && isDemoMode && (
           <div className="absolute top-8 right-8 px-3 py-1 rounded-full bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-wider z-10">
             Demo Mode
           </div>
@@ -611,16 +827,29 @@ export default function Dashboard() {
           <p className="text-muted-foreground">Here's what's happening with your content today.</p>
         </motion.div>
 
+        <OnboardingChecklist />
+
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
           className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8"
         >
-          <div className="bg-white/5 rounded-xl p-5 border border-white/5">
+          <div
+            role={showSimulationData ? undefined : "link"}
+            tabIndex={showSimulationData ? undefined : 0}
+            // wouter only intercepts its own <Link>; a plain href here would
+            // hard-reload the SPA.
+            onClick={showSimulationData ? undefined : () => setLocation("/earnings")}
+            onKeyDown={showSimulationData ? undefined : (e) => { if (e.key === "Enter") setLocation("/earnings"); }}
+            className={`bg-white/5 rounded-xl p-5 border border-white/5 block transition-colors ${showSimulationData ? "" : "cursor-pointer hover:border-emerald-500/30"}`}
+            title={showSimulationData ? undefined : "See every placement and what it's worth"}
+          >
             <div className="flex items-center gap-2 mb-2">
               <TrendingUp className="w-4 h-4 text-emerald-400" />
-              <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Revenue</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">
+                {showSimulationData ? "Total Revenue" : "Accrued"}
+              </p>
             </div>
             <p className="text-3xl font-bold text-emerald-400" data-testid="text-revenue">{displayStats.revenue}</p>
             <p className="text-xs text-emerald-400/80 mt-1">{displayStats.revenueGrowth}</p>
@@ -721,13 +950,16 @@ export default function Dashboard() {
                 </motion.div>
               </>
             ) : (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.2 }}
-              >
-                <AnalyticsOverview />
-              </motion.div>
+              <>
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
+                >
+                  <AnalyticsOverview />
+                </motion.div>
+                <RealBrandCampaigns />
+              </>
             )}
           </div>
 
@@ -800,12 +1032,17 @@ export default function Dashboard() {
                 >
                   Upload Manual Asset
                 </Button>
-                <Button variant="outline" className="w-full justify-start" data-testid="button-configure-webhooks">
-                  Configure Webhooks
-                </Button>
-                <Button variant="outline" className="w-full justify-start" data-testid="button-view-api-docs">
-                  View API Documentation
-                </Button>
+                <p className="text-[11px] text-muted-foreground/80 leading-relaxed pt-2">
+                  <a
+                    href="/privacy"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="hover:text-foreground underline underline-offset-2"
+                    data-testid="link-privacy-policy"
+                  >
+                    *View our privacy policy
+                  </a>
+                </p>
               </div>
             </motion.div>
 
@@ -1165,6 +1402,39 @@ export default function Dashboard() {
         onClose={() => setSceneModalOpen(false)}
       />
 
+      <Dialog open={importChoiceOpen} onOpenChange={setImportChoiceOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Bring in your videos</DialogTitle>
+            <DialogDescription>
+              We found your channel. Import everything recent, or hand-pick which videos FullScale should work with.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setImportChoiceOpen(false);
+                setYoutubePickerOpen(true);
+              }}
+              data-testid="button-import-pick"
+            >
+              Let me pick
+            </Button>
+            <Button
+              onClick={() => {
+                setImportChoiceOpen(false);
+                syncYouTubeMutation.mutate();
+              }}
+              disabled={syncYouTubeMutation.isPending}
+              data-testid="button-import-all"
+            >
+              {syncYouTubeMutation.isPending ? "Importing…" : "Import all recent"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <YouTubeVideoPicker
         open={youtubePickerOpen}
         onClose={() => setYoutubePickerOpen(false)}
@@ -1174,6 +1444,132 @@ export default function Dashboard() {
           setYoutubePickerOpen(false);
         }}
       />
+
+      {/* Facebook Page confirmation — the creator picks which managed Page
+          (and its linked IG account) to connect. Never auto-selected. */}
+      <Dialog open={pageSelectOpen} onOpenChange={setPageSelectOpen}>
+        <DialogContent data-testid="dialog-page-select">
+          <DialogHeader>
+            <DialogTitle>Choose the Page to connect</DialogTitle>
+            <DialogDescription>
+              These are the Facebook Pages you manage. Pick the one linked to the
+              Instagram account you create with — FullScale will use it for your
+              analytics and publishing.
+            </DialogDescription>
+          </DialogHeader>
+
+          {fbPagesLoading ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">Loading your Pages…</div>
+          ) : fbPagesError ? (
+            <div className="py-6 text-sm text-red-400">
+              Couldn't load your Pages{(fbPagesErrorObj as any)?.message ? `: ${(fbPagesErrorObj as any).message}` : "."}
+              {" "}Reconnect Facebook and try again.
+            </div>
+          ) : fbPages && fbPages.pages.length === 0 && (fbPages.igOnly?.length ?? 0) > 0 ? (
+            /* IG accounts shared, no Page assets — connect Instagram directly */
+            <div className="space-y-2">
+              <p className="text-xs text-amber-400/90 mb-1">
+                You shared Instagram accounts but no Facebook Page. You can connect
+                Instagram now — Page-level analytics stay off until you reconnect and
+                select a Page ("Edit previous settings" in Facebook's dialog).
+              </p>
+              {fbPages.igOnly.map((ig) => {
+                const chosen = (selectedPageId ?? fbPages.igOnly[0]?.id) === ig.id;
+                return (
+                  <button
+                    key={ig.id}
+                    onClick={() => setSelectedPageId(ig.id)}
+                    data-testid={`ig-option-${ig.id}`}
+                    className={`w-full flex items-center gap-3 rounded-lg border p-3 text-left transition-colors ${
+                      chosen ? "border-primary bg-primary/10" : "border-white/10 hover:bg-white/5"
+                    }`}
+                  >
+                    {ig.pictureUrl ? (
+                      <img src={ig.pictureUrl} alt="" className="w-10 h-10 rounded-full object-cover" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-white/10" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">{ig.handle}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {ig.followers.toLocaleString()} followers · Instagram only
+                      </p>
+                    </div>
+                    {chosen && <CheckCircle className="w-4 h-4 text-primary shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          ) : !fbPages || fbPages.pages.length === 0 ? (
+            <div className="py-6 text-sm text-muted-foreground">
+              No managed Facebook Pages were found on this account. FullScale needs a
+              Page linked to an Instagram professional (Business or Creator) account —
+              create or link one on Facebook, then reconnect.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-72 overflow-y-auto">
+              {fbPages.pages.map((p) => {
+                const chosen = (selectedPageId ?? fbPages.currentPageId ?? fbPages.pages[0]?.pageId) === p.pageId;
+                return (
+                  <button
+                    key={p.pageId}
+                    onClick={() => setSelectedPageId(p.pageId)}
+                    data-testid={`page-option-${p.pageId}`}
+                    className={`w-full flex items-center gap-3 rounded-lg border p-3 text-left transition-colors ${
+                      chosen ? "border-primary bg-primary/10" : "border-white/10 hover:bg-white/5"
+                    }`}
+                  >
+                    {p.pictureUrl ? (
+                      <img src={p.pictureUrl} alt="" className="w-10 h-10 rounded-full object-cover" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-white/10" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">{p.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {p.followers.toLocaleString()} followers
+                        {p.instagram?.handle
+                          ? ` · linked to ${p.instagram.handle} (${p.instagram.followers.toLocaleString()})`
+                          : " · no linked Instagram account"}
+                      </p>
+                    </div>
+                    {chosen && <CheckCircle className="w-4 h-4 text-primary shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={() => setPageSelectOpen(false)} data-testid="button-page-cancel">
+              Not now
+            </Button>
+            <Button
+              disabled={
+                confirmPageMutation.isPending || fbPagesLoading || !fbPages ||
+                (fbPages.pages.length === 0 && (fbPages.igOnly?.length ?? 0) === 0)
+              }
+              onClick={() => {
+                if (!fbPages) return;
+                if (fbPages.pages.length > 0) {
+                  const pageId = selectedPageId ?? fbPages.currentPageId ?? fbPages.pages[0]?.pageId;
+                  if (pageId) confirmPageMutation.mutate({ pageId });
+                } else {
+                  const igAccountId = selectedPageId ?? fbPages.igOnly?.[0]?.id;
+                  if (igAccountId) confirmPageMutation.mutate({ igAccountId });
+                }
+              }}
+              data-testid="button-page-confirm"
+            >
+              {confirmPageMutation.isPending
+                ? "Connecting…"
+                : fbPages && fbPages.pages.length === 0 && (fbPages.igOnly?.length ?? 0) > 0
+                  ? "Connect Instagram"
+                  : "Connect this Page"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

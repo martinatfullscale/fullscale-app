@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
+import { PlacementResults, type PlacementResultView } from "@/components/PlacementResults";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -36,11 +38,15 @@ interface SavedPlacementEnriched {
   id: number;
   videoId: number;
   surfaceId: number;
+  surfaceType?: string;
   productId: number | null;
   productImageUrl: string;
   createdBy: string;
   role: string;
   sceneGroupId: string | null;
+  // Human-review lifecycle: submitted → in_review → render_ready | needs_changes
+  reviewStatus?: string;
+  reviewNote?: string | null;
   transform: {
     offsetX: number;
     offsetY: number;
@@ -88,6 +94,12 @@ export default function SavedPlacements() {
   const [quickEditSurfaces, setQuickEditSurfaces] = useState<any[]>([]);
   const [loadingSurfaces, setLoadingSurfaces] = useState(false);
   const [sharingId, setSharingId] = useState<number | null>(null);
+  // Go-live capture: which post carries this placement (measurement spine)
+  const [goLiveFor, setGoLiveFor] = useState<SavedPlacementEnriched | null>(null);
+  const [goLiveCandidates, setGoLiveCandidates] = useState<any[]>([]);
+  const [goLiveUrl, setGoLiveUrl] = useState("");
+  const [goLiveLoading, setGoLiveLoading] = useState(false);
+  const [goLiveSaving, setGoLiveSaving] = useState(false);
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
 
   // Fetch surfaces when Quick Edit is triggered
@@ -99,9 +111,15 @@ export default function SavedPlacements() {
     const fetchSurfaces = async () => {
       setLoadingSurfaces(true);
       try {
-        const res = await fetch(`/api/video/${quickEditPlacement.videoId}/surfaces`, { credentials: "include" });
+        // Owner is editing their own placement — show all surfaces (the
+        // anchor surface might not be creatorApproved yet on a new scan).
+        const res = await fetchWithTimeout(`/api/video/${quickEditPlacement.videoId}/surfaces?includeUnapproved=true`, { credentials: "include" });
         if (res.ok) {
-          const surfaces = await res.json();
+          // The endpoint returns { surfaces, count, ... }, not a bare array —
+          // calling .find() on the envelope threw and Quick Edit silently
+          // opened with no surface data.
+          const body = await res.json();
+          const surfaces = Array.isArray(body) ? body : (body?.surfaces ?? []);
           // Filter to just the surface this placement is on
           const targetSurface = surfaces.find((s: any) => s.id === quickEditPlacement.surfaceId);
           setQuickEditSurfaces(targetSurface ? [targetSurface] : surfaces.slice(0, 1));
@@ -115,10 +133,53 @@ export default function SavedPlacements() {
     fetchSurfaces();
   }, [quickEditPlacement]);
 
+  useEffect(() => {
+    if (!goLiveFor) { setGoLiveCandidates([]); setGoLiveUrl(""); return; }
+    let cancelled = false;
+    setGoLiveLoading(true);
+    fetchWithTimeout(`/api/placements/${goLiveFor.id}/go-live-candidates`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : { candidates: [] }))
+      .then((body) => { if (!cancelled) setGoLiveCandidates(body.candidates ?? []); })
+      .catch(() => { if (!cancelled) setGoLiveCandidates([]); })
+      .finally(() => { if (!cancelled) setGoLiveLoading(false); });
+    return () => { cancelled = true; };
+  }, [goLiveFor]);
+
+  const submitGoLive = async (
+    postUrl: string,
+    candidateSource: "channel_match" | "manual",
+    publishedAt?: string,
+  ) => {
+    if (!goLiveFor || !postUrl.trim()) return;
+    setGoLiveSaving(true);
+    try {
+      const res = await fetchWithTimeout(`/api/placements/${goLiveFor.id}/go-live`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        // publishedAt is the AUDIENCE-visible start time — far more useful
+        // to the analysis than when the creator happened to click.
+        body: JSON.stringify({ postUrl: postUrl.trim(), candidateSource, publishedAt }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error || "Failed to record");
+      toast({
+        title: body.alreadyRecorded ? "Already recorded" : "Marked as live",
+        description: "We can now track how this placement performs with your audience.",
+      });
+      setGoLiveFor(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/placements"] });
+    } catch (err: any) {
+      toast({ title: "Couldn't record it", description: err.message, variant: "destructive" });
+    } finally {
+      setGoLiveSaving(false);
+    }
+  };
+
   const { data, isLoading } = useQuery<{ placements: SavedPlacementEnriched[] }>({
     queryKey: ["/api/placements"],
     queryFn: async () => {
-      const res = await fetch("/api/placements", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/placements", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch placements");
       return res.json();
     },
@@ -126,7 +187,7 @@ export default function SavedPlacements() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/placements/${id}`, {
+      const res = await fetchWithTimeout(`/api/placements/${id}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -147,7 +208,7 @@ export default function SavedPlacements() {
   const handleShare = async (placement: SavedPlacementEnriched) => {
     setSharingId(placement.id);
     try {
-      const res = await fetch("/api/share", {
+      const res = await fetchWithTimeout("/api/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -175,12 +236,23 @@ export default function SavedPlacements() {
   const { data: userTypeData } = useQuery<{ userType?: "creator" | "brand" | null }>({
     queryKey: ["/api/auth/user-type"],
     queryFn: async () => {
-      const res = await fetch("/api/auth/user-type", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/auth/user-type", { credentials: "include" });
       if (!res.ok) return { userType: null };
       return res.json();
     },
   });
   const isCreator = userTypeData?.userType === "creator";
+
+  // What each live placement actually did. One request for the page; the
+  // panel under a live card is the payoff for having marked it live.
+  const { data: resultsData } = useQuery<{ results: PlacementResultView[] }>({
+    queryKey: ["/api/creator/placements/results"],
+    staleTime: 60_000,
+  });
+  const resultByPlacement = new Map<number, PlacementResultView>();
+  for (const r of resultsData?.results ?? []) {
+    if (r.placementId != null) resultByPlacement.set(r.placementId, r);
+  }
 
   // Export state
   const [exportingId, setExportingId] = useState<number | null>(null);
@@ -201,7 +273,7 @@ export default function SavedPlacements() {
         blend: placement.blend,
       }];
 
-      const res = await fetch(`/api/video/${placement.videoId}/export`, {
+      const res = await fetchWithTimeout(`/api/video/${placement.videoId}/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -223,7 +295,7 @@ export default function SavedPlacements() {
       // Poll for progress
       const pollInterval = setInterval(async () => {
         try {
-          const pollRes = await fetch(`/api/exports/${exportId}`, { credentials: "include" });
+          const pollRes = await fetchWithTimeout(`/api/exports/${exportId}`, { credentials: "include" });
           if (!pollRes.ok) return;
           const exportData = await pollRes.json();
 
@@ -231,7 +303,10 @@ export default function SavedPlacements() {
             setExportProgress(exportData.progress);
           }
 
-          if (exportData.status === "completed" && exportData.outputUrl) {
+          // The server writes "complete" (video_exports vocab). This checked
+          // "completed", so a finished export was never detected — the poll
+          // only ever ended on failure or the 10-minute cap.
+          if ((exportData.status === "complete" || exportData.status === "completed") && exportData.outputUrl) {
             clearInterval(pollInterval);
             setExportStatus("Download ready!");
             setExportProgress(100);
@@ -239,12 +314,12 @@ export default function SavedPlacements() {
             // Trigger download
             const link = document.createElement("a");
             link.href = exportData.outputUrl;
-            link.download = `${placement.videoTitle || "export"}_with_placement.mp4`;
+            link.download = `${placement.videoTitle || "export"}_placement_preview.mp4`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
 
-            toast({ title: "Export complete!", description: "Your video with product placement is downloading." });
+            toast({ title: "Preview downloading", description: "This is your placement preview for reference — the final polished render is produced by our team after review." });
             setTimeout(() => {
               setExportingId(null);
               setExportStatus(null);
@@ -366,9 +441,22 @@ export default function SavedPlacements() {
                 {/* Placement cards */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                   <AnimatePresence mode="popLayout">
-                    {videoPlcs.map((placement, idx) => (
+                    {videoPlcs.map((placement, idx) => {
+                      // ?placement=<id> (from the review notification): land ON
+                      // that card — highlight it and scroll it into view once.
+                      const targetId = Number(new URLSearchParams(window.location.search).get("placement"));
+                      const isTarget = Number.isFinite(targetId) && targetId === placement.id;
+                      return (
                       <motion.div
                         key={placement.id}
+                        id={`placement-${placement.id}`}
+                        ref={(el) => {
+                          if (el && isTarget && !el.dataset.scrolled) {
+                            el.dataset.scrolled = "1";
+                            setTimeout(() => el.scrollIntoView({ block: "center", behavior: "smooth" }), 150);
+                          }
+                        }}
+                        className={isTarget ? "rounded-xl ring-2 ring-primary/70 ring-offset-2 ring-offset-background" : undefined}
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95 }}
@@ -442,6 +530,53 @@ export default function SavedPlacements() {
                                 {Math.round(placement.blend.opacity)}% opacity
                               </span>
                             </div>
+                            {/* Human-review lifecycle: the creator chose the
+                                placement; FullScale reviews it and produces
+                                the final render. This chip is how they know
+                                where it stands. */}
+                            {(() => {
+                              const rs = placement.reviewStatus ?? "submitted";
+                              const chip =
+                                rs === "live"
+                                  ? { label: "Live — tracking performance", cls: "bg-violet-500/15 text-violet-300 border-violet-500/30" }
+                                  : rs === "render_ready"
+                                  ? { label: "Final render ready", cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" }
+                                  : rs === "in_review"
+                                  ? { label: "In review with FullScale", cls: "bg-sky-500/15 text-sky-400 border-sky-500/30" }
+                                  : rs === "needs_changes"
+                                  ? { label: "Needs a tweak — see note", cls: "bg-amber-500/15 text-amber-400 border-amber-500/30" }
+                                  : { label: "Submitted — awaiting review", cls: "bg-white/5 text-muted-foreground border-white/10" };
+                              return (
+                                <div
+                                  className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border w-fit ${chip.cls}`}
+                                  title={rs === "needs_changes" && placement.reviewNote ? placement.reviewNote : "Our team reviews every placement and produces the final render before anything goes live."}
+                                  data-testid={`review-status-${placement.id}`}
+                                >
+                                  {chip.label}
+                                </div>
+                              );
+                            })()}
+                            {placement.reviewStatus === "live" && resultByPlacement.has(placement.id) && (
+                              <div className="mt-2">
+                                <PlacementResults result={resultByPlacement.get(placement.id)!} />
+                              </div>
+                            )}
+                            {placement.reviewStatus === "live" && !resultByPlacement.has(placement.id) && (
+                              <p className="text-[11px] text-muted-foreground mt-1">
+                                Marked live. Results appear here once we've collected a day of numbers.
+                              </p>
+                            )}
+                            {placement.reviewStatus === "render_ready" && (
+                              <Button
+                                size="sm"
+                                className="w-fit h-7 text-[11px] gap-1 mt-1"
+                                onClick={(e) => { e.stopPropagation(); setGoLiveFor(placement); }}
+                                data-testid={"golive-cta-" + placement.id}
+                              >
+                                <Share2 className="w-3 h-3" />
+                                Posted it? Mark as live
+                              </Button>
+                            )}
                             <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
                               <Clock className="w-3 h-3" />
                               {placement.createdAt ? formatDate(placement.createdAt) : "Unknown"}
@@ -466,18 +601,18 @@ export default function SavedPlacements() {
                                 className="flex-1 gap-1 text-[10px] h-7"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  window.location.href = `/remix/${placement.videoId}`;
+                                  window.location.href = `/remix/${placement.videoId}?from=saved`;
                                 }}
                               >
                                 <Video className="w-3 h-3" />
-                                Full Editor
+                                Placement Engine
                               </Button>
                               {isCreator && (
                                 <Button
                                   variant="outline"
                                   size="sm"
                                   className="gap-1 text-[10px] h-7 px-2"
-                                  title="Export Video with Placement"
+                                  title="Download preview video (reference only — the final render is produced by FullScale after review)"
                                   disabled={exportingId === placement.id}
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -513,7 +648,8 @@ export default function SavedPlacements() {
                           </CardContent>
                         </Card>
                       </motion.div>
-                    ))}
+                      );
+                    })}
                   </AnimatePresence>
                 </div>
               </div>
@@ -600,11 +736,11 @@ export default function SavedPlacements() {
                   size="sm"
                   className="gap-1"
                   onClick={() => {
-                    window.location.href = `/remix/${previewPlacement.videoId}`;
+                    window.location.href = `/remix/${previewPlacement.videoId}?from=saved`;
                   }}
                 >
                   <Video className="w-3.5 h-3.5" />
-                  Full Editor
+                  Placement Engine
                 </Button>
                 {isCreator && (
                   <Button
@@ -612,7 +748,7 @@ export default function SavedPlacements() {
                     size="sm"
                     className="gap-1"
                     onClick={() => {
-                      window.location.href = `/remix/${previewPlacement.videoId}`;
+                      window.location.href = `/remix/${previewPlacement.videoId}?from=saved`;
                     }}
                   >
                     <Download className="w-3.5 h-3.5" />
@@ -675,6 +811,83 @@ export default function SavedPlacements() {
               )}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Go-live capture: which post carries this placement. Candidates come
+          from the creator's connected channel (uploads after render-ready);
+          manual URL entry is the fallback for other platforms. */}
+      <Dialog open={goLiveFor !== null} onOpenChange={(o) => { if (!o) setGoLiveFor(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Where did this placement go live?</DialogTitle>
+            <DialogDescription>
+              Linking the real post lets us track how the placement performs with your
+              audience — views, retention, the numbers brands pay against.
+            </DialogDescription>
+          </DialogHeader>
+
+          {goLiveLoading ? (
+            <div className="flex justify-center py-6">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {goLiveCandidates.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Recent uploads on your channel — tap the one that carries this placement:
+                  </p>
+                  {goLiveCandidates.map((c) => (
+                    <button
+                      key={c.platformPostId}
+                      className="w-full flex items-center gap-3 p-2 rounded-lg border border-white/10 hover:border-primary/50 hover:bg-white/5 text-left"
+                      disabled={goLiveSaving}
+                      onClick={() => submitGoLive(c.postUrl, "channel_match", c.publishedAt)}
+                      data-testid={`golive-candidate-${c.platformPostId}`}
+                    >
+                      {c.thumbnailUrl && (
+                        <img src={c.thumbnailUrl} alt="" className="w-16 h-9 rounded object-cover shrink-0" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{c.title}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {new Date(c.publishedAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div>
+                <p className="text-xs text-muted-foreground mb-1.5">
+                  {goLiveCandidates.length > 0 ? "Or paste the post URL:" : "Paste the post URL (YouTube, Instagram, TikTok, X…):"}
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    value={goLiveUrl}
+                    onChange={(e) => setGoLiveUrl(e.target.value)}
+                    placeholder="https://…"
+                    className="flex-1 h-9 px-3 rounded-md bg-white/5 border border-white/10 text-sm"
+                    data-testid="golive-url-input"
+                  />
+                  <Button
+                    disabled={goLiveSaving || !goLiveUrl.trim()}
+                    onClick={() => submitGoLive(goLiveUrl, "manual")}
+                    data-testid="golive-submit"
+                  >
+                    {goLiveSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Mark live"}
+                  </Button>
+                </div>
+              </div>
+              {goLiveCandidates.length === 0 && (
+                <p className="text-[11px] text-muted-foreground/70">
+                  Connect YouTube on your dashboard and we'll suggest your recent uploads here
+                  automatically.
+                </p>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

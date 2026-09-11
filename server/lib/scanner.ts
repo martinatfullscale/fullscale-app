@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -7,6 +7,11 @@ import sharp from "sharp";
 import { storage } from "../storage";
 import type { VideoIndex, InsertDetectedSurface } from "@shared/schema";
 import ytdl from "@distube/ytdl-core";
+import { getYtDlpPath, forceRefreshYtDlp } from "./ytDlpUpdater";
+// Bundled ffmpeg for yt-dlp's post-processing (--download-sections trims).
+// The deployment's PATH ffmpeg segfaulted (exit -11) mid-download in
+// production; the ffmpeg-static build is the same binary our renders use.
+import ffmpegStaticPath from "ffmpeg-static";
 
 const MOBILE_SAFARI_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
 const ANDROID_USER_AGENT = "com.google.android.youtube/19.09.3 (Linux; U; Android 14; SM-G998B) gzip";
@@ -144,13 +149,35 @@ console.log(`[Scanner] AI_INTEGRATIONS_GEMINI_BASE_URL: ${process.env.AI_INTEGRA
 console.log(`[Scanner] LOCAL_ASSET_MAP entries: ${Object.keys(LOCAL_ASSET_MAP).length}`);
 console.log(`[Scanner] =============================================`);
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-  httpOptions: {
-    apiVersion: "",
-    baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
-  },
-});
+// Prefer a real Google key over Replit's proxy sidecar, matching
+// scanner_v2's resolution (case-insensitive name sweep, placeholder
+// rejection): the proxy only exists inside the workspace, so a deployed
+// scan that trusts it times out on every frame. Only when no direct key is
+// present do we fall back to the integration slot + its base URL.
+const legacyDirectGeminiKey = (() => {
+  const looksReal = (v: string | undefined): v is string =>
+    !!v && v.length >= 20 && !v.includes("DUMMY");
+  for (const name of ["GEMINI_API_KEY", "GOOGLE_GEMINI_API_KEY", "GOOGLE_API_KEY"]) {
+    if (looksReal(process.env[name])) return process.env[name]!;
+  }
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+  for (const name of Object.keys(process.env)) {
+    if (normalize(name) === "geminiapikey" && looksReal(process.env[name])) return process.env[name]!;
+  }
+  if (looksReal(process.env.AI_INTEGRATIONS_GEMINI_API_KEY)) return process.env.AI_INTEGRATIONS_GEMINI_API_KEY!;
+  return undefined;
+})();
+
+const ai = legacyDirectGeminiKey
+  ? new GoogleGenAI({ apiKey: legacyDirectGeminiKey })
+  : new GoogleGenAI({
+      apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
+      httpOptions: {
+        apiVersion: "",
+        baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+      },
+    });
+console.log(`[Scanner] Gemini client: ${legacyDirectGeminiKey ? "direct Google key" : "Replit proxy (no direct key found)"}`);
 
 // Helper to add timeout to promises
 function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> {
@@ -259,12 +286,32 @@ interface ScanResult {
   error?: string;
 }
 
-async function downloadVideoWithYtdl(youtubeId: string, outputPath: string): Promise<boolean> {
+/** Remove a leftover partial before handing outputPath to a new downloader.
+ *  yt-dlp defaults to --continue: combined with --no-part it will happily
+ *  "resume" a partial written by a DIFFERENT format or rung via a Range
+ *  request, splicing mismatched bytes into an exit-0 "successful" file that
+ *  only blows up later at frame extraction (moov atom not found). */
+function unlinkStalePartial(outputPath: string): void {
+  try {
+    fs.unlinkSync(outputPath);
+    console.log(`[Scanner] Removed stale partial before fresh attempt: ${outputPath}`);
+  } catch (err: any) {
+    if (err?.code !== "ENOENT") {
+      console.warn(`[Scanner] Could not remove stale partial ${outputPath}: ${err?.message}`);
+    }
+  }
+}
+
+async function downloadVideoWithYtdl(
+  youtubeId: string,
+  outputPath: string,
+  timeoutMs: number = 3 * 60 * 1000,
+): Promise<boolean> {
   console.log(`[Scanner] Attempting @distube/ytdl-core download with mobile user agent...`);
   const url = `https://www.youtube.com/watch?v=${youtubeId}`;
-  
+  const deadline = Date.now() + timeoutMs;
+
   try {
-    const agent = ytdl.createAgent();
     const info = await ytdl.getInfo(url, {
       requestOptions: {
         headers: {
@@ -272,24 +319,42 @@ async function downloadVideoWithYtdl(youtubeId: string, outputPath: string): Pro
         },
       },
     });
-    
+
     console.log(`[Scanner] Video info retrieved: ${info.videoDetails.title}`);
-    
-    const format = ytdl.chooseFormat(info.formats, { 
-      quality: "highest",
-      filter: (format) => !!(format.container === "mp4" && format.hasVideo && format.height && format.height <= 720)
-    });
-    
-    if (!format) {
-      console.warn(`[Scanner] No suitable format found, trying any video format...`);
-      const anyFormat = ytdl.chooseFormat(info.formats, { quality: "lowest" });
-      if (!anyFormat) {
-        console.error(`[Scanner] No downloadable format found`);
+
+    let format: ytdl.videoFormat;
+    try {
+      format = ytdl.chooseFormat(info.formats, {
+        quality: "highest",
+        filter: (f) => !!(f.container === "mp4" && f.hasVideo && f.height && f.height <= 720)
+      });
+    } catch {
+      // chooseFormat THROWS when the filter comes up empty (it never returns
+      // undefined) — VP9-only and HLS-only videos land here. This is the
+      // ladder's last rung, so take whatever video format is downloadable.
+      console.warn(`[Scanner] No mp4<=720p format found, trying lowest available video format...`);
+      try {
+        format = ytdl.chooseFormat(info.formats, { quality: "lowest", filter: "video" });
+      } catch (fmtErr: any) {
+        console.error(`[Scanner] No downloadable format found: ${fmtErr?.message}`);
         return false;
       }
     }
-    
-    return new Promise((resolve, reject) => {
+
+    unlinkStalePartial(outputPath);
+
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      let stallTimer: NodeJS.Timeout;
+      let deadlineTimer: NodeJS.Timeout;
+      const finish = (result: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(stallTimer);
+        clearTimeout(deadlineTimer);
+        resolve(result);
+      };
+
       const writeStream = fs.createWriteStream(outputPath);
       const videoStream = ytdl(url, {
         format,
@@ -299,23 +364,48 @@ async function downloadVideoWithYtdl(youtubeId: string, outputPath: string): Pro
           },
         },
       });
-      
+
+      const abort = (reason: string) => {
+        console.error(`[Scanner] ytdl watchdog: ${reason} — destroying streams`);
+        try { videoStream.destroy(); } catch {}
+        try { writeStream.close(); } catch {}
+        finish(false);
+      };
+
+      // The miniget transport underneath ytdl-core has no request timeout
+      // and no reconnects: a throttled-open socket can go quiet forever
+      // without emitting 'error' OR 'finish', which would hang the scan
+      // (and its SCAN_IN_FLIGHT slot) until a server restart. Watchdog
+      // both the overall deadline and a 90s no-progress stall.
+      let lastDataAt = Date.now();
+      videoStream.on("progress", () => { lastDataAt = Date.now(); });
+      stallTimer = setInterval(() => {
+        if (Date.now() - lastDataAt > 90_000) abort("no progress for 90s");
+      }, 15_000);
+      deadlineTimer = setTimeout(
+        () => abort(`timeout after ${Math.round(timeoutMs / 1000)}s`),
+        Math.max(1_000, deadline - Date.now()),
+      );
+
       videoStream.pipe(writeStream);
-      
+
       videoStream.on("error", (err) => {
         console.error(`[Scanner] ytdl stream error:`, err.message);
         writeStream.close();
-        resolve(false);
+        finish(false);
       });
-      
+
       writeStream.on("finish", () => {
         console.log(`[Scanner] ytdl download complete: ${outputPath}`);
-        resolve(true);
+        finish(true);
       });
-      
+
       writeStream.on("error", (err) => {
         console.error(`[Scanner] Write stream error:`, err.message);
-        resolve(false);
+        // Mirror abort(): a dead sink (ENOSPC/EACCES) must also tear down
+        // the source, or the miniget socket keeps transferring into nothing.
+        try { videoStream.destroy(); } catch {}
+        finish(false);
       });
     });
   } catch (err: any) {
@@ -324,50 +414,715 @@ async function downloadVideoWithYtdl(youtubeId: string, outputPath: string): Pro
   }
 }
 
-async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    console.log(`[Scanner] Fallback: Using yt-dlp with mobile user agent...`);
-    const process = spawn("yt-dlp", [
-      "-f", "best[height<=720]",
-      "-o", outputPath,
-      "--no-playlist",
-      "--user-agent", MOBILE_SAFARI_USER_AGENT,
-      "--extractor-args", "youtube:player_client=ios",
-      `https://www.youtube.com/watch?v=${youtubeId}`,
-    ]);
+interface DownloadOpts {
+  /** If set, only download the first N seconds of the video (yt-dlp --download-sections). */
+  trimToSeconds?: number;
+  /** Hard kill timeout in ms. Default 3 minutes. */
+  timeoutMs?: number;
+  /** OAuth access token. When set, sent via --add-header "Authorization: Bearer ..."
+   *  to bypass YouTube's anonymous-bot detection on the creator's own videos. */
+  oauthToken?: string;
+  /** Non-YouTube platforms (Twitch/TikTok/X): the full watch URL yt-dlp
+   *  should pull instead of building a youtube.com/watch URL from the id.
+   *  YouTube-specific machinery (innertube client args, ytdl-core fallback,
+   *  OAuth header) is skipped when this is set. */
+  sourceUrl?: string;
+}
 
-    let stderr = "";
-    process.stderr.on("data", (data) => {
-      stderr += data.toString();
+/**
+ * Resolve a yt-dlp cookies file from env, if configured. Cookies are the
+ * single most effective YouTube bot-detection bypass — they make yt-dlp's
+ * requests look like a real signed-in session, which datacenter IPs
+ * (Replit) otherwise get blocked from. Cookies from ANY logged-in account
+ * work for downloading ANY public video, so a single dedicated FullScale
+ * Google account's cookies cover every creator's public content — no
+ * per-creator token needed.
+ *
+ * Two ways to supply cookies:
+ *   YTDLP_COOKIES       — the full Netscape-format cookies.txt CONTENT,
+ *                         pasted into a Replit secret. Written to a temp
+ *                         file at runtime (best for Replit — no persistent
+ *                         filesystem needed).
+ *   YTDLP_COOKIES_PATH  — absolute path to a cookies.txt already on disk.
+ *
+ * Returns the path to pass to `--cookies`, or null if neither is set.
+ * Cached so we only write the temp file once per process.
+ */
+let cachedCookiesPath: string | null | undefined;
+function resolveCookiesFile(): string | null {
+  if (cachedCookiesPath !== undefined) {
+    // Replit can clear /tmp under us between scans. A dangling cached path
+    // isn't a hard error for yt-dlp (it silently skips unreadable jars) but
+    // it IS silent auth degradation — every run goes out anonymous and hits
+    // the bot-check. Re-materialize from env instead of trusting the cache.
+    if (cachedCookiesPath === null || fs.existsSync(cachedCookiesPath)) {
+      return cachedCookiesPath;
+    }
+    console.warn(`[Scanner] Cached cookies file vanished (${cachedCookiesPath}); re-materializing`);
+    cachedCookiesPath = undefined;
+  }
+
+  const inlineContent = process.env.YTDLP_COOKIES;
+  if (inlineContent && inlineContent.trim()) {
+    // GUI secret inputs (Replit's included) can flatten the tabs and
+    // newlines a cookies.txt depends on. Accept base64 of the file too —
+    // a single [A-Za-z0-9+/=] line survives any input box:
+    //   base64 -i cookies.txt | pbcopy
+    let cookieText = inlineContent;
+    const rawTrimmed = inlineContent.trim();
+    if (!rawTrimmed.includes("\t") && /^[A-Za-z0-9+/=\s]+$/.test(rawTrimmed)) {
+      try {
+        const decoded = Buffer.from(rawTrimmed.replace(/\s+/g, ""), "base64").toString("utf8");
+        if (decoded.includes("\t")) {
+          cookieText = decoded;
+          console.log(`[Scanner] YTDLP_COOKIES is base64 — decoded to cookies.txt content`);
+        }
+      } catch { /* not base64 — validate as-is below */ }
+    }
+    // Guard against a malformed paste (JSON export from the wrong
+    // extension, an HTML page, tab/newline-flattening, truncation).
+    // yt-dlp hard-fails on a non-Netscape jar and the download ladder
+    // classifies that as fatal — so a bad jar would kill EVERY download,
+    // strictly worse than running anonymous. Netscape data lines are 7
+    // tab-separated fields.
+    const dataLines = cookieText
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#"));
+    const looksNetscape =
+      dataLines.length > 0 && dataLines[0].split("\t").length >= 7;
+    const hasYoutube = /youtube\.com/i.test(cookieText);
+    if (!looksNetscape || !hasYoutube) {
+      console.error(
+        `[Scanner] YTDLP_COOKIES is set but does not look like a Netscape cookies.txt export` +
+        `${hasYoutube ? "" : " (no youtube.com entries)"} — IGNORING it and running anonymous. ` +
+        `Paste the base64 of the export instead (base64 -i cookies.txt | pbcopy) — GUI secret ` +
+        `inputs often flatten the tabs/newlines of a direct paste.`,
+      );
+      cachedCookiesPath = null;
+      return null;
+    }
+    try {
+      const tmp = path.join(os.tmpdir(), "yt-cookies.txt");
+      fs.writeFileSync(tmp, cookieText, { mode: 0o600 });
+      console.log(`[Scanner] Wrote yt-dlp cookies from YTDLP_COOKIES env → ${tmp} (${dataLines.length} cookies)`);
+      cachedCookiesPath = tmp;
+      return tmp;
+    } catch (err: any) {
+      console.warn(`[Scanner] Failed to write cookies temp file: ${err?.message}`);
+    }
+  }
+
+  const explicitPath = process.env.YTDLP_COOKIES_PATH;
+  if (explicitPath && fs.existsSync(explicitPath)) {
+    cachedCookiesPath = explicitPath;
+    return explicitPath;
+  }
+
+  cachedCookiesPath = null;
+  return null;
+}
+
+/**
+ * Push cookies + proxy args onto a yt-dlp arg list if configured. Shared by
+ * the duration probe and the download so they authenticate identically.
+ *   YTDLP_PROXY — e.g. http://user:pass@host:port — routes around the
+ *   flagged datacenter IP via a residential/mobile proxy. Most robust
+ *   bot-detection bypass; pairs well with (or works without) cookies.
+ */
+export const YT_MOBILE_SAFARI_USER_AGENT = MOBILE_SAFARI_USER_AGENT;
+
+// yt-dlp treats --cookies as read-AND-write: on exit it dumps the rotated
+// jar back to the same path with a non-atomic truncate+write. Concurrent
+// invocations (duration probe, download ladder, stream resolve, playback
+// cache) sharing one file race on that write-back — worst case a mangled
+// jar that hard-fails every later run until restart, common case silent
+// last-writer-wins clobbering of rotated cookies that YouTube then treats
+// as session invalidation. So each invocation gets its own throwaway copy.
+// Rotations are deliberately NOT persisted back to the master: losing a
+// rotation is far cheaper than corrupting the one shared jar.
+const COOKIE_JAR_DIR = path.join(os.tmpdir(), "yt-cookie-jars");
+let cookieJarSeq = 0;
+
+function makePerInvocationCookiesCopy(masterPath: string): string | null {
+  try {
+    fs.mkdirSync(COOKIE_JAR_DIR, { recursive: true });
+    // Sweep copies left by earlier invocations — the arg-list builder can't
+    // know when its yt-dlp exits, so cleanup is generational (>1h old).
+    try {
+      for (const f of fs.readdirSync(COOKIE_JAR_DIR)) {
+        const full = path.join(COOKIE_JAR_DIR, f);
+        if (Date.now() - fs.statSync(full).mtimeMs > 60 * 60 * 1000) fs.unlinkSync(full);
+      }
+    } catch {}
+    const copy = path.join(COOKIE_JAR_DIR, `jar-${process.pid}-${Date.now()}-${cookieJarSeq++}.txt`);
+    fs.writeFileSync(copy, fs.readFileSync(masterPath), { mode: 0o600 });
+    return copy;
+  } catch (err: any) {
+    console.warn(`[Scanner] Failed to copy cookie jar for isolated use: ${err?.message}`);
+    return null;
+  }
+}
+
+// Cookie attachment is OFF by default — auth is a bot-check REMEDY, not a
+// baseline. Twice now a default-on credential degraded extraction platform-
+// wide: the OAuth bearer (2026-06-11, degraded format lists) and the cookie
+// jar (2026-08-01, SABR enforcement served the signed-in session
+// storyboards ONLY while anonymous saw the full 360p-1080p table — proven
+// by side-by-side --list-formats). When YouTube actually bot-checks us,
+// the ladder flips this on (sticky for the process) and retries.
+let ytDlpCookiesEnabled = false;
+export function ytDlpCookiesActive(): boolean {
+  return ytDlpCookiesEnabled;
+}
+export function enableYtDlpCookies(reason: string): void {
+  if (!ytDlpCookiesEnabled) {
+    console.warn(`[Scanner] Enabling cookie session for yt-dlp (${reason}) — sticky for this process`);
+    ytDlpCookiesEnabled = true;
+  }
+}
+
+export function applyYtDlpAuthArgs(args: string[], context: string): void {
+  const cookies = ytDlpCookiesEnabled ? resolveCookiesFile() : null;
+  if (cookies) {
+    const isolated = makePerInvocationCookiesCopy(cookies);
+    // Fall back to the shared master only if the copy failed — better a
+    // rare write-back race than losing authentication entirely.
+    args.push("--cookies", isolated ?? cookies);
+    console.log(`[Scanner] ${context}: using cookies (signed-in session${isolated ? ", isolated jar" : ""})`);
+  }
+  const proxy = process.env.YTDLP_PROXY?.trim();
+  if (proxy) {
+    args.push("--proxy", proxy);
+    console.log(`[Scanner] ${context}: using proxy`);
+  }
+}
+
+// Player-client selection. DEFAULT clients are primary: side-by-side
+// --list-formats on 2026-08-01 showed yt-dlp's defaults returning the full
+// format table (360p-1080p) while our old custom list
+// (tv_embedded,mweb,web_safari,android_vr) returned storyboards plus one
+// leftover 360p — YouTube pruned those internal clients, and a pruned
+// client in --extractor-args fails every extraction on every binary
+// version. The custom list survives only as the last-resort flip should
+// defaults ever regress the same way; upstream actively maintains
+// defaults, so that flip should stay theoretical.
+let playerClientMode: "default" | "custom" = "default";
+export function playerClientArgs(): string[] {
+  return playerClientMode === "default"
+    ? []
+    : ["--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr"];
+}
+export function flipPlayerClientMode(): void {
+  playerClientMode = playerClientMode === "default" ? "custom" : "default";
+  console.warn(`[Scanner] Switching to ${playerClientMode.toUpperCase()} player clients for this process (previous mode format-failed everywhere)`);
+}
+
+// Detached children get their own process group precisely so our SIGKILL
+// can reach the whole PyInstaller fork tree — but that same detachment means
+// they no longer die when node itself does. Track live pgids and hard-kill
+// any survivors on the way out.
+const liveDetachedPgids = new Set<number>();
+let pgidReaperRegistered = false;
+
+function trackDetachedProcessGroup(proc: ChildProcess): void {
+  const pgid = proc.pid;
+  if (!pgid) return;
+  liveDetachedPgids.add(pgid);
+  proc.on("close", () => { liveDetachedPgids.delete(pgid); });
+
+  if (pgidReaperRegistered) return;
+  pgidReaperRegistered = true;
+  const reapAll = () => {
+    for (const id of Array.from(liveDetachedPgids)) {
+      try { process.kill(-id, "SIGKILL"); } catch {}
+    }
+  };
+  process.on("exit", reapAll);
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.on(sig, () => {
+      reapAll();
+      // Registering a signal listener suppresses the default terminate
+      // action. If nothing else owns shutdown for this signal, restore the
+      // default and re-raise so the process still dies conventionally.
+      // (glbRenderer also registers SIGTERM/SIGINT listeners at module load,
+      // so in practice this branch is a safety net for configurations where
+      // that module isn't loaded — the reap above is the real work.)
+      if (process.listenerCount(sig) === 1) {
+        process.removeAllListeners(sig);
+        process.kill(process.pid, sig);
+      }
+    });
+  }
+}
+
+/** Fetch only the duration of a video without downloading it.
+ *  Used to plan adaptive scan sampling for long-form content.
+ *  `sourceUrl` overrides the youtube.com watch URL for other platforms. */
+export async function getYoutubeVideoDuration(
+  youtubeId: string,
+  oauthToken?: string,
+  sourceUrl?: string,
+): Promise<number | null> {
+  const ytDlpBin = await getYtDlpPath();
+
+  const runProbe = (useToken: boolean): Promise<number | null> =>
+    new Promise((resolve) => {
+      const args = [
+        "--print", "%(duration)s",
+        "--skip-download",
+        "--no-warnings",
+        "--no-playlist",
+        ...playerClientArgs(),
+      ];
+      if (useToken && oauthToken) {
+        args.push("--add-header", `Authorization:Bearer ${oauthToken}`);
+      }
+      applyYtDlpAuthArgs(args, "duration probe");
+      args.push(sourceUrl || `https://www.youtube.com/watch?v=${youtubeId}`);
+
+      // detached: own process group, so the timeout kill takes the real
+      // Python child forked by the PyInstaller onefile bootloader with it
+      // (SIGKILL to the bootloader alone is unforwardable).
+      const proc = spawn(ytDlpBin, args, { detached: true });
+      trackDetachedProcessGroup(proc);
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", d => { stdout += d.toString(); });
+      proc.stderr.on("data", d => { stderr += d.toString(); });
+      // 60s: the onefile binary self-extracts on cold start, which can eat
+      // most of a 30s budget right after boot.
+      const timer = setTimeout(() => {
+        try {
+          if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+          else proc.kill("SIGKILL");
+        } catch {
+          try { proc.kill("SIGKILL"); } catch {}
+        }
+      }, 60_000);
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          console.warn(`[Scanner] duration probe${useToken ? " [OAuth]" : ""} failed (exit ${code}): ${stderr.slice(-200)}`);
+          return resolve(null);
+        }
+        const sec = parseInt(stdout.trim(), 10);
+        resolve(Number.isFinite(sec) && sec > 0 ? sec : null);
+      });
+      proc.on("error", () => { clearTimeout(timer); resolve(null); });
     });
 
-    process.on("close", (code) => {
-      if (code !== 0) {
-        console.error(`[Scanner] yt-dlp failed: ${stderr}`);
-        resolve(false);
-      } else {
-        console.log(`[Scanner] yt-dlp download complete: ${outputPath}`);
-        resolve(true);
+  // Anonymous first — the OAuth bearer header can degrade YouTube's format/
+  // metadata response (see downloadVideo cascade comment). Token retry only
+  // if anonymous comes back empty (e.g. bot-blocked or private video).
+  const anon = await runProbe(false);
+  if (anon !== null) return anon;
+  if (oauthToken) return runProbe(true);
+  return null;
+}
+
+/** One yt-dlp attempt. `stderr` is returned alongside `ok` so the ladder in
+ *  downloadVideo can classify the failure and skip rungs that are
+ *  guaranteed to repeat it identically. */
+interface YtDlpAttemptResult {
+  ok: boolean;
+  stderr: string;
+}
+
+async function downloadVideoWithYtDlp(
+  youtubeId: string,
+  outputPath: string,
+  opts: DownloadOpts = {},
+): Promise<YtDlpAttemptResult> {
+  const ytDlpBin = await getYtDlpPath();
+  return new Promise((resolve) => {
+    const trim = opts.trimToSeconds;
+    const timeoutMs = opts.timeoutMs ?? 3 * 60 * 1000;
+    console.log(`[Scanner] yt-dlp: downloading ${youtubeId}${trim ? ` (first ${trim}s only)` : ""}, timeout ${timeoutMs/1000}s...`);
+
+    // Player-client strategy: try multiple in order. As of 2025-2026 the ios
+    // client is broken (Precondition check failed). tv_embedded + mweb +
+    // web_safari are the current bot-resistant clients per yt-dlp issues.
+    //
+    // Format selector: explicitly prefer DIRECT https mp4 (single file)
+    // over HLS playlist streams. HLS + --download-sections breaks yt-dlp's
+    // ffmpeg post-processing with "Invalid data found in input" (ffmpeg
+    // exit 183) — see prior production failure on a Boris Kodjoe scan.
+    // protocol*=https filters to direct downloads; protocol*=m3u8 would
+    // be the HLS path we want to avoid.
+    const args = [
+      // Broad cascade — prefer direct mp4 ≤720p, but accept anything
+      // downloadable. Some videos (esp. long-form podcasts) only expose HLS
+      // streams; those would fail with a stricter selector. We dropped the
+      // protocol*=https filter that previously rejected HLS entirely — the
+      // first-try-with-trim, retry-without-trim flow in downloadVideo()
+      // handles HLS+trim ffmpeg failures by falling through to a full pull.
+      "-f",
+        "bv*[height<=720][ext=mp4]+ba[ext=m4a]/" +
+        "b[height<=720][ext=mp4]/" +
+        "bv*[height<=720]+ba/" +
+        "b[height<=720]/" +
+        "best[ext=mp4]/" +
+        "best/" +
+        "worst",  // last-ditch — if even "best" fails, take whatever's downloadable
+      "-o", outputPath,
+      "--no-playlist",
+      "--no-warnings",
+      "--retries", "3",
+      "--retry-sleep", "exp=2:30",
+      ...playerClientArgs(),
+      "--user-agent", MOBILE_SAFARI_USER_AGENT,
+      "--newline",            // emit progress on its own lines, helps log streaming
+      "--progress",           // show download progress
+      "--no-part",            // write straight to outputPath, no .part renames
+      "--no-continue",        // never resume a partial: a leftover from a
+                              // different rung/format would get spliced in
+                              // via a Range request and exit 0 "successfully"
+    ];
+    // TLS verification stays ON by default. With YTDLP_PROXY set, disabling
+    // it would let a malicious proxy node terminate TLS itself and read the
+    // cookie jar + OAuth bearer in plaintext. Escape hatch for genuinely
+    // broken middleboxes only — same gate as streamResolver.
+    if (process.env.YTDLP_INSECURE_TLS === "1") {
+      args.push("--no-check-certificate");
+    }
+    // Use the bundled ffmpeg (known-good) for trims/merges instead of the
+    // PATH ffmpeg, which segfaulted (-11) in the deployment.
+    if (ffmpegStaticPath && fs.existsSync(ffmpegStaticPath)) {
+      args.push("--ffmpeg-location", ffmpegStaticPath);
+    }
+    // Path B (OAuth): pass the creator's stored YouTube access token via
+    // Authorization header. yt-dlp forwards extra headers on its requests
+    // to YouTube — an authenticated user request bypasses bot-detection
+    // ("Sign in to confirm you're not a bot"). Falls back to anonymous
+    // when no token is supplied.
+    if (opts.oauthToken) {
+      args.push("--add-header", `Authorization:Bearer ${opts.oauthToken}`);
+      console.log(`[Scanner] yt-dlp: using OAuth token (Path B)`);
+    }
+    // Cookies + proxy (env-driven). Cookies are the heavy hitter against
+    // the "Sign in to confirm you're not a bot" block on datacenter IPs.
+    applyYtDlpAuthArgs(args, "yt-dlp download");
+    if (trim && trim > 0) {
+      // Cap to "first N seconds." For scan we only need ~48s of video frames,
+      // so downloading a full 60-min podcast is pure waste. With a direct
+      // https mp4 format (above), yt-dlp can byte-range to the head of the
+      // file without invoking ffmpeg keyframe-cut logic — no --force-keyframes-at-cuts
+      // (which triggers the fragile HLS+ffmpeg path that broke last time).
+      args.push("--download-sections", `*0-${trim}`);
+    }
+    // Non-YouTube platforms pass their own watch URL. The YouTube-specific
+    // args above (innertube client args, youtube.com cookies) are inert for
+    // other extractors — yt-dlp scopes both by domain.
+    args.push(opts.sourceUrl || `https://www.youtube.com/watch?v=${youtubeId}`);
+
+    unlinkStalePartial(outputPath);
+
+    // detached: own process group. The production binary is a PyInstaller
+    // onefile bootloader that forks the real Python yt-dlp, which in turn
+    // forks ffmpeg for --download-sections. SIGKILL to the top pid alone is
+    // unforwardable — the orphaned downloader keeps writing outputPath and
+    // holds our stdio pipes open, so 'close' never fires and the promise
+    // silently hangs. Killing the negative pid takes the whole group.
+    const proc = spawn(ytDlpBin, args, { detached: true });
+    trackDetachedProcessGroup(proc);
+
+    const killHard = () => {
+      try {
+        if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+        else proc.kill("SIGKILL");
+      } catch {
+        try { proc.kill("SIGKILL"); } catch {}
+      }
+    };
+
+    let stderr = "";
+    let lastProgressAt = Date.now();
+    proc.stderr.on("data", (data) => {
+      stderr += data.toString();
+      lastProgressAt = Date.now();
+    });
+    // yt-dlp writes [download] progress to stdout; surface it so a hung
+    // download is obvious in logs instead of silent for 14 minutes.
+    proc.stdout.on("data", (data) => {
+      const text = data.toString();
+      // Any output counts as liveness for the stall watchdog — the
+      // extraction phase (4 player clients + retry sleeps) legitimately
+      // emits non-progress lines for a while before the first byte.
+      lastProgressAt = Date.now();
+      // Only log progress lines + key status messages to avoid log flood
+      for (const line of text.split("\n")) {
+        if (/\[download\].*%|Destination:|has already been downloaded|Merging formats/i.test(line)) {
+          console.log(`[Scanner/yt-dlp] ${line.trim()}`);
+        }
       }
     });
 
-    process.on("error", (err) => {
-      console.error(`[Scanner] yt-dlp error: ${err.message}`);
-      resolve(false);
+    const killTimer = setTimeout(() => {
+      console.error(`[Scanner] yt-dlp HARD TIMEOUT after ${timeoutMs/1000}s for ${youtubeId} — killing process group`);
+      killHard();
+    }, timeoutMs);
+
+    // A stalled socket sits under the hard timeout for many minutes doing
+    // nothing; 90s of total silence means the transfer is dead, not slow.
+    const stallTimer = setInterval(() => {
+      if (Date.now() - lastProgressAt > 90_000) {
+        console.error(`[Scanner] yt-dlp STALLED (90s without output) for ${youtubeId} — killing process group`);
+        stderr += "\n[scanner] rung killed: no output for 90s";
+        killHard();
+      }
+    }, 15_000);
+
+    proc.on("close", (code) => {
+      clearTimeout(killTimer);
+      clearInterval(stallTimer);
+      if (code !== 0) {
+        const tail = stderr.length > 500 ? stderr.slice(-500) : stderr;
+        const sinceProgress = Math.round((Date.now() - lastProgressAt) / 1000);
+        console.error(`[Scanner] yt-dlp failed (exit ${code}, ${sinceProgress}s since last progress): ${tail}`);
+        resolve({ ok: false, stderr });
+      } else {
+        console.log(`[Scanner] yt-dlp download complete: ${outputPath}`);
+        resolve({ ok: true, stderr });
+      }
+    });
+
+    proc.on("error", (err) => {
+      clearTimeout(killTimer);
+      clearInterval(stallTimer);
+      console.error(`[Scanner] yt-dlp spawn error: ${err.message}`);
+      resolve({ ok: false, stderr: `${stderr}\n${err.message}` });
     });
   });
 }
 
-async function downloadVideo(youtubeId: string, outputPath: string): Promise<boolean> {
-  console.log(`[Scanner] Downloading video ${youtubeId} with mobile bypass...`);
-  
-  const ytdlSuccess = await downloadVideoWithYtdl(youtubeId, outputPath);
-  if (ytdlSuccess) {
-    return true;
+type YtDlpFailureClass = "fatal" | "bot" | "format" | "trim" | "other";
+
+/** Classify a failed yt-dlp run's stderr so the ladder can stop retrying
+ *  failures that are guaranteed to repeat identically on later rungs. */
+function classifyYtDlpFailure(stderr: string): YtDlpFailureClass {
+  // Independent of auth AND trim: mangled cookie jar (applied to every rung
+  // via applyYtDlpAuthArgs) or a full disk.
+  if (/does not look like a Netscape format cookies file|ENOSPC|No space left on device/i.test(stderr)) {
+    return "fatal";
   }
-  
-  console.log(`[Scanner] ytdl-core failed, trying yt-dlp fallback...`);
-  return downloadVideoWithYtDlp(youtubeId, outputPath);
+  // "Sign in to confirm you're not a bot" — an auth problem, not a format
+  // or trim problem. The authenticated rungs are the right next step.
+  if (/sign in to confirm|confirm you.?re not a bot/i.test(stderr)) {
+    return "bot";
+  }
+  // The format list is auth-DEPENDENT (see the 2026-06-11 cascade note in
+  // downloadVideo: the OAuth request got a degraded list while anonymous
+  // listed fine, and age-/membership-gated videos invert that — formats can
+  // appear only for the authenticated request). Scope it to the auth mode
+  // that produced it, like the bot-check.
+  if (/Requested format is not available/i.test(stderr)) {
+    return "format";
+  }
+  // "This video is DRM protected" on ordinary content is NOT real DRM —
+  // it's what a current extractor reports when the chosen client/session
+  // combination is served only SABR/protected streams (pruned innertube
+  // clients, or a signed-in session under SABR enforcement). Same remedy
+  // family as format-not-available: different client mode / auth mode,
+  // so classify it the same way and let the flip passes run.
+  if (/DRM protected/i.test(stderr)) {
+    return "format";
+  }
+  // ffmpeg / post-processing / --download-sections blew up: the trim path
+  // is broken for this video (classic HLS+section failure, ffmpeg exit
+  // 183), so only the full pulls can work.
+  if (/ffmpeg|postprocess|download.sections|Invalid data found/i.test(stderr)) {
+    return "trim";
+  }
+  return "other";
+}
+
+export async function downloadVideo(
+  youtubeId: string,
+  outputPath: string,
+  opts: DownloadOpts = {},
+): Promise<boolean> {
+  console.log(`[Scanner] Downloading video ${youtubeId}${opts.trimToSeconds ? ` (trim ${opts.trimToSeconds}s)` : ""}${opts.oauthToken ? " [OAuth available]" : ""}...`);
+
+  // Cascade order: ALL anonymous rungs first, OAuth rungs after. Flipped
+  // 2026-06-11 based on production evidence (video 1AQcoTanaYg): requests
+  // carrying the creator's OAuth bearer token got a DEGRADED format list
+  // ("Requested format is not available") while the identical anonymous
+  // request listed formats fine and downloaded successfully. Anonymous also
+  // hasn't been bot-blocked from this deployment since the app's OAuth
+  // verification cleared. OAuth rungs remain — they are the answer when the
+  // bot-check resurfaces — but failures that repeat identically regardless
+  // of auth/trim (see classifyYtDlpFailure) skip straight past them.
+
+  const baseTimeoutMs = opts.timeoutMs ?? 3 * 60 * 1000;
+  // Total ladder wall-clock is capped at 2x the caller's budget: the rungs
+  // exist to try different auth/trim combinations, not to let one throttled
+  // video occupy its scan slot for an hour. Each rung gets whatever budget
+  // remains (up to its own timeout), and rungs with <30s left are skipped.
+  const ladderDeadline = Date.now() + baseTimeoutMs * 2;
+
+  interface LadderRung {
+    label: string;
+    useOAuth: boolean;
+    useTrim: boolean;
+    timeoutMs: number;
+  }
+  const rungs: LadderRung[] = [];
+  if (opts.trimToSeconds) {
+    rungs.push({ label: "anonymous + trim", useOAuth: false, useTrim: true, timeoutMs: baseTimeoutMs });
+    // Full pulls get double budget — HLS-only videos can't be trimmed
+    // cleanly, so these download the whole file.
+    rungs.push({ label: "anonymous full (HLS fallback)", useOAuth: false, useTrim: false, timeoutMs: baseTimeoutMs * 2 });
+    if (opts.oauthToken) {
+      rungs.push({ label: "OAuth + trim", useOAuth: true, useTrim: true, timeoutMs: baseTimeoutMs });
+      rungs.push({ label: "OAuth full", useOAuth: true, useTrim: false, timeoutMs: baseTimeoutMs * 2 });
+    }
+  } else {
+    rungs.push({ label: "anonymous", useOAuth: false, useTrim: false, timeoutMs: baseTimeoutMs });
+    if (opts.oauthToken) {
+      rungs.push({ label: "OAuth", useOAuth: true, useTrim: false, timeoutMs: baseTimeoutMs });
+    }
+  }
+
+  let skipTrim = false;
+  let skipAnonReason: string | null = null;
+  let fatalStop = false;
+  let sawFormatFailure = false;
+  let sawBotFailure = false;
+
+  // Two ladder passes at most: if pass 1 dies entirely on "Requested format
+  // is not available" — the stale-extractor signature that hits every rung
+  // identically when YouTube ships a player change — force-refresh the
+  // yt-dlp binary and, ONLY if a genuinely newer release landed, run the
+  // ladder once more. Rate-limited inside forceRefreshYtDlp.
+  const resetPassFlags = () => {
+    skipTrim = false;
+    skipAnonReason = null;
+    fatalStop = false;
+    sawFormatFailure = false;
+    sawBotFailure = false;
+  };
+  const cookiePassPending = () => sawBotFailure && !ytDlpCookiesActive() && !!resolveCookiesFile();
+  for (let ladderPass = 0; ladderPass < 4; ladderPass++) {
+  if (ladderPass === 1) {
+    if (!sawFormatFailure) {
+      if (cookiePassPending()) continue; // bot-only failure — go enable cookies
+      break;
+    }
+    const refreshed = await forceRefreshYtDlp();
+    // No newer binary anywhere upstream — skip straight to the
+    // client-flip pass; the binary was never the problem then.
+    if (!refreshed || !refreshed.changed) continue;
+    console.warn(`[Scanner] Retrying download ladder with freshly updated yt-dlp (${refreshed.version})`);
+    resetPassFlags();
+  }
+  if (ladderPass === 2) {
+    if (!sawFormatFailure) {
+      if (cookiePassPending()) continue;
+      break;
+    }
+    // Fresh binary (or no fresher binary) and STILL format-failing on
+    // every rung: the remaining suspect is the player-client mode. Flip
+    // to the other mode for a final pass; sticks for the process.
+    flipPlayerClientMode();
+    console.warn(`[Scanner] Retrying download ladder with flipped player clients`);
+    resetPassFlags();
+  }
+  if (ladderPass === 3) {
+    // Cookie pass: only when a bot-check was actually seen, cookies exist,
+    // and they weren't already on. Sticky — future calls in this process
+    // stay authenticated (the wall usually persists once it appears).
+    if (!cookiePassPending()) break;
+    enableYtDlpCookies("bot-check on anonymous requests");
+    console.warn(`[Scanner] Retrying download ladder with cookie session enabled`);
+    resetPassFlags();
+  }
+
+  for (const rung of rungs) {
+    if (fatalStop) break;
+    if (skipTrim && rung.useTrim) {
+      console.log(`[Scanner] Skipping "${rung.label}" — trim path already failed in post-processing`);
+      continue;
+    }
+    if (skipAnonReason && !rung.useOAuth) {
+      console.log(`[Scanner] Skipping "${rung.label}" — ${skipAnonReason}`);
+      continue;
+    }
+    const remaining = ladderDeadline - Date.now();
+    if (remaining < 30_000) {
+      console.warn(`[Scanner] Ladder budget exhausted (${Math.round(remaining / 1000)}s left); skipping remaining yt-dlp rungs`);
+      break;
+    }
+
+    console.log(`[Scanner] yt-dlp rung: ${rung.label} (budget ${Math.round(Math.min(rung.timeoutMs, remaining) / 1000)}s)...`);
+    const attempt = await downloadVideoWithYtDlp(youtubeId, outputPath, {
+      ...opts,
+      oauthToken: rung.useOAuth ? opts.oauthToken : undefined,
+      trimToSeconds: rung.useTrim ? opts.trimToSeconds : undefined,
+      timeoutMs: Math.min(rung.timeoutMs, remaining),
+    });
+    if (attempt.ok) return true;
+
+    const failureClass = classifyYtDlpFailure(attempt.stderr);
+    if (failureClass === "bot") {
+      sawBotFailure = true;
+      // Self-diagnosing: cookies are the bot-check remedy. Off → the
+      // cookie pass below will enable them and retry. Already on → the
+      // exported session itself is stale/invalidated.
+      console.warn(ytDlpCookiesEnabled
+        ? `[Scanner] Bot-check HIT WITH cookies presented — the exported YTDLP_COOKIES session is stale or invalidated. Re-export from the signed-in browser profile (Get cookies.txt LOCALLY on youtube.com), re-base64, update the secret.`
+        : resolveCookiesFile()
+        ? `[Scanner] Bot-check on an anonymous request — cookie session available, retry pass will enable it.`
+        : `[Scanner] Bot-check hit and NO cookie session is configured (YTDLP_COOKIES unset, empty, or rejected by the format guard — check boot logs). A signed-in cookie session is the fix for datacenter bot-checks.`);
+    }
+    if (failureClass === "fatal") {
+      // Every remaining rung would fail the same way — burning them just
+      // hammers YouTube from the already-flagged datacenter IP.
+      console.warn(`[Scanner] "${rung.label}" failed with a non-retryable error; skipping remaining yt-dlp rungs`);
+      fatalStop = true;
+    } else if (failureClass === "trim" && rung.useTrim) {
+      skipTrim = true;
+    } else if (failureClass === "bot" || failureClass === "format") {
+      if (failureClass === "format") sawFormatFailure = true;
+      if (rung.useOAuth) {
+        // Even the authenticated request got bot-checked / saw no usable
+        // format; nothing below in the yt-dlp ladder can do better.
+        console.warn(`[Scanner] ${failureClass === "bot" ? "Bot-check" : "No available format"} on the OAuth rung; skipping remaining yt-dlp rungs`);
+        fatalStop = true;
+      } else {
+        skipAnonReason = failureClass === "bot"
+          ? "anonymous is bot-blocked"
+          : "anonymous format list has no usable format";
+      }
+    }
+    // "other" (network flake, transient 5xx, stall-kill): plain fallthrough
+    // to the next rung.
+  }
+
+  }
+
+  if (opts.sourceUrl) {
+    // ytdl-core speaks only YouTube — for other platforms the ladder was
+    // the whole story.
+    console.log(`[Scanner] All yt-dlp paths failed for ${opts.sourceUrl} (no ytdl-core fallback for non-YouTube platforms)`);
+    return false;
+  }
+  console.log(`[Scanner] All yt-dlp paths failed; trying @distube/ytdl-core fallback...`);
+  console.log(`[Scanner] DIAGNOSTIC: in Replit Shell, run \`yt-dlp --list-formats https://www.youtube.com/watch?v=${youtubeId}\` to see what formats are actually available.`);
+  // Belt and braces: the fallback has its own internal watchdog, and the
+  // withTimeout wrapper guarantees this function settles even if that
+  // watchdog somehow doesn't (a hung download here used to pin the video's
+  // SCAN_IN_FLIGHT slot until server restart).
+  try {
+    return await withTimeout(
+      downloadVideoWithYtdl(youtubeId, outputPath, baseTimeoutMs),
+      baseTimeoutMs + 5_000,
+      `ytdl-core fallback timed out after ${Math.round(baseTimeoutMs / 1000)}s`,
+    );
+  } catch (err: any) {
+    console.error(`[Scanner] ytdl-core fallback did not settle: ${err?.message}`);
+    return false;
+  }
 }
 
 async function extractFrames(videoPath: string, outputDir: string, intervalSeconds: number = 10): Promise<string[]> {
@@ -401,9 +1156,15 @@ async function extractFrames(videoPath: string, outputDir: string, intervalSecon
       "-q:v", "2",
       outputPattern,
     ];
-    console.log(`[Scanner] FFMPEG Command: ffmpeg ${ffmpegArgs.join(' ')}`);
-    
-    const process = spawn("ffmpeg", ffmpegArgs);
+    // Same known-good-binary policy as the download trims: prefer the
+    // bundled ffmpeg-static build over whatever PATH resolves to — the
+    // deployment's PATH ffmpeg segfaulted (exit -11) mid-run in production,
+    // and a bare "ffmpeg" here would hit that same binary one step after a
+    // successful download.
+    const ffmpegBin = ffmpegStaticPath && fs.existsSync(ffmpegStaticPath) ? ffmpegStaticPath : "ffmpeg";
+    console.log(`[Scanner] FFMPEG Command: ${ffmpegBin} ${ffmpegArgs.join(' ')}`);
+
+    const process = spawn(ffmpegBin, ffmpegArgs);
 
     let stderr = "";
     process.stderr.on("data", (data) => {
@@ -412,9 +1173,9 @@ async function extractFrames(videoPath: string, outputDir: string, intervalSecon
 
     process.on("close", (code) => {
       console.log(`[Scanner] FFMPEG Exit code: ${code}`);
-      
+
       if (code !== 0) {
-        console.error(`[Scanner] FFMPEG FAILED with code ${code}`);
+        console.error(`[Scanner] FFMPEG FAILED with code ${code} (binary: ${ffmpegBin})`);
         console.error(`[Scanner] FFMPEG stderr (last 1000 chars): ${stderr.slice(-1000)}`);
         reject(new Error(`Frame extraction failed with code ${code}: ${stderr.slice(-500)}`));
       } else {
@@ -527,15 +1288,24 @@ Return a JSON object with the following structure:
 
 For each surface in the surfaces array:
 - surfaceType: One of: Desk, Table, Wall, Shelf, Floor, Monitor, Laptop
+- subtype: Optional specific descriptor (e.g., "back wall", "accent wall", "bookshelf", "kitchen shelf", "floating shelf")
 - confidence: 0.0-1.0 (include surfaces ${confidenceThreshold}+ confidence)
 - boundingBox: {x, y, width, height} normalized 0-1
+
+ACTIVELY LOOK FOR these placement opportunities — do NOT skip them:
+- WALLS: every visible wall surface counts (back wall behind subject, accent walls, side walls). These are where posters, prints, decals, neon signs, framed art, and murals get placed. Even if a wall is largely empty, return it as a placement opportunity. Tag subtype: "back wall", "side wall", "accent wall".
+- SHELVES: bookshelves, floating shelves, kitchen shelves, mantels, ledges, display shelves. These are where products, books, decor sit. Tag subtype: "bookshelf", "floating shelf", "kitchen shelf", "mantel".
+- DESKS / TABLES: tabletop products like beverages, electronics.
+- MONITORS / LAPTOPS: on-screen overlays.
+
+Walls and shelves are HIGH-VALUE placements — many videos have great wall/shelf real estate that goes unused. If you see a wall or shelf, return it.
 
 Look for visual cues to determine cultural context: power outlet types, architecture style, clothing, signage, or decor.
 
 CRITICAL: Return ONLY a valid JSON object. No markdown, no explanation.
 
 Example response:
-{"surfaces": [{"surfaceType": "Desk", "confidence": 0.92, "boundingBox": {"x": 0.1, "y": 0.5, "width": 0.8, "height": 0.45}}], "sentiment": "Educational", "cultural_context": "Western Home Office", "brand_safety_score": 95}
+{"surfaces": [{"surfaceType": "Desk", "confidence": 0.92, "boundingBox": {"x": 0.1, "y": 0.5, "width": 0.8, "height": 0.45}}, {"surfaceType": "Wall", "subtype": "back wall", "confidence": 0.88, "boundingBox": {"x": 0, "y": 0, "width": 1, "height": 0.5}}, {"surfaceType": "Shelf", "subtype": "bookshelf", "confidence": 0.81, "boundingBox": {"x": 0.6, "y": 0.1, "width": 0.35, "height": 0.4}}], "sentiment": "Educational", "cultural_context": "Western Home Office", "brand_safety_score": 95}
 
 If no surfaces visible, return: {"surfaces": [], "sentiment": "Neutral", "cultural_context": "General", "brand_safety_score": 70}`;
     
@@ -550,7 +1320,7 @@ If no surfaces visible, return: {"surfaces": [], "sentiment": "Neutral", "cultur
     console.log(`[Scanner] Base URL: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || '(default)'}`);
     
     const apiCall = ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       contents: [
         {
           role: "user",

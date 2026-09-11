@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Brain, Sparkles, Tag, Target, ThumbsUp, Loader2, X,
@@ -70,7 +71,7 @@ export default function NarrativeInsights({ videoId, open, onClose }: NarrativeI
     setIsAnalyzing(true);
     try {
       // First check if analysis already exists
-      const existingRes = await fetch(`/api/scenes/${videoId}/analysis`, { credentials: "include" });
+      const existingRes = await fetchWithTimeout(`/api/scenes/${videoId}/analysis`, { credentials: "include" });
       if (existingRes.ok) {
         const existing = await existingRes.json();
         if (existing.length > 0) {
@@ -82,7 +83,7 @@ export default function NarrativeInsights({ videoId, open, onClose }: NarrativeI
       }
 
       // Run new analysis
-      const res = await fetch(`/api/scenes/${videoId}/analyze`, {
+      const res = await fetchWithTimeout(`/api/scenes/${videoId}/analyze`, {
         method: "POST",
         credentials: "include",
       });
@@ -101,7 +102,7 @@ export default function NarrativeInsights({ videoId, open, onClose }: NarrativeI
   const matchBrands = async (sceneId: number) => {
     setIsMatching(sceneId);
     try {
-      const res = await fetch(`/api/scenes/${sceneId}/match-brands`, {
+      const res = await fetchWithTimeout(`/api/scenes/${sceneId}/match-brands`, {
         method: "POST",
         credentials: "include",
       });
@@ -118,7 +119,7 @@ export default function NarrativeInsights({ videoId, open, onClose }: NarrativeI
 
   const approveBrandMatch = async (sceneId: number, matchId: number) => {
     try {
-      const res = await fetch(`/api/scenes/${sceneId}/matches/${matchId}/approve`, {
+      const res = await fetchWithTimeout(`/api/scenes/${sceneId}/matches/${matchId}/approve`, {
         method: "POST",
         credentials: "include",
       });
@@ -136,7 +137,7 @@ export default function NarrativeInsights({ videoId, open, onClose }: NarrativeI
   const autoPlaceAll = async () => {
     setIsAutoPlacing(true);
     try {
-      const res = await fetch(`/api/scenes/${videoId}/auto-place`, {
+      const res = await fetchWithTimeout(`/api/scenes/${videoId}/auto-place`, {
         method: "POST",
         credentials: "include",
       });

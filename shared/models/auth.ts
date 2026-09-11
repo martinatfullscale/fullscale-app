@@ -37,6 +37,13 @@ export const users = pgTable("users", {
   instagramBusinessId: varchar("instagram_business_id"),
   instagramHandle: varchar("instagram_handle"),
   instagramFollowers: integer("instagram_followers"),
+  // First-login onboarding checklist: null = still shown (until completed),
+  // set = creator dismissed it. Server-side so it survives devices/logouts.
+  onboardingDismissedAt: timestamp("onboarding_dismissed_at"),
+  // Waitlist: creator confirmed they submitted the Airtable profile form.
+  // Drives the "application received" state so the page stops re-presenting
+  // a blank form to people who already filled it.
+  profileSubmittedAt: timestamp("profile_submitted_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

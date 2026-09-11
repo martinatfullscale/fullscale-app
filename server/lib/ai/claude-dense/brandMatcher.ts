@@ -40,14 +40,44 @@ SCORING CRITERIA:
 - 0.3-0.5: Weak fit — technically possible but would feel forced
 - 0.0-0.3: Poor fit — brand doesn't belong in this context
 
+PLACEMENT STYLE SELECTION (pick the one that fits the surface type):
+
+For Desk / Table surfaces (3D physical placements):
+- "natural tabletop" — beverage cans, cups, small electronics resting on the surface
+- "foreground feature" — product positioned closer to camera, hero treatment
+- "corner accent" — subtle product placement at edge of frame
+
+For Shelf surfaces (3D placements + 2D book-spines):
+- "shelf prop" — product sitting on shelf alongside other items
+- "book spine" — branded book with spine label visible
+- "decorative item" — branded decor (mug, candle, small sculpture) on display
+- "background shelf" — product on a shelf behind subject
+
+For Wall surfaces (2D placements — flat artwork, signage):
+- "wall poster" — printed poster, framed or unframed
+- "framed art" — branded artwork in a frame, gallery-style
+- "wall decal" — adhesive logo or sticker on the wall
+- "neon sign" — illuminated brand sign, especially for nightlife/bar/studio scenes
+- "mural" — large painted-on-wall brand artwork
+- "shelf above-wall ledge" — narrow ledge mounted on wall
+
+For Monitor / Laptop / TV surfaces:
+- "screen overlay" — branded UI, app interface, or product demo on screen
+- "wallpaper" — branded desktop background
+
+For Floor surfaces:
+- "floor display" — large product or floor-standing sign
+
+CRITICAL: Only suggest placement styles that physically work with the surface type. Don't suggest "wall poster" for a desk surface, or "natural tabletop" for a wall.
+
 RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
 {
   "matches": [
     {
       "brandProductId": 123,
       "compatibilityScore": 0.85,
-      "reasoning": "Why this brand fits or doesn't",
-      "suggestedPlacementStyle": "natural tabletop" | "background shelf" | "foreground feature" | "corner accent"
+      "reasoning": "Why this brand fits or doesn't, including why this placement style suits the surface",
+      "suggestedPlacementStyle": "wall poster"
     }
   ]
 }
@@ -67,7 +97,21 @@ function getClient(): Anthropic {
   return anthropicClient;
 }
 
-function parseBrandMatchResponse(text: string): BrandMatchOutput | null {
+/**
+ * Fallback placement style when the model doesn't return one.
+ * Picks a sensible default based on surface type so we never suggest
+ * "natural tabletop" for a wall.
+ */
+function defaultPlacementStyle(surfaceType: string): string {
+  const t = (surfaceType || '').toLowerCase();
+  if (t.includes('wall')) return 'wall poster';
+  if (t.includes('shelf')) return 'shelf prop';
+  if (t.includes('monitor') || t.includes('laptop') || t.includes('tv') || t.includes('screen')) return 'screen overlay';
+  if (t.includes('floor')) return 'floor display';
+  return 'natural tabletop';
+}
+
+function parseBrandMatchResponse(text: string, surfaceType: string): BrandMatchOutput | null {
   try {
     let jsonStr = text.trim();
     if (jsonStr.startsWith('```json')) jsonStr = jsonStr.slice(7);
@@ -81,6 +125,8 @@ function parseBrandMatchResponse(text: string): BrandMatchOutput | null {
       return null;
     }
 
+    const fallbackStyle = defaultPlacementStyle(surfaceType);
+
     return {
       matches: parsed.matches
         .filter((m: any) => typeof m.compatibilityScore === 'number' && m.brandProductId)
@@ -88,7 +134,7 @@ function parseBrandMatchResponse(text: string): BrandMatchOutput | null {
           brandProductId: m.brandProductId,
           compatibilityScore: Math.max(0, Math.min(1, m.compatibilityScore)),
           reasoning: m.reasoning || '',
-          suggestedPlacementStyle: m.suggestedPlacementStyle || 'natural tabletop',
+          suggestedPlacementStyle: m.suggestedPlacementStyle || fallbackStyle,
         }))
         .sort((a: any, b: any) => b.compatibilityScore - a.compatibilityScore),
     };
@@ -139,7 +185,7 @@ export async function matchBrands(input: BrandMatchInput): Promise<BrandMatchOut
       return emptyResult;
     }
 
-    const result = parseBrandMatchResponse(textBlock.text);
+    const result = parseBrandMatchResponse(textBlock.text, input.surfaceDetails.surfaceType);
     if (!result) return emptyResult;
 
     // Filter by minimum compatibility

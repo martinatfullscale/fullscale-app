@@ -16,6 +16,7 @@ import type {
 } from "../../remix/clipScoringRubric";
 import { validateScores, calculateCompositeScore } from "../../remix/clipScoringRubric";
 import type { TranscriptSegment } from "../../remix/speechToText";
+import { keyValue, KEY_ALIASES } from "../../envKeys";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -38,11 +39,14 @@ export interface EditorialAnalysisInput {
   maxClips?: number;
   /** Optional search query — when provided, Claude prioritizes clips matching this topic/keyword */
   query?: string;
+  /** Ranges already covered by selected clips — retry rounds must find DIFFERENT moments */
+  excludeRanges?: Array<{ start: number; end: number }>;
 }
 
 interface ClaudeEditorialResponse {
   clipStart: number;
   clipEnd: number;
+  segments?: Array<{ start: number; end: number; role?: string }>;
   scores: {
     hookStrength: number;
     narrativeCompleteness: number;
@@ -77,11 +81,19 @@ let anthropicClient: Anthropic | null = null;
 
 function getClient(): Anthropic {
   if (!anthropicClient) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new Error("ANTHROPIC_API_KEY required for editorial analysis");
+    // Resolve the key under any spelling and honor the Replit AI base URL —
+    // the same resolver the copilot client uses. Exact-matching
+    // process.env.ANTHROPIC_API_KEY here would throw on CLAUDE_API_KEY, an
+    // aliased name, or the AI sidecar, even though the call would work.
+    const apiKey = keyValue(KEY_ALIASES.anthropic);
+    const baseURL = process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL;
+    if (!apiKey && !baseURL) {
+      throw new Error("No Anthropic credential (no key under any known spelling, no AI base URL) for editorial analysis");
     }
-    anthropicClient = new Anthropic({ apiKey });
+    const config: Record<string, any> = {};
+    if (apiKey) config.apiKey = apiKey;
+    if (baseURL) config.baseURL = baseURL;
+    anthropicClient = new Anthropic(config);
   }
   return anthropicClient;
 }
@@ -93,7 +105,8 @@ function buildEditorialAnalysisPrompt(
   surfaces: EditorialAnalysisInput["surfaces"],
   brandCatalog: EditorialAnalysisInput["brandCatalog"],
   maxClips: number = 10,
-  query?: string
+  query?: string,
+  excludeRanges?: Array<{ start: number; end: number }>
 ): string {
   // Prepare compact transcript representation
   const compactTranscript = transcript.map((seg) => ({
@@ -151,6 +164,7 @@ SEARCH FOCUS: The user is specifically looking for clips about "${query}". PRIOR
 3. For each moment, specify:
    - clipStart: Exact start timestamp in seconds (clean entry point, 0.5-1.0s before the hook statement begins, never mid-word)
    - clipEnd: Exact end timestamp in seconds (clean exit, 0.5-1.0s after final word, end on completed thought or punchline, never on "um"/"uh"/"so"/"and")
+   - segments (OPTIONAL — assembled narrative): when the STRONGEST version of this story spans non-contiguous parts of the transcript (e.g. the hook statement and its payoff are separated by a tangent), assemble 2-4 segments in NARRATIVE order instead of one long range. Each segment is { "start": seconds, "end": seconds, "role": "hook"|"body"|"payoff" }. Rules: every segment cuts on clean sentence boundaries (same entry/exit rules as above); combined duration 15-60s; segments may come from any part of the source but MUST be listed in the order they should play; when segments are provided, set clipStart/clipEnd to the min start / max end across segments. Use a single contiguous clipStart/clipEnd when the story is already contiguous — do NOT force segmentation.
    - surfacesInRange: Array of surface IDs visible during this clip's timerange
    - compatibleBrands: Array of brand product IDs that contextually fit this moment, with reasoning for each match
    - suggestedTitle: Scroll-stopping title under 60 characters
@@ -162,7 +176,9 @@ SEARCH FOCUS: The user is specifically looking for clips about "${query}". PRIOR
    - The topic naturally aligns with an available brand product
    - The emotional tone matches the brand's positioning
 
-Return as JSON array sorted by composite score descending. No markdown, no code fences, just the raw JSON array:
+${excludeRanges && excludeRanges.length > 0 ? `IMPORTANT — ALREADY COVERED: these time ranges are already selected as clips. Do NOT select moments that overlap them; find DIFFERENT moments elsewhere in the transcript: ${excludeRanges.map((r) => `${r.start.toFixed(0)}s-${r.end.toFixed(0)}s`).join(", ")}.
+
+` : ""}Return as JSON array sorted by composite score descending. No markdown, no code fences, just the raw JSON array:
 [
   {
     "clipStart": 142.5,
@@ -183,11 +199,57 @@ Return as JSON array sorted by composite score descending. No markdown, no code 
     "suggestedTitle": "I Was $50K in Debt at 25",
     "topicTags": ["personal finance", "debt", "motivation"],
     "reasoning": "Host shares vulnerable personal finance story with clear emotional arc..."
+  },
+  {
+    "clipStart": 210.0,
+    "clipEnd": 512.4,
+    "segments": [
+      { "start": 480.2, "end": 495.0, "role": "hook" },
+      { "start": 210.0, "end": 231.5, "role": "body" },
+      { "start": 500.1, "end": 512.4, "role": "payoff" }
+    ],
+    "scores": { "hookStrength": 0.92, "narrativeCompleteness": 0.9, "emotionalArc": 0.85, "speakerClarity": 0.9, "replayability": 0.9, "culturalRelevance": 0.75 },
+    "compositeScore": 0.87,
+    "surfacesInRange": [12],
+    "compatibleBrands": [],
+    "suggestedTitle": "The Advice That Changed Everything",
+    "topicTags": ["career", "mentorship"],
+    "reasoning": "The tease of the outcome makes the hook, the earlier setup is the body, and the resolution lands as payoff — assembled, this plays as one complete story."
   }
 ]`;
 }
 
 // ── Response Parser ────────────────────────────────────────────────
+
+/**
+ * Recover the complete top-level objects from a JSON array string that was cut
+ * off mid-element (token-truncated). Scans for balanced `{...}` at array depth,
+ * honoring string literals and escapes, and JSON.parses each one individually.
+ * A trailing incomplete object is simply dropped.
+ */
+function salvageObjects(s: string): any[] {
+  const out: any[] = [];
+  let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === "{") { if (depth === 0) start = i; depth++; }
+    else if (c === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        try { out.push(JSON.parse(s.slice(start, i + 1))); } catch { /* skip malformed */ }
+        start = -1;
+      }
+    }
+  }
+  return out;
+}
 
 function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
   try {
@@ -198,7 +260,18 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
     else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
     if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
 
-    const parsed = JSON.parse(jsonStr.trim()) as ClaudeEditorialResponse[];
+    let parsed: ClaudeEditorialResponse[];
+    try {
+      parsed = JSON.parse(jsonStr.trim()) as ClaudeEditorialResponse[];
+    } catch {
+      // Truncated mid-array (the model hit the token cap). Rather than throw the
+      // WHOLE batch away, recover every COMPLETE top-level object and keep those
+      // clips. Walks the string tracking brace depth and string state so nested
+      // objects don't confuse it.
+      parsed = salvageObjects(jsonStr.trim());
+      if (parsed.length === 0) throw new Error("no complete objects to salvage");
+      console.warn(`[EditorialAnalyzer] Recovered ${parsed.length} complete clip(s) from a truncated response.`);
+    }
 
     if (!Array.isArray(parsed)) {
       console.error("[EditorialAnalyzer] Response is not an array");
@@ -217,7 +290,7 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
         }
         return true;
       })
-      .map((item) => {
+      .map((item): EditorialAnalysisOutput | null => {
         // Validate and clamp scores
         const validatedScores = validateScores({
           hookStrength: item.scores?.hookStrength,
@@ -229,9 +302,35 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
           replayability: item.scores?.replayability,
         });
 
+        // Validate assembled-narrative segments: 2-4 beats, each well-formed,
+        // total 10-90s. Invalid segment sets degrade to the contiguous range.
+        let segments: Array<{ start: number; end: number; role?: string }> | undefined = undefined;
+        if (Array.isArray(item.segments) && item.segments.length >= 2 && item.segments.length <= 4) {
+          const wellFormed = item.segments.every(
+            (s) => typeof s?.start === "number" && typeof s?.end === "number" && s.end > s.start
+          );
+          const total = wellFormed
+            ? item.segments.reduce((sum, s) => sum + (s.end - s.start), 0)
+            : 0;
+          if (wellFormed && total >= 10 && total <= 90) {
+            segments = item.segments.map((s) => ({
+              start: s.start,
+              end: s.end,
+              role: typeof s.role === "string" ? s.role : undefined,
+            }));
+          } else {
+            // The envelope of a malformed assembled item is NOT a playable
+            // range (it can span minutes of unrelated material) — drop the
+            // whole item rather than degrade to it.
+            console.warn("[EditorialAnalyzer] Dropping item with malformed segments (envelope is not a playable range)");
+            return null;
+          }
+        }
+
         return {
-          clipStart: item.clipStart,
-          clipEnd: item.clipEnd,
+          clipStart: segments ? Math.min(...segments.map((s) => s.start)) : item.clipStart,
+          clipEnd: segments ? Math.max(...segments.map((s) => s.end)) : item.clipEnd,
+          segments,
           scores: validatedScores,
           compositeScore: item.compositeScore ?? calculateCompositeScore(validatedScores),
           surfacesInRange: Array.isArray(item.surfacesInRange) ? item.surfacesInRange : [],
@@ -240,7 +339,8 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
           topicTags: Array.isArray(item.topicTags) ? item.topicTags : [],
           reasoning: item.reasoning || "",
         };
-      });
+      })
+      .filter((item): item is EditorialAnalysisOutput => item !== null);
   } catch (err) {
     console.error("[EditorialAnalyzer] Failed to parse response:", err);
     console.error("[EditorialAnalyzer] Raw text that failed to parse:", text.substring(0, 1000));
@@ -261,7 +361,7 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
 export async function analyzeEditorial(
   input: EditorialAnalysisInput
 ): Promise<EditorialAnalysisOutput[]> {
-  const { videoId, transcript, surfaces, brandCatalog, maxClips = 10, query } = input;
+  const { videoId, transcript, surfaces, brandCatalog, maxClips = 10, query, excludeRanges } = input;
 
   if (!transcript || transcript.length === 0) {
     console.warn(`[EditorialAnalyzer] No transcript for video ${videoId}`);
@@ -277,15 +377,23 @@ export async function analyzeEditorial(
   try {
     const client = getClient();
 
-    const prompt = buildEditorialAnalysisPrompt(transcript, surfaces, brandCatalog, maxClips, query);
+    const prompt = buildEditorialAnalysisPrompt(transcript, surfaces, brandCatalog, maxClips, query, excludeRanges);
 
     const timeoutPromise = new Promise<null>((_, reject) => {
       setTimeout(() => reject(new Error("Editorial analysis timeout")), EDITORIAL_CONFIG.timeout);
     });
 
+    // Scale the output budget with the number of clips requested. Each clip is
+    // a fat object (six sub-scores, per-brand reasoning, title, tags, a
+    // sentence of reasoning, optional segments) — roughly 450 tokens — so a
+    // fixed 4096 truncated the JSON mid-array for a 12-clip request and, with
+    // the all-or-nothing parse below now salvaging, was still leaving clips on
+    // the table. Bounded to a safe ceiling for the model.
+    const scaledMaxTokens = Math.min(8192, Math.max(EDITORIAL_CONFIG.maxTokens, maxClips * 450 + 600));
+
     const analysisPromise = client.messages.create({
       model: EDITORIAL_CONFIG.model,
-      max_tokens: EDITORIAL_CONFIG.maxTokens,
+      max_tokens: scaledMaxTokens,
       messages: [
         {
           role: "user",
@@ -299,6 +407,10 @@ export async function analyzeEditorial(
     if (!response) {
       console.error("[EditorialAnalyzer] Request timed out");
       return [];
+    }
+
+    if ((response as Anthropic.Message).stop_reason === "max_tokens") {
+      console.warn(`[EditorialAnalyzer] Response hit the ${scaledMaxTokens}-token cap for ${maxClips} clips — recovering the complete clips from the truncated array.`);
     }
 
     const textBlock = (response as Anthropic.Message).content.find(
@@ -409,7 +521,7 @@ Here are the available brand products:
 ${JSON.stringify(compactBrands)}
 
 TASK:
-1. Identify exactly ${segmentCount} moments from this transcript that form a compelling narrative thread when placed in sequence. The total combined duration should be approximately ${targetDuration} seconds. Each segment should be 10-30 seconds long.
+1. Identify exactly ${segmentCount} moments from this transcript that form a compelling narrative thread when placed in sequence. The total combined duration should be approximately ${targetDuration} seconds. Each segment should be 15-30 seconds long.
 
 2. Each moment must serve a specific narrative role:
    - "hook": Opens with something attention-grabbing (bold claim, surprising fact, question). This MUST be the first segment.
@@ -565,7 +677,7 @@ export async function analyzeNarrativeThread(
     transcript,
     surfaces,
     brandCatalog,
-    targetDuration = 90,
+    targetDuration = 110,
     segmentCount = 4,
   } = input;
 
@@ -634,6 +746,367 @@ export async function analyzeNarrativeThread(
     return result;
   } catch (err: any) {
     console.error(`[NarrativeThread] Analysis error for video ${videoId}:`, err.message);
+    return null;
+  }
+}
+
+// ── Cross-video library thread (job #2) ──────────────────────────────────
+//
+// The single-video analyzers above find a story WITHIN one video. This one
+// reads a CORPUS of transcripts across many videos and proposes the strongest
+// moments ACROSS them that assemble into one reel — the AI half of the reel
+// builder. It only PROPOSES an ordered set of cross-video beats; rendering is
+// the reel endpoint's job (POST /api/remix/reel).
+
+export interface LibraryVideoInput {
+  videoId: number;
+  title: string;
+  transcript: TranscriptSegment[];
+}
+export interface LibraryThreadInput {
+  videos: LibraryVideoInput[];
+  targetDuration?: number;
+  segmentCount?: number;
+  /**
+   * What the creator asked for, in their words: "a highlight reel", "moments
+   * of me smiling", "everything I said about pricing". Steers which moments the
+   * model picks. Absent = find the single strongest narrative across the videos.
+   */
+  query?: string;
+}
+export interface LibraryThreadSegment {
+  videoId: number;
+  start: number;
+  end: number;
+  role: string;
+  reason: string;
+  suggestedTransition: "cut" | "crossfade" | "branded_wipe";
+}
+export interface LibraryThreadOutput {
+  segments: LibraryThreadSegment[];
+  narrativeArc: string;
+  suggestedTitle: string;
+  totalDuration: number;
+}
+
+/** How many videos and how much transcript we feed the model at once. */
+const LIBRARY_MAX_VIDEOS = 8;
+
+/** A single beat longer than this is almost certainly a hallucinated end. */
+const LIBRARY_MAX_BEAT_SEC = 45;
+
+export async function analyzeLibraryThread(input: LibraryThreadInput): Promise<LibraryThreadOutput | null> {
+  // Clamp caller-supplied knobs: segmentCount flows from the request body into
+  // the prompt and bounds the response size, so an oversized value could push
+  // the model past its token cap and truncate the whole proposal.
+  const targetDuration = Math.max(15, Math.min(300, Number(input.targetDuration) || 90));
+  const segmentCount = Math.max(2, Math.min(10, Number(input.segmentCount) || 5));
+  const query = (input.query ?? "").trim().slice(0, 300);
+
+  // Only videos that actually have transcript, capped so the corpus fits.
+  const videos = input.videos.filter((v) => v.transcript && v.transcript.length > 0).slice(0, LIBRARY_MAX_VIDEOS);
+  if (videos.length < 2) {
+    console.warn(`[LibraryThread] Need at least 2 transcribed videos, got ${videos.length}`);
+    return null;
+  }
+
+  // Split the total transcript budget evenly across videos so one long video
+  // can't crowd the others out of the model's context.
+  const perVideoBudget = Math.floor(EDITORIAL_CONFIG.maxTranscriptChars / videos.length);
+  const corpus = videos.map((v, i) => {
+    const compact = v.transcript.map((seg) => ({ start: Math.round(seg.start * 10) / 10, end: Math.round(seg.end * 10) / 10, text: seg.text }));
+    // DOWNSAMPLE, don't head-truncate. Slicing the JSON string keeps only the
+    // opening of a long video, so the model never sees the back half and can't
+    // pull a payoff from it. Instead drop evenly-spaced segments until it fits,
+    // so the whole timeline is still represented (coarser, but end to end).
+    let kept = compact;
+    let str = JSON.stringify(kept);
+    while (str.length > perVideoBudget && kept.length > 8) {
+      const stride = Math.ceil(kept.length / Math.max(8, Math.floor(kept.length * 0.75)));
+      kept = kept.filter((_, idx) => idx % stride !== stride - 1);
+      str = JSON.stringify(kept);
+    }
+    if (str.length > perVideoBudget) str = str.substring(0, perVideoBudget) + "...]";
+    const note = kept.length < compact.length ? ` (sampled ${kept.length}/${compact.length} lines across the full video)` : "";
+    return `VIDEO ${i} — "${v.title}"${note}\n${str}`;
+  }).join("\n\n");
+
+  const prompt = `You are assembling ONE short-form highlight reel from moments drawn across SEVERAL different long-form videos by the same creator.
+
+Below are ${videos.length} videos, each with a timestamped transcript. Video indices are 0-based.
+
+${corpus}
+
+TASK
+${query
+  ? `The creator asked for: "${query}". Find the ${segmentCount} moments — pulled from ANY of these videos — that BEST satisfy that request, in the order that tells the best story. Prioritize moments matching the request; if fewer than ${segmentCount} truly match, return only the ones that do (minimum 2).`
+  : `Find the ${segmentCount} strongest moments — pulled from ANY of these videos — that, placed in sequence, form one compelling narrative arc.`}
+Moments may come from different videos; that is the point. Total combined duration ~${targetDuration}s, each moment 12-30s.
+
+Each moment must serve a narrative role: "hook" (open strong), "development", "climax", "payoff", or "bridge".
+
+Timestamps are RELATIVE TO THE VIDEO the moment comes from. Pick clean entry/exit points (not mid-word).
+
+Return ONLY a JSON object, no prose, no code fence:
+{
+  "suggestedTitle": "string",
+  "narrativeArc": "one sentence describing the story the reel tells",
+  "segments": [
+    { "videoIndex": number, "start": number, "end": number, "role": "hook|development|climax|payoff|bridge", "reason": "why this moment, and how it connects", "suggestedTransition": "cut|crossfade|branded_wipe" }
+  ]
+}`;
+
+  try {
+    const client = getClient();
+    const timeoutPromise = new Promise<null>((_, reject) => {
+      setTimeout(() => reject(new Error("Library thread timeout")), EDITORIAL_CONFIG.timeout);
+    });
+    const analysisPromise = client.messages.create({
+      model: EDITORIAL_CONFIG.model,
+      // Scale with segmentCount so the object never truncates for a legit request.
+      max_tokens: Math.min(6000, 1200 + segmentCount * 350),
+      messages: [{ role: "user", content: prompt }],
+    });
+    const response = await Promise.race([analysisPromise, timeoutPromise]);
+    if (!response) { console.error("[LibraryThread] timed out"); return null; }
+
+    const textBlock = (response as Anthropic.Message).content.find((b: Anthropic.ContentBlock) => b.type === "text");
+    if (!textBlock || textBlock.type !== "text") return null;
+
+    let raw = textBlock.text.trim();
+    if (raw.startsWith("```json")) raw = raw.slice(7);
+    else if (raw.startsWith("```")) raw = raw.slice(3);
+    if (raw.endsWith("```")) raw = raw.slice(0, -3);
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) { console.error("[LibraryThread] no JSON object in response"); return null; }
+
+    const parsed = JSON.parse(match[0]);
+    if (!Array.isArray(parsed?.segments)) { console.error("[LibraryThread] missing segments"); return null; }
+
+    const roles = new Set(["hook", "development", "climax", "payoff", "bridge"]);
+    const transitions = new Set(["cut", "crossfade", "branded_wipe"]);
+    const segments: LibraryThreadSegment[] = [];
+    for (const s of parsed.segments) {
+      const vi = Number(s?.videoIndex);
+      const start = Number(s?.start);
+      const end = Number(s?.end);
+      // videoIndex must map to a real video; a hallucinated index is dropped.
+      if (!Number.isInteger(vi) || vi < 0 || vi >= videos.length) continue;
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+      const s0 = Math.max(0, start);
+      // Cap the beat length. The model only sees a downsampled transcript for
+      // long videos, so it can hallucinate an end far past the intended 12-30s
+      // (or past EOF); an uncapped end silently blows the reel's length and the
+      // caption window. Trim rather than drop, keeping the beat's start.
+      const end0 = Math.min(end, s0 + LIBRARY_MAX_BEAT_SEC);
+      if (end0 - s0 < 1) continue;
+      segments.push({
+        videoId: videos[vi].videoId,
+        start: s0,
+        end: end0,
+        role: roles.has(s?.role) ? s.role : "bridge",
+        reason: String(s?.reason ?? "").slice(0, 300),
+        suggestedTransition: transitions.has(s?.suggestedTransition) ? s.suggestedTransition : "crossfade",
+      });
+    }
+    if (segments.length < 2) { console.warn("[LibraryThread] fewer than 2 valid segments after validation"); return null; }
+
+    const totalDuration = segments.reduce((sum, s) => sum + (s.end - s.start), 0);
+    console.log(`[LibraryThread] ${segments.length} beats across ${new Set(segments.map((s) => s.videoId)).size} video(s): "${parsed.suggestedTitle}" (${totalDuration.toFixed(1)}s)`);
+    return {
+      segments,
+      narrativeArc: String(parsed.narrativeArc ?? "").slice(0, 500),
+      suggestedTitle: String(parsed.suggestedTitle ?? "Cross-video reel").slice(0, 200),
+      totalDuration,
+    };
+  } catch (err: any) {
+    console.error("[LibraryThread] error:", err.message);
+    return null;
+  }
+}
+
+// ── Reel options: several distinct arcs from ONE long-form video ─────────
+
+export interface ReelOption {
+  /** Short label for the option card — "The contrarian take". */
+  angle: string;
+  /** Why this cut of the material works, in one sentence. */
+  rationale: string;
+  narrativeArc: string;
+  suggestedTitle: string;
+  segments: NarrativeSegment[];
+  totalDuration: number;
+}
+
+export interface ReelOptionsInput {
+  videoId: number;
+  transcript: TranscriptSegment[];
+  /** How many alternative reels to propose. */
+  optionCount?: number;
+  /** Cuts per reel. */
+  segmentCount?: number;
+  /** Total seconds per reel. Hard-capped by the caller. */
+  targetDuration?: number;
+  /** What the creator asked for, in their words — "best advice", "funniest
+   *  moments", "anything about pricing". Steers the angles rather than
+   *  replacing them: the model still has to return genuinely different cuts. */
+  query?: string;
+}
+
+/**
+ * Propose several DIFFERENT reels from one video, in a single model call.
+ *
+ * Why one call and not N: analyzeNarrativeThread passes no temperature and
+ * takes no steering parameter, so calling it three times returns three
+ * near-identical arcs — the same "best" moments every time. Asking for all
+ * the options at once is the thing that makes them distinct, because the
+ * model can see what it has already used and is told to differentiate. It is
+ * also one paid call instead of N.
+ *
+ * Each option is a set of NON-CONTIGUOUS CUTS, never one long extract. That
+ * is the whole point: the creator gets a reel they can take apart, swap a
+ * beat out of, and re-order — not a single block they can only trim.
+ */
+export async function analyzeReelOptions(input: ReelOptionsInput): Promise<ReelOption[] | null> {
+  const optionCount = Math.min(5, Math.max(2, input.optionCount ?? 5));
+  const segmentCount = Math.min(8, Math.max(2, input.segmentCount ?? 4));
+  // Was hard-clamped at 170 when a reel capped at three minutes. The caller
+  // already bounds this against MAX_REEL_SEC, and silently overriding it here
+  // meant a longer reel could be asked for and never produced.
+  const targetDuration = Math.max(20, input.targetDuration ?? 110);
+
+  const compact = input.transcript.map((seg) => ({
+    start: Math.round(seg.start * 10) / 10,
+    end: Math.round(seg.end * 10) / 10,
+    text: seg.text,
+  }));
+  if (compact.length < segmentCount) return null;
+
+  // DOWNSAMPLE, don't head-truncate. analyzeNarrativeThread slices the JSON
+  // string at 50k chars, so on a genuinely long video the model never sees
+  // the back half and structurally cannot pick a payoff from the end — which
+  // is precisely what ruins an arc. Dropping evenly-spaced lines keeps the
+  // whole timeline represented, coarser but end to end. (Same approach as
+  // analyzeLibraryThread.)
+  let kept = compact;
+  let transcriptStr = JSON.stringify(kept);
+  while (transcriptStr.length > EDITORIAL_CONFIG.maxTranscriptChars && kept.length > 12) {
+    const stride = Math.ceil(kept.length / Math.max(12, Math.floor(kept.length * 0.75)));
+    kept = kept.filter((_, idx) => idx % stride !== stride - 1);
+    transcriptStr = JSON.stringify(kept);
+  }
+  if (transcriptStr.length > EDITORIAL_CONFIG.maxTranscriptChars) {
+    transcriptStr = transcriptStr.substring(0, EDITORIAL_CONFIG.maxTranscriptChars) + "...]";
+  }
+  const sampledNote = kept.length < compact.length
+    ? ` (sampled ${kept.length} of ${compact.length} lines, evenly across the whole video)`
+    : "";
+  const videoEnd = compact.length ? compact[compact.length - 1].end : 0;
+
+  const steer = input.query?.trim()
+    ? `\n\nWHAT THE CREATOR ASKED FOR: "${input.query.trim()}"\nEvery option must be a genuine answer to that. If the material does not support it, return fewer options rather than pretending — do not drift to a different subject to fill the count.`
+    : "";
+
+  const prompt = `You are an editor. From ONE long-form video you will propose ${optionCount} DIFFERENT reels.${steer}
+
+Transcript with timestamps${sampledNote}. The video runs to ${videoEnd.toFixed(0)}s:
+${transcriptStr}
+
+WHAT A REEL IS HERE
+Each reel is ${segmentCount} NON-CONTIGUOUS cuts from the transcript above, stitched in the order you give them. Total roughly ${targetDuration}s, so each cut is about ${Math.round(targetDuration / segmentCount)}s. Never propose one long extract — the creator needs separate cuts they can re-order or swap out.
+
+THE OPTIONS MUST BE GENUINELY DIFFERENT
+This is the whole task. ${optionCount} versions of the same reel is a failure. Each option takes a different ANGLE on the material: a different argument, a different emotional register, a different audience, a different through-line. Two options may reuse at most ONE moment between them; everything else must be different footage.
+
+Give each option a short angle label (3-5 words) and one sentence on why that cut works.
+
+EACH CUT NEEDS A ROLE
+- "hook" — opens with the most arresting thing. Always the FIRST cut.
+- "development" — builds the argument. Usually 1-2 cuts.
+- "climax" — the sharpest or most charged moment.
+- "payoff" — lands it. Always the LAST cut.
+Use "bridge" only if a cut exists purely to connect two others.
+
+RULES
+- start/end must be real timestamps from the transcript, start < end, and inside 0-${videoEnd.toFixed(0)}s.
+- Cuts within one option must not overlap, and must be given in playing order.
+- Cut on sentence boundaries. Never start or end mid-sentence.
+- Do not pad to reach ${optionCount}. If the material only supports 2 genuinely distinct reels, return 2.
+
+Return ONLY a JSON array, no prose:
+[
+  {
+    "angle": "short label",
+    "rationale": "one sentence on why this cut works",
+    "narrativeArc": "one sentence describing the arc",
+    "suggestedTitle": "a title for the reel",
+    "segments": [
+      { "start": 0, "end": 0, "role": "hook", "narrativePurpose": "what this cut does", "suggestedTransition": "cut" }
+    ]
+  }
+]`;
+
+  const client = getClient();
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Reel options analysis timed out")), 120_000),
+    );
+    const call = client.messages.create({
+      model: EDITORIAL_CONFIG.model,
+      // Scaled, unlike analyzeNarrativeThread's fixed 4096 — asking for five
+      // annotated arcs and giving it a single arc's budget is how you get a
+      // truncated response and a null return.
+      max_tokens: Math.min(16000, 1500 + optionCount * segmentCount * 260),
+      messages: [{ role: "user", content: prompt }],
+    });
+    const response = await Promise.race([call, timeoutPromise]);
+    const text = (response as any).content?.[0]?.type === "text" ? (response as any).content[0].text : "";
+    const match = text.match(/\[[\s\S]*\]/);
+    const raw = match ? match[0] : text;
+
+    let parsed: any[];
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Truncated mid-array: keep the options that did come through whole
+      // rather than throwing all of them away.
+      parsed = salvageObjects(raw);
+    }
+    if (!Array.isArray(parsed)) return null;
+
+    const options: ReelOption[] = [];
+    for (const o of parsed) {
+      const segs: NarrativeSegment[] = (Array.isArray(o?.segments) ? o.segments : [])
+        .map((sg: any) => ({
+          start: Number(sg?.start),
+          end: Number(sg?.end),
+          role: ["hook", "development", "climax", "payoff", "bridge"].includes(sg?.role) ? sg.role : "development",
+          narrativePurpose: String(sg?.narrativePurpose ?? "").slice(0, 300),
+          suggestedTransition: ["cut", "crossfade", "branded_wipe"].includes(sg?.suggestedTransition)
+            ? sg.suggestedTransition
+            : "crossfade",
+          scores: sg?.scores ?? undefined,
+        }) as NarrativeSegment)
+        .filter((sg: NarrativeSegment) =>
+          Number.isFinite(sg.start) && Number.isFinite(sg.end) && sg.end > sg.start && sg.start >= 0,
+        )
+        .sort((a: NarrativeSegment, b: NarrativeSegment) => a.start - b.start);
+
+      // A one-cut "reel" is an extract, which is the thing this is meant to
+      // replace — drop it rather than offer it.
+      if (segs.length < 2) continue;
+      options.push({
+        angle: String(o?.angle ?? "Untitled angle").slice(0, 80),
+        rationale: String(o?.rationale ?? "").slice(0, 300),
+        narrativeArc: String(o?.narrativeArc ?? "").slice(0, 400),
+        suggestedTitle: String(o?.suggestedTitle ?? "Reel").slice(0, 120),
+        segments: segs,
+        totalDuration: segs.reduce((n, sg) => n + (sg.end - sg.start), 0),
+      });
+    }
+    return options.length ? options : null;
+  } catch (err: any) {
+    console.error(`[ReelOptions] video ${input.videoId}: ${err?.message || err}`);
     return null;
   }
 }

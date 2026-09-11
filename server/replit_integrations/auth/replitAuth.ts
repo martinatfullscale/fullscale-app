@@ -6,6 +6,7 @@ import session from "express-session";
 import type { Express, RequestHandler } from "express";
 import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
+import pg from "pg";
 import { authStorage } from "./storage";
 
 const getOidcConfig = memoize(
@@ -42,22 +43,72 @@ export function getSession() {
     throw new Error("DATABASE_URL environment variable is required");
   }
   
-  const sessionTtl = 2 * 60 * 60 * 1000; // 2 hours
+  // 30 days. Sessions ARE persisted to Postgres (connect-pg-simple below), so
+  // they already survive server restarts/deploys. The only reason users were
+  // getting kicked out is that the previous 2hr TTL expired on idle. Bumping
+  // to 30 days gives a "stay logged in for the month" feel without weakening
+  // session hygiene — the cookie is still httpOnly + secure + sameSite=lax.
+  const sessionTtl = 30 * 24 * 60 * 60 * 1000;
   const pgStore = connectPg(session);
+  // Passing `conString` makes connect-pg-simple build its OWN pool with pg's
+  // bare defaults — and pg's default connectionTimeoutMillis is UNSET, which
+  // means a waiter for a connection is queued with no timer and can hang
+  // forever. Session lookup is on the path of every authenticated request, so
+  // that pool hanging hangs the whole app. Give it an explicit, bounded pool.
+  const sessionPool = new pg.Pool({
+    connectionString: dbUrl,
+    max: 4,                          // session reads are tiny and frequent
+    idleTimeoutMillis: 20_000,
+    connectionTimeoutMillis: 5_000,  // fail fast instead of queueing forever
+    statement_timeout: 10_000,
+    query_timeout: 10_000,
+  });
+  sessionPool.on("error", (err) => {
+    console.error("[SessionPool] idle client error:", err.message);
+  });
   const sessionStore = new pgStore({
-    conString: dbUrl,
+    pool: sessionPool,
     createTableIfMissing: true,
     ttl: sessionTtl,
     tableName: "sessions",
-    pruneSessionInterval: 60,
+    // Was 60s. Pruning is a DELETE over a table that only grows slowly, and at
+    // a 30-day TTL there is nothing to collect most minutes — so a once-a-
+    // minute write against the same table every authenticated request reads
+    // was pure contention. Quarter-hourly is ample for expiry hygiene.
+    pruneSessionInterval: 900,
     errorLog: (err: any) => {
-      if (err && typeof err === 'object') {
-        console.error("[Session Store] PostgreSQL error:", err.message || err.code || JSON.stringify(err).slice(0, 200));
-      } else {
-        console.error("[Session Store] PostgreSQL error:", String(err));
+      // connect-pg-simple calls this with a STRING it has already built
+      // ("Failed to prune sessions: " + err.message). When the underlying
+      // error carries no message — a timeout, a killed connection — that
+      // produced the useless line we shipped for weeks:
+      //     [Session Store] PostgreSQL error: Failed to prune sessions:
+      // ...with nothing after the colon and no way to act on it. Surface
+      // every field the driver might have populated instead.
+      if (typeof err === "string") {
+        console.error(`[Session Store] ${err.trim().replace(/:$/, "") || "error with no message"}`);
+        return;
       }
+      if (err && typeof err === "object") {
+        const parts = [err.message, err.code && `code=${err.code}`, err.detail && `detail=${err.detail}`,
+                       err.severity && `severity=${err.severity}`, err.routine && `routine=${err.routine}`]
+          .filter(Boolean);
+        console.error(`[Session Store] ${parts.length ? parts.join(" | ") : JSON.stringify(err).slice(0, 300)}`);
+        return;
+      }
+      console.error("[Session Store] error:", String(err));
     },
   });
+
+  // The prune DELETE filters on `expire`. connect-pg-simple's bundled DDL
+  // creates an index for its DEFAULT table name, and this store is configured
+  // with tableName "sessions" — so the index may never have been created here,
+  // making every prune a full scan of a table that grows with every login.
+  // Idempotent and additive; failure is non-fatal because sessions still work
+  // without it, just slower to prune.
+  sessionPool
+    .query('CREATE INDEX IF NOT EXISTS "idx_sessions_expire" ON "sessions" ("expire")')
+    .then(() => console.log("[Session] expire index present"))
+    .catch((err: any) => console.warn(`[Session] could not ensure expire index: ${err?.message}`));
   
   console.log("[Session] Session store created successfully");
   
@@ -66,6 +117,7 @@ export function getSession() {
     store: sessionStore,
     resave: false,
     saveUninitialized: false,
+    rolling: true,         // sliding expiration — extend on each request
     proxy: true,
     cookie: {
       httpOnly: true,
@@ -157,15 +209,31 @@ export async function setupAuth(app: Express) {
     })(req, res, next);
   });
 
-  app.get("/api/logout", (req, res) => {
-    req.logout(() => {
-      res.redirect(
-        client.buildEndSessionUrl(config, {
-          client_id: process.env.REPL_ID!,
-          post_logout_redirect_uri: `${req.protocol}://${req.hostname}`,
-        }).href
-      );
-    });
+  app.get("/api/logout", (req: any, res) => {
+    // Email/Google users live in req.session.googleUser — the old handler
+    // never destroyed the session (they stayed logged in!) and bounced
+    // EVERYONE through Replit's end-session URL (landing on replit.com).
+    // OIDC end-session only applies to actual passport OIDC sessions.
+    const hadOidcUser = !!req.user;
+    const finish = () => {
+      const destroy = req.session?.destroy?.bind(req.session);
+      const after = () => {
+        res.clearCookie("connect.sid");
+        if (hadOidcUser) {
+          res.redirect(
+            client.buildEndSessionUrl(config, {
+              client_id: process.env.REPL_ID!,
+              post_logout_redirect_uri: `${req.protocol}://${req.hostname}`,
+            }).href
+          );
+        } else {
+          res.redirect("/");
+        }
+      };
+      if (destroy) destroy(after); else after();
+    };
+    if (typeof req.logout === "function") req.logout(finish);
+    else finish();
   });
 }
 
