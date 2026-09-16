@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, ChevronLeft, ChevronRight, ChevronDown, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video, Layers, Crosshair } from "lucide-react";
@@ -340,10 +340,22 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // Perceptual scene index shots passed through the surfaces response —
   // the timestamp → scene-class mapping for frames without detection rows.
   const [sceneIndexShots, setSceneIndexShots] = useState<SceneIndexShot[] | null>(null);
+  // The strip has two sources and never merges them. "found" is what the scan
+  // found: detection frames, already extracted to disk and served static.
+  // "teach" is the frames the detector returned nothing in, scoped to ONE
+  // scene class and built only on request, because every tile there is an
+  // ffmpeg extraction behind a 120/min limiter (server/routes.ts:670, 7255).
+  // Merging the two is what turned an 11-surface video into 298 mostly-grey
+  // tiles that trickled in over minutes. A fresh open is always "found".
+  const [stripMode, setStripMode] = useState<"found" | "teach">("found");
+  const [teachStripSceneId, setTeachStripSceneId] = useState<number | null>(null);
   const { toast } = useToast();
 
   // Sync localScenes when video prop changes or modal opens
   useEffect(() => {
+    // A fresh open never lands in teach mode, whatever the last one did.
+    setStripMode("found");
+    setTeachStripSceneId(null);
     if (video?.scenes && video.scenes.length > 0) {
       setLocalScenes(video.scenes);
       setCurrentSceneIndex(0);
@@ -360,24 +372,40 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // through frames with content instead of one stale fallback scene.
   useEffect(() => {
     if (!video?.id) return;
-    // Not `dbSurfaces.length === 0` any more: a video the detector found
-    // nothing in is exactly the one a creator most needs to teach, and the
-    // shot list gives us frames to teach on even with zero rows.
-    if (dbSurfaces.length === 0 && !sceneIndexShots?.length) return;
-    const newScenes = mergeSceneSources(dbSurfaces, sceneIndexShots, video.id);
+    // The teach strip is written by its own handlers; a refetch after a teach
+    // or an approve must not swap it out from under the creator.
+    if (stripMode === "teach") return;
+    // A video the detector found nothing in is the one a creator most needs to
+    // teach, so it opens straight onto teachable frames — bounded to one scene
+    // class, never every shot in the video.
+    if (dbSurfaces.length === 0) {
+      if (!sceneIndexShots?.length) return;
+      const seedId = sceneIndexShots[0].sceneId;
+      const seed = teachFramesForScene(sceneIndexShots, dbSurfaces, video.id, seedId);
+      if (seed.frames.length === 0) return;
+      setStripMode("teach");
+      setTeachStripSceneId(seedId);
+      setLocalScenes(seed.frames);
+      setCurrentSceneIndex(0);
+      setFrameLoaded(false);
+      setFrameError(false);
+      return;
+    }
+    // One entry per detection timestamp, every image a frame already on disk.
+    const newScenes = buildScenesFromSurfaces(dbSurfaces, video.id);
     if (newScenes.length === 0) return;
     setLocalScenes(newScenes);
     // Reset index if out of range; otherwise preserve user's navigation.
     setCurrentSceneIndex(prev => prev >= newScenes.length ? 0 : prev);
-    // The rebuilt scene usually has the string-identical imageUrl (same
-    // endpoint feeds Library's builder), so the mounted <img> keeps its key
-    // AND src — React never remounts it and no new 'load' event can fire.
-    // Resetting frameLoaded=false here would then hide an already-loaded
-    // frame forever (onLoad is the only true-setter): the black-view bug.
-    // If the img is already complete, keep it visible and paint the fresh
-    // bboxes; only reset when a genuinely new load is coming.
+    // Keep an already-loaded frame visible ONLY when the rebuilt entry is the
+    // SAME image: onLoad is the only other true-setter, so resetting on a
+    // same-URL rebuild would hide a loaded frame forever. Trusting `complete`
+    // when the src actually changed is the other half of that bug — it leaves
+    // frameLoaded true over an in-flight request, so the base <video> hides and
+    // Teach arms against pixels that aren't on screen yet.
     const img = imageRef.current;
-    if (img && img.complete && img.naturalWidth > 0) {
+    const nextUrl = newScenes[Math.min(Math.max(currentSceneIndex, 0), newScenes.length - 1)]?.imageUrl;
+    if (img && nextUrl && img.src.endsWith(nextUrl) && img.complete && img.naturalWidth > 0) {
       setFrameLoaded(true);
       setTimeout(() => drawDbSurfaces(), 100);
     } else {
@@ -385,8 +413,8 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       setFrameError(false);
     }
     // sceneIndexShots lands in the same fetch as dbSurfaces but in its own
-    // setState, so without it here the empty-shot frames are a render behind.
-  }, [dbSurfaces, sceneIndexShots, video?.id]);
+    // setState, so without it here a zero-detection video is a render behind.
+  }, [dbSurfaces, sceneIndexShots, stripMode, video?.id]);
   
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -414,7 +442,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     if (hasDbSurfaces && dbSurfaces.length > 0) {
       drawDbSurfaces();
     }
-  }, [currentSceneIndex]);
+  }, [currentSceneIndex, stripMode]);
 
   
   // Fetch surfaces from database API
@@ -570,26 +598,25 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     return out;
   };
 
-  /** Detection frames and empty-shot frames, in one timeline-ordered strip. */
-  const mergeSceneSources = (
-    surfaces: any[],
+  /** Every shot in a scene class is the same camera setup, so a sample teaches
+   *  as well as the whole set — and each tile here is one on-demand ffmpeg
+   *  extraction (server/routes.ts:7255) behind a 120/min shared limiter
+   *  (server/routes.ts:670). 24 keeps a whole scene under that ceiling. */
+  const TEACH_FRAMES_PER_SCENE = 24;
+
+  /** Frames from ONE scene class the detector returned nothing for, evenly
+   *  sampled. `total` is the uncapped count, so the caption can be honest. */
+  const teachFramesForScene = (
     shots: SceneIndexShot[] | null,
+    surfaces: any[],
     videoId: number,
-  ): Scene[] => {
-    const fromSurfaces = surfaces.length ? buildScenesFromSurfaces(surfaces, videoId) : [];
-    const fromShots = shots?.length ? buildScenesFromShots(shots, surfaces, videoId) : [];
-    const merged = [...fromSurfaces, ...fromShots].sort(
-      (a, b) => (a.rawTs ?? 0) - (b.rawTs ?? 0),
-    );
-    // Two sources can land on the same second; the detection entry wins because
-    // it carries real bboxes and a known-good frame URL.
-    const seen = new Set<number>();
-    return merged.filter((s) => {
-      const k = Math.round(s.rawTs ?? 0);
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
+    sceneId: number | null,
+  ): { total: number; frames: Scene[] } => {
+    if (!shots?.length || sceneId == null) return { total: 0, frames: [] };
+    const inScene = shots.filter((sh) => sh.sceneId === sceneId);
+    const all = buildScenesFromShots(inScene, surfaces, videoId);
+    const step = Math.max(1, Math.ceil(all.length / TEACH_FRAMES_PER_SCENE));
+    return { total: all.length, frames: all.filter((_, i) => i % step === 0) };
   };
 
   // Server-side rescan: re-extract frames + detect surfaces, then rebuild scenes
@@ -635,6 +662,8 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       // already handles.
       await fetchDbSurfaces(video.id);
       setCurrentSceneIndex(0);
+      setStripMode("found");
+      setTeachStripSceneId(null);
     } catch (err) {
       console.error("[SceneAnalysisModal] Server rescan failed:", err);
       setServerScanError(err instanceof Error ? err.message : "Scan failed");
@@ -854,6 +883,13 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   const safeIndex = totalScenes > 0 ? Math.min(currentSceneIndex, totalScenes - 1) : 0;
   const currentScene = totalScenes > 0 ? localScenes[Math.max(0, safeIndex)] : null;
 
+  // The library card's two numbers, computed the way its SQL computes them
+  // (server/storage.ts: scene_count = number of scenes, surface_count = the sum
+  // over every scene). Summing across all scenes matches the card exactly; a
+  // scene with no surfaces adds zero.
+  const inventoryScenes = sceneInventory?.scenes ?? [];
+  const inventorySurfaceCount = inventoryScenes.reduce((n, sc) => n + (sc.surfaces?.length ?? 0), 0);
+
   const goToPrevious = () => {
     setCurrentSceneIndex((prev) => (prev > 0 ? prev - 1 : totalScenes - 1));
   };
@@ -905,6 +941,57 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     return null;
   })();
 
+  // Scoped to the class on screen in found mode, pinned by the picker in teach
+  // mode. Memoized because a teach drag re-renders on every pointermove and
+  // this walks the whole shot list.
+  const teachStripScene = teachStripSceneId ?? teachSceneId;
+  const teachStrip = useMemo(
+    () => teachFramesForScene(sceneIndexShots, dbSurfaces, video?.id ?? 0, teachStripScene),
+    [sceneIndexShots, dbSurfaces, video?.id, teachStripScene],
+  );
+
+  const enterTeachStrip = () => {
+    if (teachStripScene == null || teachStrip.frames.length === 0) return;
+    setTeachStripSceneId(teachStripScene);
+    setLocalScenes(teachStrip.frames);
+    setStripMode("teach");
+    setCurrentSceneIndex(0);
+    setFrameLoaded(false);
+    setFrameError(false);
+  };
+
+  /** Back to the scan's findings. `jumpToTs` lands on the found entry nearest a
+   *  detection row's timestamp, because the sidebar's timestamp→index map is
+   *  built from the DISPLAYED strip and a teach-mode index means nothing to it. */
+  const exitTeachStrip = (jumpToTs?: number) => {
+    if (!video?.id || dbSurfaces.length === 0) return;
+    const found = buildScenesFromSurfaces(dbSurfaces, video.id);
+    let idx = 0;
+    if (typeof jumpToTs === "number") {
+      let dist = Infinity;
+      found.forEach((sc, i) => {
+        const d = Math.abs((sc.rawTs ?? 0) - jumpToTs);
+        if (d < dist) { dist = d; idx = i; }
+      });
+    }
+    setStripMode("found");
+    setTeachStripSceneId(null);
+    setLocalScenes(found);
+    setCurrentSceneIndex(idx);
+    setFrameLoaded(false);
+    setFrameError(false);
+  };
+
+  const switchTeachScene = (sceneId: number) => {
+    if (!video?.id) return;
+    const next = teachFramesForScene(sceneIndexShots, dbSurfaces, video.id, sceneId);
+    setTeachStripSceneId(sceneId);
+    setLocalScenes(next.frames);
+    setCurrentSceneIndex(0);
+    setFrameLoaded(false);
+    setFrameError(false);
+  };
+
   // Teaching behaviour is shared with PlacementPreviewModal — the pointer
   // maths, the release-time normalization and the save all live in the hook so
   // the two screens cannot drift apart. Names are aliased to the ones this
@@ -930,7 +1017,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // wrong frame.
   useEffect(() => {
     resetTeach();
-  }, [open, video?.id, currentSceneIndex, showEmbedPlayer, resetTeach]);
+  }, [open, video?.id, currentSceneIndex, stripMode, showEmbedPlayer, resetTeach]);
 
   // Escape disarms teach mode. Bubble phase + listbox guard so an open
   // type dropdown consumes its own Escape first.
@@ -1151,7 +1238,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   {/* Layer 1: For local videos, always show <video> as the reliable base layer */}
                   {!showEmbedPlayer && video?.filePath && (
                     <video
-                      key={`video-base-${video.id}-${currentSceneIndex}`}
+                      key={`video-base-${video.id}-${stripMode}-${currentSceneIndex}`}
                       src={video.filePath.replace(/^\/home\/runner\/workspace\/public\//, '/').replace(/^\.\/public\//, '/').replace(/^public\//, '/').replace(/\/\//g, '/')}
                       className={`max-w-full max-h-[70vh] object-contain ${frameLoaded ? 'hidden' : ''}`}
                       muted
@@ -1174,7 +1261,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     <div className="relative max-w-full">
                     <img
                       ref={imageRef}
-                      key={`frame-${video?.id}-${currentSceneIndex}`}
+                      key={`frame-${video?.id}-${stripMode}-${currentSceneIndex}`}
                       src={currentScene?.imageUrl || ''}
                       alt={`Scene at ${currentScene?.timestamp || '0:00'}`}
                       className={`max-w-full max-h-[70vh] object-contain ${frameLoaded ? '' : (video?.filePath ? 'absolute opacity-0' : '')}`}
@@ -1401,6 +1488,59 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                       </span>
                     )}
                   </div>
+                  {/* Two strip sources, never merged. What the scan found is
+                      what opens; the frames it returned nothing in are one
+                      click away, scoped to one camera setup because that is
+                      what the teach endpoint keys on. */}
+                  {(sceneIndexShots?.length ?? 0) > 0 && (teachStrip.frames.length > 0 || stripMode === "teach") && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {dbSurfaces.length > 0 && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => exitTeachStrip()}
+                          className={`h-7 px-2.5 text-xs ${stripMode === "found" ? "text-emerald-300 bg-emerald-500/10" : "text-zinc-400"}`}
+                          data-testid="button-strip-found"
+                        >
+                          What the scan found
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={enterTeachStrip}
+                        className={`h-7 px-2.5 text-xs ${stripMode === "teach" ? "text-emerald-300 bg-emerald-500/10" : "text-zinc-400"}`}
+                        data-testid="button-strip-teach"
+                      >
+                        Frames the scan skipped
+                      </Button>
+                      {stripMode === "teach" && (
+                        <>
+                          <Select
+                            value={teachStripScene == null ? "" : String(teachStripScene)}
+                            onValueChange={(v) => switchTeachScene(Number(v))}
+                          >
+                            <SelectTrigger className="h-7 w-44 text-xs" data-testid="select-teach-scene">
+                              <SelectValue placeholder="Scene" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {(inventoryScenes.length > 0
+                                ? inventoryScenes.map((sc) => ({ id: sc.sceneId, label: `${sc.label} · ${sc.occurrences} shot${sc.occurrences !== 1 ? "s" : ""}` }))
+                                : Array.from(new Set((sceneIndexShots ?? []).map((sh) => sh.sceneId))).map((id) => ({ id, label: `Scene ${id}` }))
+                              ).map((o) => (
+                                <SelectItem key={o.id} value={String(o.id)} className="text-xs">{o.label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <span className="text-[11px] text-muted-foreground" data-testid="text-teach-count">
+                            {teachStrip.total === 0
+                              ? "The scan covered every shot in this scene"
+                              : `Showing ${totalScenes} of ${teachStrip.total} frames the scan skipped here`}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  )}
                   {/* Surface-type hotkey buttons — jump to first scene with that surface */}
                   {(() => {
                     const surfaceTypeSet = new Set<string>();
@@ -1440,9 +1580,21 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                         <img
                           src={scene.imageUrl}
                           alt={`Scene ${idx + 1}`}
+                          loading="lazy"
+                          decoding="async"
                           className="w-full h-full object-cover"
                           onError={(e) => {
                             const img = e.currentTarget;
+                            // A detection frame whose file is gone (redeploy,
+                            // storage migration) would be a permanent grey tile.
+                            // One retry through the extractor, the same rule the
+                            // main image uses: only when the src is not already
+                            // the API route, so this cannot loop and a teach tile
+                            // that already failed there is not retried.
+                            if (video?.id && typeof scene.rawTs === "number" && !img.src.includes('/api/video/')) {
+                              img.src = `/api/video/${video.id}/frame/${Math.max(0, Math.round(scene.rawTs))}`;
+                              return;
+                            }
                             img.style.display = 'none';
                             const fallback = img.nextElementSibling as HTMLElement;
                             if (fallback) fallback.style.display = 'flex';
@@ -1463,7 +1615,12 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                         frames. The badge bridges the two vocabularies: it
                         names the scene class the displayed frame belongs to,
                         using the inventory's own labels. */}
-                    Frame {currentSceneIndex + 1} of {totalScenes}
+                    {inventoryScenes.length > 0 && (
+                      <span className="block text-white/80" data-testid="text-scan-rollup">
+                        This scan found {inventorySurfaceCount} surface{inventorySurfaceCount !== 1 ? "s" : ""} across {inventoryScenes.length} scene{inventoryScenes.length !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                    {stripMode === "teach" ? "Skipped frame" : "Scan frame"} {safeIndex + 1} of {totalScenes}
                     {(() => {
                       const cls = sceneInventory?.scenes?.find((sc) => sc.sceneId === teachSceneId);
                       if (!cls?.label) return null;
@@ -1473,7 +1630,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                           data-testid="badge-frame-scene-class"
                         >
                           {cls.label}
-                          {typeof cls.occurrences === "number" ? ` · ${cls.occurrences} shots` : ""}
+                          {typeof cls.occurrences === "number" ? ` · ${cls.occurrences} shot${cls.occurrences === 1 ? "" : "s"}` : ""}
                         </span>
                       );
                     })()}
@@ -1689,6 +1846,12 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                               onClick={(e) => {
                                 // Don't jump if the user clicked the Approve button
                                 if ((e.target as HTMLElement).closest("button")) return;
+                                // A detection row belongs to the found strip by
+                                // definition, and the timestamp map above is built
+                                // from whichever strip is displayed — so from teach
+                                // mode, rebuild and land on the row's own frame
+                                // instead of a meaningless index.
+                                if (stripMode === "teach") { exitTeachStrip(ts); return; }
                                 setCurrentSceneIndex(nearestIdx);
                                 setFrameLoaded(false);
                               }}
@@ -1777,7 +1940,6 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   // ("rescan may find more"), not noise. Only the ENTRY
                   // decision (inventory view vs legacy flat list) keys on
                   // surface-bearing scenes.
-                  const allInvScenes = sceneInventory?.scenes || [];
                   const invScenes = (sceneInventory?.scenes || []).filter(
                     sc => Array.isArray(sc.surfaces) && sc.surfaces.length > 0
                   );
@@ -1798,19 +1960,18 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     const ungroupedRows = sortedSurfaces.filter(
                       s => !s.surfaceGroupId || !inventoryGroupIds.has(s.surfaceGroupId)
                     );
-                    const totalCanonical = invScenes.reduce((sum, sc) => sum + sc.surfaces.length, 0);
 
                     return (
                       <div className="rounded-xl bg-white/5 border border-white/10">
                         <div className="p-3 border-b border-white/10 sticky top-0 bg-zinc-900/95 z-10">
                           <span className="text-sm font-medium text-white block">
                             Scene inventory
-                            <span className="text-muted-foreground font-normal"> · {totalCanonical} surface{totalCanonical !== 1 ? "s" : ""} · {allInvScenes.length} scene{allInvScenes.length !== 1 ? "s" : ""}</span>
+                            <span className="text-muted-foreground font-normal"> · {inventorySurfaceCount} surface{inventorySurfaceCount !== 1 ? "s" : ""} · {inventoryScenes.length} scene{inventoryScenes.length !== 1 ? "s" : ""}</span>
                           </span>
                           <span className="text-[11px] text-muted-foreground block mt-0.5">Approve to expose to brands · ✕ removes bad detections</span>
                         </div>
                         <div className="max-h-96 overflow-y-auto p-2 space-y-4">
-                          {allInvScenes.map((scene) => (
+                          {inventoryScenes.map((scene) => (
                             <div key={scene.sceneId} data-testid={`scene-block-${scene.sceneId}`}>
                               <div className="px-1 mb-1.5">
                                 <div className="flex items-center gap-1.5">
