@@ -1,0 +1,19 @@
+{
+  "_note": "MACHINE-DRAFTED. Modern Standard Arabic, first pass, NOT reviewed by a native speaker. Every value here needs a translator's eye before it ships to a real audience — see docs/PLAN_ARABIC.md section 7. Keys are the English source sentences; delete a key to fall back to English rather than leaving a bad translation in place.",
+  "Language": "اللغة",
+  "English": "English",
+  "Back to Home": "العودة إلى الصفحة الرئيسية",
+  "Our Story": "قصتنا",
+  "Privacy Policy": "سياسة الخصوصية",
+  "Terms of Service": "شروط الخدمة",
+  "Contact Us": "تواصل معنا",
+  "Instagram": "إنستغرام",
+  "Creator Portal": "بوابة صناع المحتوى",
+  "Stay in the Loop": "ابقَ على اطلاع",
+  "Enter your email": "أدخل بريدك الإلكتروني",
+  "Subscribe": "اشترك",
+  "Legal": "قانوني",
+  "Connect": "تواصل",
+  "Products": "المنتجات",
+  "This part of FullScale is English only for now.": "هذا الجزء من FullScale متاح بالإنجليزية فقط في الوقت الحالي."
+}

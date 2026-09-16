@@ -3,6 +3,7 @@ dist
 .DS_Store
 .env
 .env.*
+!.env.example
 server/public
 vite.config.ts.*
 *.tar.gz
@@ -11,4 +12,5 @@ public/exported-clips/
 public/uploads/
 public/exports/
 public/videos/*.mov
-public/videos/*.mp4studio-output/
+public/videos/*.mp4
+studio-output/

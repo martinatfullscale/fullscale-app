@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&family=Cairo:wght@400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -71,4 +71,57 @@
   .sidebar-link.active {
     @apply text-white bg-primary/10 border border-primary/20 text-primary font-medium;
   }
+}
+
+
+/* ── Arabic ────────────────────────────────────────────────────────────────
+   Neither Outfit nor Inter contains a single Arabic glyph, so without this an
+   Arabic page renders in whatever the OS picks — usually a system serif that
+   matches nothing else on the screen.
+
+   The Latin face is listed FIRST in each stack on purpose. A font-family list
+   is resolved per glyph, and Outfit/Inter have no Arabic coverage, so Arabic
+   characters fall through to Cairo / IBM Plex Sans Arabic while Latin runs
+   inside an Arabic sentence — the FullScale wordmark, a URL, a metric — stay
+   in the type the brand already uses. That is the behaviour you want and it
+   costs nothing to get right.
+
+   Everything is scoped to .locale-ar on <html>, set by LocaleProvider, so an
+   English page is byte-for-byte unaffected. */
+.locale-ar {
+  --font-display: 'Outfit', 'Cairo', sans-serif;
+  --font-body: 'Inter', 'IBM Plex Sans Arabic', sans-serif;
+}
+
+/* Arabic has no lowercase and sits taller in the em box, so the tight leading
+   this design uses for Latin display type reads as cramped and clips
+   descenders on letters like ج and ع. */
+.locale-ar body {
+  line-height: 1.6;
+}
+.locale-ar h1,
+.locale-ar h2,
+.locale-ar h3 {
+  line-height: 1.35;
+}
+.locale-ar .leading-none,
+.locale-ar .leading-tight {
+  line-height: 1.3 !important;
+}
+
+/* Arabic letterforms carry more detail per glyph than Latin, so the 10px and
+   11px labels this UI uses for eyebrows and metadata stop being legible.
+   A floor, not a rescale — the layout stays put. */
+.locale-ar .text-\[9px\],
+.locale-ar .text-\[9\.5px\],
+.locale-ar .text-\[10px\],
+.locale-ar .text-\[10\.5px\] {
+  font-size: 11px !important;
+}
+
+/* Letter-spacing is a Latin device. Applied to Arabic it separates letters
+   that are supposed to join, which does not read as "spaced out" — it reads
+   as broken text. */
+.locale-ar [class*="tracking-"] {
+  letter-spacing: normal !important;
 }

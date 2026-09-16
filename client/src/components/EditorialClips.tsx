@@ -8,15 +8,15 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  Sparkles, Clock, TrendingUp, Tag, ChevronDown, ChevronUp,
-  Loader2, Mic, Brain, Zap, Eye, Heart, Shield, MessageSquare,
-  RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle, Search,
-} from "lucide-react";
+import { Sparkles, Clock, TrendingUp, Tag, ChevronDown, ChevronUp, Loader2, Mic, Brain, Zap, Eye, Heart, Shield, MessageSquare, RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle, Search, SlidersHorizontal, PackageOpen, ScanSearch, Send } from "lucide-react";
+import ClipPlacementPreview from "@/components/ClipPlacementPreview";
+import ClipStudio from "@/components/ClipStudio";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { useJobPoll } from "@/hooks/use-job-poll";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -55,6 +55,16 @@ interface RankedClip {
   aspectRatio?: string | null;
   renderStatus?: "pending" | "rendering" | "rendered" | "failed" | null;
   renderError?: string | null;
+  // Creator edit settings, persisted so a re-render reproduces them
+  captionsEnabled?: boolean | null;
+  captionStyle?: string | null;
+  captionSettings?: Record<string, any> | null;
+  segments?: Array<{ start: number; end: number; role?: string }> | null;
+  // Placement-inventory state, computed server-side from one surfaces load
+  surfaceCount?: number;
+  surfaceGroupCount?: number;
+  videoScanned?: boolean;
+  scanInFlight?: boolean;
 }
 
 interface TranscriptStatus {
@@ -80,14 +90,26 @@ interface EditorialStatusResponse {
   renderedClips: number;
   failedClips: number;
   pendingClips: number;
+  /** Subset of pendingClips actively in flight (a lone re-render). */
+  renderingClips?: number;
   completedAt: string | null;
+  updatedAt: string | null;
 }
 
 export interface EditorialClipsProps {
   videoId: number;
   mode: "creator" | "brand" | "remix";
+  /** Run this transcript search as soon as the component mounts — how
+   *  "Find more like this" arrives from Clips & Reels. */
+  initialSearch?: { query: string; excludeRanges?: Array<{ start: number; end: number }> } | null;
+  /** Called once the seeded search has been dispatched. */
+  onSeedConsumed?: () => void;
   onGenerateClip?: (clip: RankedClip) => void;
   onBuyPlacement?: (clip: RankedClip) => void;
+  /** Remix-tab: make this clip the AI copilot's target */
+  onSelectForCopilot?: (clip: RankedClip) => void;
+  /** Open the Distribution hub on this clip. Only offered once it has rendered. */
+  onPublishClip?: (clip: RankedClip) => void;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -143,7 +165,7 @@ function ScoreBar({ label, value, icon: Icon }: { label: string; value: number; 
 
 // ── Main Component ─────────────────────────────────────────────────
 
-export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPlacement }: EditorialClipsProps) {
+export default function EditorialClips({ videoId, mode, initialSearch, onSeedConsumed, onGenerateClip, onBuyPlacement, onSelectForCopilot, onPublishClip }: EditorialClipsProps) {
   const { toast } = useToast();
 
   const [transcriptStatus, setTranscriptStatus] = useState<TranscriptStatus>({ status: "none" });
@@ -151,6 +173,115 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const [isLoadingTranscript, setIsLoadingTranscript] = useState(false);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
   const [isLoadingSavedClips, setIsLoadingSavedClips] = useState(true);
+  // Source length bounds the trim sliders. Absent (0) = unknown; the editor
+  // falls back to a window around the clip rather than guessing a hard cap.
+  const [sourceDurationSec, setSourceDurationSec] = useState<number>(0);
+  // Placement preview modal + clips currently scanning (optimistic — the
+  // list endpoint confirms via scanInFlight on the next refetch).
+  const [previewClip, setPreviewClip] = useState<RankedClip | null>(null);
+  const [studioClip, setStudioClip] = useState<RankedClip | null>(null);
+  const [scanningClips, setScanningClips] = useState<Set<number>>(new Set());
+
+  const scanClip = useCallback(async (clipId: number) => {
+    setScanningClips((prev) => new Set(prev).add(clipId));
+    try {
+      const res = await fetchWithTimeout(`/api/editorial-clips/${clipId}/scan`, { method: "POST", credentials: "include" });
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 202) {
+        toast({
+          title: body.mode === "full_scan" ? "Scanning source video" : "Scanning clip range",
+          description: body.message || "Surfaces appear here when the scan finishes.",
+        });
+      } else if (res.status === 409) {
+        toast({ title: "Already scanning", description: "This clip's scan is still running." });
+      } else {
+        setScanningClips((prev) => { const nx = new Set(prev); nx.delete(clipId); return nx; });
+        toast({ title: "Scan failed", description: body.error || "Try again", variant: "destructive" });
+      }
+    } catch (err: any) {
+      setScanningClips((prev) => { const nx = new Set(prev); nx.delete(clipId); return nx; });
+      toast({ title: "Scan failed", description: err.message, variant: "destructive" });
+    }
+  }, [toast]);
+
+  // While anything is scanning OR rendering, poll the clip list so rows land
+  // as the server writes them. Rendering is read off the rows themselves
+  // (renderStatus === "rendering"), so every path that starts a render — the
+  // aspect picker, the editor's Apply, the copilot, a remount — is tracked
+  // without anyone remembering to start a poll. The stale-render sweep
+  // guarantees a stranded row settles to "failed", so this cannot spin forever.
+  const renderingIds = clips
+    .filter((c) => c.renderStatus === "rendering" && (c as any).id)
+    .map((c) => (c as any).id as number);
+  const renderingKey = renderingIds.join(",");
+  useEffect(() => {
+    if (scanningClips.size === 0 && renderingIds.length === 0) return;
+    const iv = setInterval(() => { refetchClips(); }, renderingIds.length > 0 ? 5000 : 10000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanningClips.size, renderingKey]);
+
+  // The receipt: say so when a RE-render lands (or fails) instead of letting
+  // the card silently swap its thumbnail. Only re-renders: a clip that still
+  // carries an exportPath when it enters "rendering" had a finished cut (the
+  // old one survives until the new one lands); a pipeline first render does
+  // not, and the pipeline banner already announces those.
+  const renderingSinceRef = useRef<Map<number, boolean>>(new Map());
+  useEffect(() => {
+    const nowIds = new Set(renderingIds);
+    const known = renderingSinceRef.current;
+    for (const id of renderingIds) {
+      if (known.has(id)) continue;
+      const row = clips.find((c) => (c as any).id === id) as any;
+      known.set(id, !!row?.exportPath);
+    }
+    for (const id of Array.from(known.keys())) {
+      if (nowIds.has(id)) continue;
+      const hadCut = known.get(id);
+      known.delete(id);
+      if (!hadCut) continue;
+      const row = clips.find((c) => (c as any).id === id) as any;
+      if (!row) continue;
+      if (row.renderStatus === "rendered") {
+        toast({ title: "New cut ready", description: row.suggestedTitle ? `"${String(row.suggestedTitle).slice(0, 60)}" re-rendered.` : "Your clip re-rendered." });
+      } else if (row.renderStatus === "failed") {
+        toast({ title: "Re-render failed", description: row.renderError || "Try again", variant: "destructive" });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderingKey]);
+
+  useEffect(() => {
+    if (scanningClips.size === 0) return;
+    setScanningClips((prev) => {
+      const nx = new Set<number>();
+      for (const id of Array.from(prev)) {
+        const row = clips.find((c) => (c as any).id === id) as any;
+        // Keep the flag while the server reports in-flight OR hasn't
+        // reported yet; drop it once the server says the scan ended.
+        if (!row || row.scanInFlight !== false) nx.add(id);
+      }
+      return nx.size === prev.size ? prev : nx;
+    });
+  }, [clips]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithTimeout(`/api/video/${videoId}/details`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const raw = String(data?.video?.duration ?? data?.duration ?? "").trim();
+        if (!raw || cancelled) return;
+        const secs = /^\d+(\.\d+)?$/.test(raw)
+          ? parseFloat(raw)
+          : raw.split(":").map(Number).reduce((a, p) => (Number.isFinite(p) ? a * 60 + p : a), 0);
+        if (Number.isFinite(secs) && secs > 0) setSourceDurationSec(secs);
+      } catch { /* trim just falls back to a relative window */ }
+    })();
+    return () => { cancelled = true; };
+  }, [videoId]);
   const [analysisComplete, setAnalysisComplete] = useState(false);
   const [expandedClip, setExpandedClip] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"score" | "time" | "duration">("score");
@@ -162,16 +293,26 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<RankedClip[] | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Last pipeline status this poll observed — a transition out of in-flight
+  // is the moment to announce the result.
+  const lastStatusRef = useRef<string | null>(null);
+  // Bumped to restart the poll after Regenerate/Resume. The poll self-reschedules
+  // only while a pipeline is in flight, so once it settles on "ready"/"failed" it
+  // stops with no pending timer; starting new server work does not on its own wake
+  // it, which left the banner stuck at "Queued…" and new clips never appearing.
+  const [pollNonce, setPollNonce] = useState(0);
 
   // ── Helpers ────────────────────────────────────────────────────
   const refetchClips = useCallback(async () => {
     try {
-      const res = await fetch(`/api/scenes/${videoId}/editorial-clips`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/scenes/${videoId}/editorial-clips`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.clips)) {
           setClips(data.clips);
-          setAnalysisComplete(data.clips.length > 0);
+          // Monotonic: a refetch can confirm an analysis happened, never
+          // un-happen it (a zero-result run must still read as complete).
+          setAnalysisComplete((prev) => prev || data.clips.length > 0);
         }
       }
     } catch {
@@ -181,7 +322,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
 
   const fetchAutoStatus = useCallback(async (): Promise<EditorialStatusResponse | null> => {
     try {
-      const res = await fetch(`/api/videos/${videoId}/editorial-status`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-status`, { credentials: "include" });
       if (!res.ok) return null;
       return (await res.json()) as EditorialStatusResponse;
     } catch {
@@ -202,13 +343,36 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       }
       setAutoStatus(status);
 
-      const inFlight = ["pending", "transcribing", "analyzing", "rendering"].includes(status.status);
+      const IN_FLIGHT = ["pending", "transcribing", "analyzing", "rendering"];
+      const inFlight = IN_FLIGHT.includes(status.status);
+      const wasInFlight = lastStatusRef.current !== null && IN_FLIGHT.includes(lastStatusRef.current);
+      lastStatusRef.current = status.status;
       if (inFlight) {
         // Refetch clips every poll so newly-rendered ones appear progressively
         await refetchClips();
         pollTimerRef.current = setTimeout(tick, 5_000);
       } else if (status.status === "ready" || status.status === "failed") {
         await refetchClips();
+        if (wasInFlight && !cancelled) {
+          // The receipt for a run this component watched settle — including a
+          // zero-result one, which used to vanish without a trace.
+          setAnalysisComplete(true);
+          if (status.status === "ready") {
+            const n = status.renderedClips > 0 ? status.renderedClips : status.totalClips;
+            toast(
+              status.totalClips > 0
+                ? {
+                    title: `${n} story clip${n === 1 ? "" : "s"} ${status.renderedClips > 0 ? "ready" : "found"}`,
+                    description: status.renderedClips > 0 ? "Rendered and ready to publish." : "Render them to make them playable.",
+                  }
+                : { title: "No story moments found", description: "Claude couldn't find a self-contained story in this transcript." },
+            );
+          } else if (status.error === "Cancelled by user") {
+            toast({ title: "Stopped", description: "Story-clips cancelled." });
+          } else {
+            toast({ title: "Story-clips failed", description: status.error || "Try again", variant: "destructive" });
+          }
+        }
       }
     }
 
@@ -221,12 +385,12 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         pollTimerRef.current = null;
       }
     };
-  }, [videoId, fetchAutoStatus, refetchClips]);
+  }, [videoId, pollNonce, fetchAutoStatus, refetchClips]);
 
   const handleRegenerate = useCallback(async () => {
     setIsRegenerating(true);
     try {
-      const res = await fetch(`/api/videos/${videoId}/editorial-auto`, {
+      const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-auto`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -246,53 +410,115 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         failedClips: 0,
         pendingClips: 0,
         completedAt: null,
+        updatedAt: new Date().toISOString(),
       });
+      setPollNonce(n => n + 1); // restart the poll so the new run is tracked
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     }
     setIsRegenerating(false);
   }, [videoId, toast]);
 
-  const handleSearch = useCallback(async () => {
-    if (!searchQuery.trim()) {
+  // Search runs off the request (202 + job); the poll below collects it.
+  const toSearchClip = (c: any): RankedClip => ({
+    ...c,
+    duration: Array.isArray(c.segments) && c.segments.length > 1
+      ? c.segments.reduce((sum: number, s: any) => sum + (s.end - s.start), 0)
+      : c.clipEnd - c.clipStart,
+    editorialScore: c.compositeScore ?? 0,
+    surfaceScore: 0,
+    brandMatchScore: 0,
+    finalScore: c.compositeScore ?? 0,
+    monetizationTier: "organic" as const,
+    surfaces: [],
+    brandMatches: [],
+    editPoints: { start: c.clipStart, end: c.clipEnd, adjustments: [] },
+    rawClipStart: c.clipStart,
+    rawClipEnd: c.clipEnd,
+  });
+  const [searchJob, setSearchJob] = useState<{ id: string; query: string } | null>(null);
+  useJobPoll<{ clips: any[]; count: number }>(searchJob ? { kind: "search", id: searchJob.id } : null, {
+    intervalMs: 2500,
+    maxMs: 6 * 60_000,
+    onTerminal: (view) => {
+      const query = searchJob?.query ?? "";
+      setSearchJob(null);
+      setIsSearching(false);
+      if (view.state === "succeeded") {
+        const found = view.result?.clips ?? [];
+        setSearchResults(found.map(toSearchClip));
+        toast({ title: `Found ${found.length} clips`, description: `Matching "${query}"` });
+      } else {
+        toast({ title: "Search failed", description: view.error || "Try again", variant: "destructive" });
+      }
+    },
+    onTimeout: () => {
+      setSearchJob(null);
+      setIsSearching(false);
+      toast({ title: "Search is taking too long", description: "Try again in a moment.", variant: "destructive" });
+    },
+  });
+
+  const runSearch = useCallback(async (
+    rawQuery: string,
+    excludeRanges?: Array<{ start: number; end: number }>,
+  ) => {
+    const q = rawQuery.trim();
+    if (!q) {
       setSearchResults(null);
       return;
     }
     setIsSearching(true);
+    let accepted = false;
     try {
-      const res = await fetch(`/api/videos/${videoId}/editorial-search`, {
+      const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ query: searchQuery.trim(), maxClips: 10 }),
-      });
-      if (!res.ok) throw new Error("Search failed");
-      const data = await res.json();
-      setSearchResults(
-        (data.clips || []).map((c: any) => ({
-          ...c,
-          duration: c.clipEnd - c.clipStart,
-          editorialScore: c.compositeScore ?? 0,
-          surfaceScore: 0,
-          brandMatchScore: 0,
-          finalScore: c.compositeScore ?? 0,
-          monetizationTier: "organic" as const,
-          surfaces: [],
-          brandMatches: [],
-          editPoints: { start: c.clipStart, end: c.clipEnd, adjustments: [] },
-          rawClipStart: c.clipStart,
-          rawClipEnd: c.clipEnd,
-        }))
-      );
-      toast({
-        title: `Found ${data.clips?.length || 0} clips`,
-        description: `Matching "${searchQuery.trim()}"`,
-      });
+        // excludeRanges keeps "find more like this" from handing back the
+        // very clip the creator asked for more of.
+        body: JSON.stringify({ query: q, maxClips: 10, ...(excludeRanges?.length ? { excludeRanges } : {}) }),
+      }, 60_000);
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        // Informational, not a failure — the other analysis will finish.
+        toast({ title: "Already analyzing", description: data.error || "Another analysis is running on this video — try the search again in a moment." });
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || "Search failed");
+      if (res.status === 202 && data.job?.id) {
+        accepted = true;
+        setSearchJob({ id: String(data.job.id), query: q });
+        return;
+      }
+      // Legacy synchronous shape.
+      setSearchResults((data.clips || []).map(toSearchClip));
+      toast({ title: `Found ${data.clips?.length || 0} clips`, description: `Matching "${q}"` });
     } catch (err: any) {
       toast({ title: "Search failed", description: err.message, variant: "destructive" });
+    } finally {
+      if (!accepted) setIsSearching(false);
     }
-    setIsSearching(false);
-  }, [videoId, searchQuery, toast]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId, toast]);
+
+  const handleSearch = useCallback(() => runSearch(searchQuery), [runSearch, searchQuery]);
+
+  // "Find more like this" from Clips & Reels: land with the box filled in and
+  // the search already running, so the creator sees the work start rather
+  // than a pre-typed query waiting for another click.
+  // NOTE: this component is mounted with a `key` that RemixStudio bumps on
+  // every copilot apply and re-render, so a ref-based "already ran" guard
+  // dies with the component and the search fires again. The parent owns
+  // consumption instead: we tell it the moment we dispatch, and it drops the
+  // seed so the next mount receives null.
+  useEffect(() => {
+    if (!initialSearch?.query) return;
+    setSearchQuery(initialSearch.query);
+    runSearch(initialSearch.query, initialSearch.excludeRanges);
+    onSeedConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSearch?.query]);
 
   // ── Load saved clips + transcript status on mount ─────────────────
   useEffect(() => {
@@ -302,8 +528,8 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       // Load both transcript status and saved editorial clips in parallel
       try {
         const [transcriptRes, clipsRes] = await Promise.all([
-          fetch(`/api/video/${videoId}/transcript`, { credentials: "include" }),
-          fetch(`/api/scenes/${videoId}/editorial-clips`, { credentials: "include" }),
+          fetchWithTimeout(`/api/video/${videoId}/transcript`, { credentials: "include" }),
+          fetchWithTimeout(`/api/scenes/${videoId}/editorial-clips`, { credentials: "include" }),
         ]);
 
         if (cancelled) return;
@@ -351,7 +577,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
     setIsLoadingTranscript(true);
     setTranscriptStatus({ status: "processing" });
     try {
-      const res = await fetch(`/api/video/${videoId}/transcribe`, {
+      const res = await fetchWithTimeout(`/api/video/${videoId}/transcribe`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -362,7 +588,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         toast({ title: "Transcription started", description: "Processing audio with Deepgram..." });
         // Start polling
         const pollTranscript = async () => {
-          const checkRes = await fetch(`/api/video/${videoId}/transcript`, { credentials: "include" });
+          const checkRes = await fetchWithTimeout(`/api/video/${videoId}/transcript`, { credentials: "include" });
           if (checkRes.ok) {
             const checkData = await checkRes.json();
             if (checkData.status === "completed") {
@@ -399,17 +625,45 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const handleAnalyze = async () => {
     setIsLoadingAnalysis(true);
     try {
-      const res = await fetch(`/api/scenes/${videoId}/editorial-analysis`, {
+      // The analysis runs off the request now (202 + job). The auto-pipeline
+      // banner and its poll track it, and the clip list reloads with rows
+      // that have ids when it settles.
+      const res = await fetchWithTimeout(`/api/scenes/${videoId}/editorial-analysis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ maxClips: 10 }),
-      });
-      const data = await res.json();
-      if (res.ok && data.rankedClips) {
+      }, 60_000);
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        toast({ title: "Already analyzing", description: data.error || "Give it a moment — results will appear when it finishes." });
+        setPollNonce((n) => n + 1); // track the run that IS going
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || "Analysis failed to start");
+      if (res.status === 202 || data.pending) {
+        toast({
+          title: "Finding viral clips",
+          description: "Claude is reading the transcript — this takes a minute or two. Clips appear here as soon as it finishes.",
+        });
+        setAutoStatus((prev) => ({
+          status: "analyzing",
+          error: null,
+          totalClips: prev?.totalClips ?? 0,
+          renderedClips: prev?.renderedClips ?? 0,
+          failedClips: prev?.failedClips ?? 0,
+          pendingClips: prev?.pendingClips ?? 0,
+          renderingClips: prev?.renderingClips ?? 0,
+          completedAt: null,
+          updatedAt: new Date().toISOString(),
+        }));
+        setPollNonce((n) => n + 1);
+        return;
+      }
+      // Legacy synchronous shape.
+      if (data.rankedClips) {
         setClips(data.rankedClips);
         setAnalysisComplete(true);
-        // Clips are now saved to the DB by the server — no sessionStorage needed
         toast({
           title: `Found ${data.rankedClips.length} viral clips`,
           description: `${data.moments?.length || 0} moments analyzed`,
@@ -419,8 +673,9 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       }
     } catch (err: any) {
       toast({ title: "Analysis failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsLoadingAnalysis(false);
     }
-    setIsLoadingAnalysis(false);
   };
 
   // ── Sort & Filter ────────────────────────────────────────────────
@@ -448,7 +703,24 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const inFlight = autoStatus && ["pending", "transcribing", "analyzing", "rendering"].includes(autoStatus.status);
   const autoFailed = autoStatus?.status === "failed";
   const hasUnrenderedClips = autoStatus && autoStatus.pendingClips > 0 && autoStatus.status === "none";
-  const showAutoBanner = inFlight || autoFailed || hasUnrenderedClips || (autoStatus?.status === "ready" && clips.length > 0);
+  // Stuck detection: in-flight but DB hasn't been touched in 5+ min — server probably restarted mid-render
+  const stuckMs = autoStatus?.updatedAt ? Date.now() - new Date(autoStatus.updatedAt).getTime() : 0;
+  const isStuck = Boolean(inFlight && stuckMs > 5 * 60 * 1000 && (autoStatus?.pendingClips ?? 0) > 0);
+  // Also offer resume if status is "ready" or "failed" but some clips never finished rendering
+  // Clips left unrendered on a settled video. Subtract the ones actively
+  // rendering (a lone re-render on a "ready" video) — offering Resume for
+  // those would start a second ffmpeg on the same clip. Failed clips count:
+  // Resume retries them.
+  const strandedClips = autoStatus
+    ? Math.max(0, autoStatus.pendingClips - (autoStatus.renderingClips ?? 0)) + (autoStatus.failedClips ?? 0)
+    : 0;
+  const hasOrphanedClips = Boolean(
+    autoStatus &&
+      (autoStatus.status === "ready" || autoStatus.status === "failed") &&
+      strandedClips > 0
+  );
+  const canResume = isStuck || hasOrphanedClips;
+  const showAutoBanner = inFlight || autoFailed || hasUnrenderedClips || canResume || (autoStatus?.status === "ready" && clips.length > 0);
 
   const stageLabel: Record<string, string> = {
     pending: "Queued…",
@@ -525,13 +797,13 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                 <p className="text-xs text-red-300 mt-1 line-clamp-2">{autoStatus.error}</p>
               )}
             </div>
-            {!isBrandMode && inFlight && (
+            {!isBrandMode && inFlight && !isStuck && (
               <Button
                 size="sm"
                 variant="ghost"
                 onClick={async () => {
                   try {
-                    await fetch(`/api/videos/${videoId}/editorial-cancel`, {
+                    await fetchWithTimeout(`/api/videos/${videoId}/editorial-cancel`, {
                       method: "POST",
                       credentials: "include",
                     });
@@ -542,6 +814,45 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
               >
                 <X className="w-3 h-3 mr-1" />
                 Cancel
+              </Button>
+            )}
+            {!isBrandMode && canResume && (
+              <Button
+                size="sm"
+                onClick={async () => {
+                  try {
+                    const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-resume`, {
+                      method: "POST",
+                      credentials: "include",
+                    });
+                    if (res.ok) {
+                      const data = await res.json();
+                      toast({
+                        title: "Resuming render",
+                        description: `Picking up ${data.toRender ?? "remaining"} unrendered clips. Already-rendered clips kept.`,
+                      });
+                      // Kick a fresh poll — and restart the polling loop, which
+                      // otherwise stays stopped after a settled run.
+                      const next = await fetchAutoStatus();
+                      if (next) setAutoStatus(next);
+                      setPollNonce(n => n + 1);
+                    } else {
+                      const err = await res.json().catch(() => ({}));
+                      toast({
+                        title: "Resume failed",
+                        description: err.error || "Could not resume render",
+                        variant: "destructive",
+                      });
+                    }
+                  } catch (e: any) {
+                    toast({ title: "Resume failed", description: e.message, variant: "destructive" });
+                  }
+                }}
+                className="bg-amber-600 hover:bg-amber-500 text-white text-xs"
+                data-testid="button-editorial-resume"
+              >
+                <RefreshCw className="w-3 h-3 mr-1" />
+                Resume {isStuck ? "(stuck)" : "Render"}
               </Button>
             )}
             {!isBrandMode && !inFlight && (
@@ -679,7 +990,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
               <Button
                 size="sm"
                 onClick={handleAnalyze}
-                disabled={isLoadingAnalysis}
+                disabled={isLoadingAnalysis || Boolean(inFlight) || isSearching}
                 className="bg-blue-600 hover:bg-blue-500 text-white text-xs"
               >
                 {isLoadingAnalysis ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Brain className="w-3 h-3 mr-1" />}
@@ -691,7 +1002,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                 size="sm"
                 variant="ghost"
                 onClick={handleAnalyze}
-                disabled={isLoadingAnalysis}
+                disabled={isLoadingAnalysis || Boolean(inFlight) || isSearching}
                 className="text-gray-400 hover:text-white text-xs"
               >
                 <RefreshCw className={`w-3 h-3 mr-1 ${isLoadingAnalysis ? "animate-spin" : ""}`} />
@@ -726,7 +1037,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         <div className="bg-gray-800/60 rounded-xl p-6 border border-gray-700/50 text-center">
           <Sparkles className="w-8 h-8 text-gray-600 mx-auto mb-3" />
           <p className="text-sm text-gray-400 font-medium">No viral clips available yet</p>
-          <p className="text-xs text-gray-500 mt-1">The creator hasn't generated editorial clips for this video yet.</p>
+          <p className="text-xs text-gray-500 mt-1">The creator hasn't generated story clips for this video yet.</p>
         </div>
       )}
 
@@ -794,13 +1105,70 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                   isExpanded={expandedClip === idx}
                   onToggleExpand={() => setExpandedClip(expandedClip === idx ? null : idx)}
                   onGenerate={onGenerateClip ? () => onGenerateClip(clip) : undefined}
+                  onCopilot={onSelectForCopilot ? () => onSelectForCopilot(clip) : undefined}
                   onBuy={onBuyPlacement ? () => onBuyPlacement(clip) : undefined}
                   onPlay={clip.exportPath ? () => setPlayingClip(clip) : undefined}
+                  onPreviewPlacement={(clip as any).id ? () => setPreviewClip(clip) : undefined}
+                  onScan={(clip as any).id ? () => scanClip((clip as any).id) : undefined}
+                  isScanning={(clip as any).id ? scanningClips.has((clip as any).id) : false}
+                  onOpenStudio={(clip as any).id ? () => setStudioClip(clip) : undefined}
+                  onPublish={(clip as any).id && onPublishClip ? () => onPublishClip(clip) : undefined}
+                  onRerenderAspect={(clip as any).id ? async (aspect) => {
+                    const res = await fetchWithTimeout(`/api/editorial-clips/${(clip as any).id}/rerender`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      credentials: "include",
+                      body: JSON.stringify({ aspect }),
+                    });
+                    if (res.ok) {
+                      toast({ title: `Re-rendering as ${aspect}`, description: "The clip will refresh here when the new cut is ready." });
+                      await refetchClips();
+                    } else {
+                      const err = await res.json().catch(() => ({}));
+                      toast({ title: "Re-render failed", description: err.error || "Try again", variant: "destructive" });
+                    }
+                  } : undefined}
                 />
               ))}
             </AnimatePresence>
           </div>
         </>
+      )}
+
+      {/* The editor: video at the centre, transcript as the edit surface */}
+      {studioClip && (studioClip as any).id && (
+        <ClipStudio
+          clip={studioClip as any}
+          videoId={videoId}
+          onClose={() => setStudioClip(null)}
+          onApply={async (payload) => {
+            const res = await fetchWithTimeout(`/api/editorial-clips/${(studioClip as any).id}/rerender`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify(payload),
+            });
+            if (res.ok) {
+              toast({ title: "Re-rendering your edit", description: "The clip refreshes here when the new cut is ready." });
+              await refetchClips();
+            } else {
+              const err = await res.json().catch(() => ({}));
+              toast({ title: "Re-render failed", description: err.error || "Try again", variant: "destructive" });
+            }
+          }}
+        />
+      )}
+
+      {/* Placement preview — source-space frames + product sprites */}
+      {previewClip && (previewClip as any).id && (
+        <ClipPlacementPreview
+          clipId={(previewClip as any).id}
+          videoId={videoId}
+          clipTitle={previewClip.suggestedTitle}
+          onClose={() => setPreviewClip(null)}
+          onScan={() => scanClip((previewClip as any).id)}
+          scanInFlight={scanningClips.has((previewClip as any).id) || !!(previewClip as any).scanInFlight}
+        />
       )}
 
       {/* No clips found */}
@@ -895,6 +1263,13 @@ function EditorialClipCard({
   onGenerate,
   onBuy,
   onPlay,
+  onCopilot,
+  onRerenderAspect,
+  onOpenStudio,
+  onPublish,
+  onPreviewPlacement,
+  onScan,
+  isScanning,
 }: {
   clip: RankedClip;
   rank: number;
@@ -904,12 +1279,59 @@ function EditorialClipCard({
   onGenerate?: () => void;
   onBuy?: () => void;
   onPlay?: () => void;
+  onCopilot?: () => void;
+  onRerenderAspect?: (aspect: "9:16" | "16:9") => void;
+  onOpenStudio?: () => void;
+  /** Open the Distribution hub focused on this clip. */
+  onPublish?: () => void;
+  onPreviewPlacement?: () => void;
+  onScan?: () => void;
+  isScanning?: boolean;
 }) {
+
   const viralPct = Math.round(clip.finalScore * 100);
   const tierBadge = getTierBadge(clip.monetizationTier);
   const isRendered = clip.renderStatus === "rendered" && !!clip.exportPath;
   const isRendering = clip.renderStatus === "rendering" || clip.renderStatus === "pending";
   const renderFailed = clip.renderStatus === "failed";
+
+  /**
+   * Exactly one solid button per row, derived from state.
+   *
+   * The row used to render up to eleven controls at identical weight, so it
+   * never said what to do next — the emptiness around them was the space left
+   * over when nothing was allowed to be bigger than anything else. What the
+   * creator should do is entirely determined by where the clip is: an unrendered
+   * clip needs a render, a failed one needs a retry, a finished one needs
+   * publishing. So derive it rather than showing every possibility at once.
+   *
+   * A clip mid-render gets NO primary at all. There is nothing useful to press
+   * while the job runs, and offering a bright button next to a progress bar
+   * invites a second click on work already in flight.
+   */
+  /** Tier 2, hoisted: the segmented group needs these three times over —
+   *  to decide whether it exists at all, per button, and for the divider. */
+  const showEdit = !!onOpenStudio && mode !== "brand" && !!(clip as any).id;
+  const showCopilot = mode === "remix" && !!onCopilot;
+
+  const primaryAction: { label: string; icon: typeof Send; onClick: () => void; className: string } | null =
+    mode === "brand"
+      ? (onBuy && clip.monetizationTier !== "organic"
+          ? { label: "Request placement", icon: DollarSign, onClick: onBuy, className: "bg-green-600 hover:bg-green-500 border-green-500" }
+          : null)
+      : isRendering
+        ? null
+        : isRendered && onPublish && (clip as any).id
+          ? { label: "Publish", icon: Send, onClick: onPublish, className: "bg-emerald-600 hover:bg-emerald-500 border-emerald-500" }
+          // Rendering stays gated on remix mode. The parent passes onGenerate
+          // whenever it has a handler at all, so testing the prop alone would
+          // put a Generate button in creator mode where the old row
+          // deliberately showed none.
+          : renderFailed && onGenerate && mode === "remix"
+            ? { label: "Retry render", icon: RefreshCw, onClick: onGenerate, className: "bg-purple-600 hover:bg-purple-500 border-purple-500" }
+            : onGenerate && mode === "remix"
+              ? { label: "Generate", icon: Play, onClick: onGenerate, className: "bg-purple-600 hover:bg-purple-500 border-purple-500" }
+              : null;
 
   return (
     <motion.div
@@ -920,141 +1342,289 @@ function EditorialClipCard({
         isRendered ? "border-emerald-500/30" : "border-gray-700/50"
       } overflow-hidden`}
     >
-      {/* Main Row */}
-      <div className="p-4">
-        <div className="flex items-start gap-3">
-          {/* Thumbnail or Rank Badge */}
-          {clip.thumbnailPath && isRendered ? (
-            <button
-              onClick={onPlay}
-              className="relative w-16 h-20 rounded-lg overflow-hidden flex-shrink-0 group"
-              aria-label="Play clip"
-            >
+      {/* Main Row.
+          Redesigned from three hierarchies explored in Claude Design; this is
+          option 1a, "Split — identity left, action ladder right".
+
+          The problem it solves: eleven controls at identical weight, so the row
+          never said what to do next, and the wide empty gaps were what was left
+          over when nothing was allowed to dominate. Now there are three tiers —
+          one derived primary CTA, Edit/Copilot as a segmented pair, and the
+          monetisation controls demoted to small unfilled chips — and the
+          thumbnail absorbs the space by becoming the play target rather than
+          sitting next to a Play button. */}
+      <div className="p-3.5">
+        <div className="flex items-start gap-3 sm:gap-4">
+          {/* Preview. Not a button beside the row — the row's image IS the
+              play control, which removes one control from the bar entirely.
+              9:16 because that is what these clips actually are. */}
+          <button
+            type="button"
+            onClick={isRendered ? onPlay : undefined}
+            disabled={!isRendered || !onPlay}
+            aria-label={isRendered ? `Play ${clip.suggestedTitle}` : "Not rendered yet"}
+            className={`relative flex-none w-16 h-24 sm:w-[88px] sm:h-[132px] rounded-lg overflow-hidden border group ${
+              renderFailed
+                ? "border-red-500/40 bg-red-500/5"
+                : isRendered
+                  ? "border-white/10 cursor-pointer"
+                  : "border-gray-700/60 bg-gray-800/40 cursor-default"
+            }`}
+            data-testid={`thumb-${(clip as any).id ?? rank}`}
+          >
+            {clip.thumbnailPath && isRendered && (
               <img
                 src={clip.thumbnailPath}
-                alt={clip.suggestedTitle}
+                alt=""
                 className="w-full h-full object-cover"
                 loading="lazy"
               />
-              <div className="absolute inset-0 bg-black/30 group-hover:bg-black/50 flex items-center justify-center transition-colors">
-                <Play className="w-5 h-5 text-white fill-white" />
-              </div>
-              <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-white text-[10px] px-1 py-0.5 text-center font-semibold">
-                #{rank}
-              </div>
-            </button>
-          ) : (
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 border ${getViralBg(clip.finalScore)}`}>
-              <span className={`text-sm font-bold ${getViralColor(clip.finalScore)}`}>{rank}</span>
-            </div>
-          )}
+            )}
 
-          {/* Title + Meta */}
-          <div className="flex-1 min-w-0">
-            <h4 className="text-sm font-semibold text-white truncate">{clip.suggestedTitle}</h4>
-            <div className="flex items-center gap-2 mt-1 flex-wrap">
-              <span className="text-xs text-gray-400">
-                <Clock className="w-3 h-3 inline mr-0.5" />
-                {formatTime(clip.clipStart)} - {formatTime(clip.clipEnd)}
-              </span>
-              <span className="text-xs text-gray-500">({clip.duration.toFixed(0)}s)</span>
-              <Badge className={`${tierBadge.className} text-xs border`}>
-                {tierBadge.label}
-              </Badge>
-              {clip.surfaces.length > 0 && (
-                <span className="text-xs text-gray-500">
-                  {clip.surfaces.length} surface{clip.surfaces.length !== 1 ? "s" : ""}
+            <span className="absolute top-1 left-1 text-[10px] font-semibold font-mono text-white bg-black/65 px-1.5 py-0.5 rounded">
+              #{rank}
+            </span>
+
+            {isRendered && (
+              <>
+                <span className="absolute bottom-1 right-1 text-[10px] font-medium font-mono text-white bg-black/65 px-1.5 py-0.5 rounded">
+                  {clip.duration.toFixed(0)}s
                 </span>
+                <span className="absolute inset-0 flex items-center justify-center bg-black/25 group-hover:bg-black/40 transition-colors">
+                  <span className="w-9 h-9 rounded-full bg-emerald-600/90 flex items-center justify-center shadow-lg">
+                    <Play className="w-3.5 h-3.5 text-white fill-white ml-0.5" />
+                  </span>
+                </span>
+              </>
+            )}
+            {isRendering && (
+              <span className="absolute inset-0 flex items-center justify-center">
+                <Loader2 className="w-6 h-6 text-purple-400 animate-spin" />
+              </span>
+            )}
+            {renderFailed && (
+              <span className="absolute inset-0 flex items-center justify-center">
+                <AlertCircle className="w-6 h-6 text-red-400" />
+              </span>
+            )}
+            {!isRendered && !isRendering && !renderFailed && (
+              <span className="absolute inset-0 flex items-center justify-center px-1 text-center text-[9px] leading-tight text-gray-500 uppercase tracking-wide">
+                No render yet
+              </span>
+            )}
+          </button>
+
+          {/* Identity and actions. Stacks below 640px so the action column
+              wraps under the metadata instead of squeezing the title. */}
+          <div className="flex-1 min-w-0 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+            <div className="min-w-0 flex-1 flex flex-col gap-1.5">
+              {/* Identity line. suggestedTitle is the row's name — it already
+                  existed on every clip and was never rendered, which is why
+                  the list read as "Clip #130 · 1460–1520s" and was impossible
+                  to scan. */}
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="flex items-baseline gap-1 flex-none">
+                  <span className={`text-2xl font-bold font-mono leading-none ${isRendered ? "text-emerald-400" : getViralColor(clip.finalScore)}`}>
+                    {viralPct}
+                  </span>
+                  <span className="text-[9px] font-semibold font-mono uppercase tracking-wider text-gray-500">viral</span>
+                </span>
+                <span className="w-px h-5 bg-white/10 flex-none" />
+                <h4 className="text-[15px] font-bold text-white truncate min-w-0" title={clip.suggestedTitle}>
+                  {clip.suggestedTitle}
+                </h4>
+              </div>
+
+              {/* Meta line */}
+              <div className="flex items-center gap-2 flex-wrap text-xs">
+                <span className="font-mono text-gray-400">
+                  {Array.isArray((clip as any).segments) && (clip as any).segments.length > 1
+                    ? `Assembled · ${(clip as any).segments.length} beats`
+                    : `${formatTime(clip.clipStart)}–${formatTime(clip.clipEnd)}`}
+                </span>
+                <span className="text-gray-600">·</span>
+                <span className="font-mono text-gray-400">{clip.duration.toFixed(0)}s</span>
+                <span className="text-gray-600">·</span>
+                <Badge className={`${tierBadge.className} text-[10px] border py-0`}>{tierBadge.label}</Badge>
+                {clip.surfaces.length > 0 && (
+                  <span className="text-gray-500">
+                    {clip.surfaces.length} surface{clip.surfaces.length !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
+
+              {/* Render state as content, not as a badge in the action bar.
+                  A failed render carries renderError, which nothing displayed
+                  anywhere — the creator saw "Render failed" and had no idea
+                  why or what to change. */}
+              {isRendering && (
+                <div className="flex items-center gap-2 mt-0.5">
+                  <div className="h-1 flex-1 max-w-[220px] rounded-full bg-gray-700/60 overflow-hidden">
+                    <div className="h-full w-1/3 bg-purple-500 animate-pulse rounded-full" />
+                  </div>
+                  <span className="text-[11px] font-mono text-purple-300">
+                    Rendering {(clip as any).aspectRatio || "9:16"}
+                  </span>
+                </div>
+              )}
+              {renderFailed && (
+                <div className="mt-0.5 rounded-lg border border-red-500/30 bg-red-500/10 px-2.5 py-1.5">
+                  <span className="text-[10px] font-semibold font-mono uppercase tracking-wide text-red-400">Render failed</span>
+                  {clip.renderError && (
+                    <p className="text-[11px] text-red-200/80 leading-snug mt-0.5">{clip.renderError}</p>
+                  )}
+                </div>
+              )}
+
+              {/* Tags. Three plus an overflow count — four wrapped to a second
+                  line on the narrower title column. */}
+              {clip.topicTags.length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                  {clip.topicTags.slice(0, 3).map((tag) => (
+                    <span key={tag} className="text-[11px] text-gray-400 bg-white/5 px-2 py-0.5 rounded">
+                      {tag}
+                    </span>
+                  ))}
+                  {clip.topicTags.length > 3 && (
+                    <span className="text-[11px] text-gray-500">+{clip.topicTags.length - 3}</span>
+                  )}
+                </div>
               )}
             </div>
 
-            {/* Topic Tags */}
-            {clip.topicTags.length > 0 && (
-              <div className="flex items-center gap-1 mt-2 flex-wrap">
-                {clip.topicTags.slice(0, 4).map((tag) => (
-                  <span
-                    key={tag}
-                    className="text-xs bg-gray-700/50 text-gray-400 px-2 py-0.5 rounded-full"
+            {/* Action ladder */}
+            <div className="flex-none flex flex-col gap-2 sm:items-end">
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Tier 2: Edit and Copilot read as siblings of each other and
+                    subordinate to the primary, so they share one bordered
+                    group rather than floating as two more peers. */}
+                {(showEdit || showCopilot) && (
+                  <div className="flex items-stretch border border-gray-700 rounded-lg overflow-hidden">
+                    {showEdit && onOpenStudio && (
+                      <button
+                        type="button"
+                        onClick={onOpenStudio}
+                        title="Open the editor: transcript, captions, b-roll, audio, motion"
+                        className="px-3 py-1.5 text-xs font-semibold text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                        data-testid={`button-edit-${(clip as any).id ?? rank}`}
+                      >
+                        <SlidersHorizontal className="w-3 h-3 inline mr-1.5 -mt-px" />
+                        Edit
+                      </button>
+                    )}
+                    {showEdit && showCopilot && (
+                      <span className="w-px bg-gray-700" />
+                    )}
+                    {showCopilot && onCopilot && (
+                      <button
+                        type="button"
+                        onClick={onCopilot}
+                        title="Make this clip the AI copilot's target"
+                        className="px-3 py-1.5 text-xs font-semibold text-violet-300 hover:bg-violet-500/10 hover:text-violet-200 transition-colors"
+                        data-testid={`button-copilot-${(clip as any).id ?? rank}`}
+                      >
+                        <Sparkles className="w-3 h-3 inline mr-1.5 -mt-px" />
+                        Copilot
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Tier 1: the one solid button. */}
+                {primaryAction && (
+                  <Button
+                    size="sm"
+                    onClick={primaryAction.onClick}
+                    className={`${primaryAction.className} text-white text-xs font-bold border`}
+                    data-testid={`button-primary-${(clip as any).id ?? rank}`}
                   >
-                    {tag}
-                  </span>
-                ))}
-                {clip.topicTags.length > 4 && (
-                  <span className="text-xs text-gray-500">+{clip.topicTags.length - 4}</span>
+                    <primaryAction.icon className="w-3.5 h-3.5 mr-1.5" />
+                    {primaryAction.label}
+                  </Button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={onToggleExpand}
+                  aria-label={isExpanded ? "Hide score breakdown" : "Show score breakdown"}
+                  className="w-7 h-7 flex items-center justify-center rounded-md text-gray-500 hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+              </div>
+
+              {/* Tier 3: aspect, placement, scan. Small and unfilled — real
+                  controls, but never competing with the primary. */}
+              <div className="flex items-center gap-2 flex-wrap sm:justify-end">
+                {isRendered && onRerenderAspect && mode !== "brand" && (
+                  <div className="flex border border-gray-700 rounded-md overflow-hidden" data-testid={`aspect-picker-${(clip as any).id ?? rank}`}>
+                    {(["9:16", "16:9"] as const).map((aspect) => {
+                      const active = ((clip as any).aspectRatio || "9:16") === aspect;
+                      return (
+                        <button
+                          key={aspect}
+                          type="button"
+                          onClick={() => !active && onRerenderAspect(aspect)}
+                          title={active ? `Current output is ${aspect}` : `Re-render as ${aspect}`}
+                          className={`px-2 py-0.5 text-[11px] font-semibold font-mono transition-colors ${
+                            active
+                              ? "bg-purple-500/20 text-purple-300 cursor-default"
+                              : "text-gray-500 hover:text-gray-200 hover:bg-white/5"
+                          }`}
+                        >
+                          {aspect}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {onPreviewPlacement && (clip as any).id && (
+                  <button
+                    type="button"
+                    onClick={onPreviewPlacement}
+                    title="Where a brand's product sits in this clip"
+                    className="flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-emerald-500/30 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+                    data-testid={`button-preview-placement-${(clip as any).id ?? rank}`}
+                  >
+                    <PackageOpen className="w-3 h-3" />
+                    Placement
+                    {typeof (clip as any).surfaceGroupCount === "number" && (clip as any).surfaceGroupCount > 0 && (
+                      <span className="font-mono text-gray-500">{(clip as any).surfaceGroupCount}</span>
+                    )}
+                  </button>
+                )}
+
+                {onScan && mode !== "brand" && (clip as any).id && (
+                  (isScanning || (clip as any).scanInFlight) ? (
+                    <span className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] text-purple-300" title="Scanning for placement surfaces">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Scanning…
+                    </span>
+                  ) : ((clip as any).surfaceCount ?? 0) === 0 ? (
+                    <button
+                      type="button"
+                      onClick={onScan}
+                      title={(clip as any).videoScanned === false
+                        ? "Source video was never scanned — no placement inventory exists yet"
+                        : "Nothing found in this range — run a denser scan"}
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-amber-500/30 text-[11px] font-semibold text-amber-300 hover:bg-amber-500/10 transition-colors"
+                      data-testid={`button-scan-${(clip as any).id ?? rank}`}
+                    >
+                      <ScanSearch className="w-3 h-3" />
+                      {(clip as any).videoScanned === false ? "Scan video" : "Scan range"}
+                    </button>
+                  ) : null
+                )}
+
+                {isRendering && (
+                  <span className="text-[11px] text-gray-600">actions unlock when the file lands</span>
                 )}
               </div>
-            )}
-          </div>
-
-          {/* Viral Score + Actions */}
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {/* Viral Score Circle */}
-            <div className="text-center">
-              <div className={`text-lg font-bold ${getViralColor(clip.finalScore)}`}>
-                {viralPct}
-              </div>
-              <div className="text-xs text-gray-500">viral</div>
             </div>
-
-            {/* Render status indicator */}
-            {isRendering && (
-              <div className="flex items-center gap-1 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-1 rounded-lg">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span>Rendering</span>
-              </div>
-            )}
-            {renderFailed && (
-              <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 px-2 py-1 rounded-lg">
-                Render failed
-              </div>
-            )}
-
-            {/* Action Buttons */}
-            {isRendered && onPlay && (
-              <Button
-                size="sm"
-                onClick={onPlay}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs"
-              >
-                <Play className="w-3 h-3 mr-1 fill-white" />
-                Play
-              </Button>
-            )}
-            {mode === "remix" && onGenerate && (
-              <Button
-                size="sm"
-                onClick={onGenerate}
-                variant={isRendered ? "ghost" : "default"}
-                className={isRendered ? "text-gray-400 hover:text-white text-xs" : "bg-purple-600 hover:bg-purple-500 text-white text-xs"}
-              >
-                <Play className="w-3 h-3 mr-1" />
-                Generate
-              </Button>
-            )}
-            {mode === "brand" && onBuy && clip.monetizationTier !== "organic" && (
-              <Button
-                size="sm"
-                onClick={onBuy}
-                className="bg-green-600 hover:bg-green-500 text-white text-xs"
-              >
-                <DollarSign className="w-3 h-3 mr-1" />
-                Buy Placement
-              </Button>
-            )}
-
-            {/* Expand */}
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onToggleExpand}
-              className="text-gray-400 hover:text-white"
-            >
-              {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </Button>
           </div>
         </div>
       </div>
-
       {/* Expanded Details */}
       <AnimatePresence>
         {isExpanded && (
@@ -1127,13 +1697,16 @@ function SearchResultCard({
   const handleAdd = async () => {
     setIsAdding(true);
     try {
-      const res = await fetch(`/api/videos/${videoId}/editorial-clip/render`, {
+      const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-clip/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
           clipStart: clip.clipStart,
           clipEnd: clip.clipEnd,
+          // Assembled search results carry beats — without them the server
+          // renders the whole contiguous envelope including the tangent.
+          segments: (clip as any).segments,
           suggestedTitle: clip.suggestedTitle,
           topicTags: clip.topicTags,
           reasoning: clip.reasoning,
@@ -1164,7 +1737,9 @@ function SearchResultCard({
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
           <span className="text-xs text-gray-400">
             <Clock className="w-3 h-3 inline mr-0.5" />
-            {formatTime(clip.clipStart)} - {formatTime(clip.clipEnd)}
+            {Array.isArray((clip as any).segments) && (clip as any).segments.length > 1
+              ? `Assembled · ${(clip as any).segments.length} beats`
+              : `${formatTime(clip.clipStart)} - ${formatTime(clip.clipEnd)}`}
           </span>
           <span className="text-xs text-gray-500">({clip.duration.toFixed(0)}s)</span>
           <span className={`text-xs ${getViralColor(clip.finalScore)}`}>{viralPct}% viral</span>

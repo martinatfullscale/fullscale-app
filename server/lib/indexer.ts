@@ -1,5 +1,6 @@
 import { storage } from "../storage";
 import type { InsertVideoIndex, YoutubeConnection } from "@shared/schema";
+import { categorizeVideos } from "./ai/categorize";
 
 const YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3";
 
@@ -250,9 +251,20 @@ export async function runIndexerForUser(
     const cutoffDate = new Date();
     cutoffDate.setMonth(cutoffDate.getMonth() - (opts.maxAgeMonths || 24));
     
-    const videosToIndex: InsertVideoIndex[] = [];
+    // Pre-filter and collect candidates first so we can batch-categorize
+    // them all in a single Claude call (~3 sec for 50 videos vs 50× sequential).
+    type IndexCandidate = {
+      videoId: string;
+      title: string;
+      description: string;
+      viewCount: number;
+      publishedAt: Date;
+      thumbnail: string | null;
+      duration: string | null;
+    };
+    const candidates: IndexCandidate[] = [];
     let filteredCount = 0;
-    
+
     for (const item of playlistItems) {
       const videoId = item.contentDetails.videoId;
       const title = item.snippet.title;
@@ -260,45 +272,65 @@ export async function runIndexerForUser(
       const stats = statsMap.get(videoId);
       const publishedAt = new Date(item.snippet.publishedAt);
       const viewCount = parseInt(stats?.statistics?.viewCount || "0", 10);
-      
+
       console.log(`[Indexer] Video: "${title}" | Views: ${viewCount} | Published: ${publishedAt.toISOString()}`);
-      
+
       if (opts.minViews && opts.minViews > 0 && viewCount < opts.minViews) {
         console.log(`[Indexer]   -> Filtered: views (${viewCount}) below minimum (${opts.minViews})`);
         filteredCount++;
         continue;
       }
-      
+
       if (opts.maxAgeMonths && opts.maxAgeMonths < 120 && publishedAt < cutoffDate) {
         console.log(`[Indexer]   -> Filtered: too old (published before ${cutoffDate.toISOString()})`);
         filteredCount++;
         continue;
       }
-      const evergreenStatus = isEvergreen(title, description);
-      const category = detectCategory(title, description);
-      const priorityScore = calculatePriorityScore(viewCount, publishedAt, evergreenStatus);
-      
-      const thumbnail = 
+
+      const thumbnail =
         item.snippet.thumbnails?.high?.url ||
         item.snippet.thumbnails?.medium?.url ||
         item.snippet.thumbnails?.default?.url ||
         null;
-      
-      videosToIndex.push({
-        userId,
-        youtubeId: videoId,
+
+      candidates.push({
+        videoId,
         title,
-        description: description.substring(0, 500),
+        description,
         viewCount,
-        thumbnailUrl: thumbnail,
-        status: "Pending Scan",
-        priorityScore,
         publishedAt,
-        category,
-        isEvergreen: evergreenStatus,
+        thumbnail,
         duration: stats?.contentDetails?.duration || null,
       });
     }
+
+    // AI categorization replaces the older keyword-based detectCategory().
+    // The AI categorizer uses the same 16-category, 27-subcategory taxonomy
+    // as the UploadModal — this is the same path IG/FB imports go through,
+    // so all sources land with consistent category data.
+    const categorizations = await categorizeVideos(
+      candidates.map(c => ({ title: c.title, description: c.description }))
+    );
+
+    const videosToIndex: InsertVideoIndex[] = candidates.map((c, i) => {
+      const cat = categorizations[i];
+      const priorityScore = calculatePriorityScore(c.viewCount, c.publishedAt, cat.isEvergreen);
+      return {
+        userId,
+        youtubeId: c.videoId,
+        title: c.title,
+        description: c.description.substring(0, 500),
+        viewCount: c.viewCount,
+        thumbnailUrl: c.thumbnail,
+        status: "Pending Scan",
+        priorityScore,
+        publishedAt: c.publishedAt,
+        category: cat.category,
+        subcategory: cat.subcategory,
+        isEvergreen: cat.isEvergreen,
+        duration: c.duration,
+      };
+    });
     
     console.log(`[Indexer] ===== SUMMARY =====`);
     console.log(`[Indexer] YouTube API returned: ${allPlaylistItems.length} total videos`);

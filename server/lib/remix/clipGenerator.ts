@@ -13,6 +13,7 @@
  */
 
 import { spawn } from "child_process";
+import { buildAssSubtitles, escapeAssFilterPath } from "./captionStyler";
 import * as fs from "fs";
 import * as path from "path";
 import sharp from "sharp";
@@ -20,6 +21,8 @@ import { storage } from "../../storage";
 import type { ClipCandidate, PlatformConfig, PLATFORM_CONFIGS } from "./clipDetector";
 import type { CameraMotionData, CumulativeTransform } from "./motionTracker";
 import { detectFacesInClip, computeCropTrajectory, buildCropFilterExpr, getVideoSize } from "./faceTracker";
+import type { CropTrajectory } from "./faceTracker";
+import { withRenderSlot } from "./renderQueue";
 
 export interface ClipGeneratorInput {
   /** Source video path */
@@ -34,6 +37,8 @@ export interface ClipGeneratorInput {
   placements: ClipPlacement[];
   /** Enable captions overlay */
   captionsEnabled: boolean;
+  /** Caption visual style (ASS karaoke styling); defaults to "highlight" */
+  captionStyle?: string;
   /** Caption data if available */
   captionSegments?: CaptionSegment[];
   /** Output directory */
@@ -75,6 +80,10 @@ export interface CaptionSegment {
   text: string;
   startTime: number; // relative to clip start
   endTime: number;   // relative to clip start
+  /** Word-level timing (clip-relative) — powers karaoke/word-highlight
+   *  styling. Absent for AI-generated (non-transcript) captions, which
+   *  degrade to plain per-segment display. */
+  words?: Array<{ word: string; start: number; end: number }>;
 }
 
 export interface ClipGeneratorOutput {
@@ -95,13 +104,27 @@ const CLIP_CONFIG = {
   PRESET: "medium",  // Better compression for shorter clips
   AUDIO_BITRATE: "128k",
   THUMBNAIL_WIDTH: 360,
-  FFMPEG_TIMEOUT_MS: 300000, // 5 minutes max
+  // Flat 5 minutes was a silent clip-killer: a 60s 1080x1920 CRF-20 encode with
+  // an ASS burn-in, running one-at-a-time through the render queue, does not
+  // reliably finish inside it on a shared box — and the ASS→drawtext retry
+  // deliberately re-throws on timeout, so the clip was simply lost. Scale the
+  // budget with clip length and keep the flat value as the floor.
+  FFMPEG_TIMEOUT_MS: 300000, // 5 minutes — floor, see ffmpegTimeoutForClip()
 };
 
 /**
  * Generate a single clip from a source video.
+ * Gated by the global render queue — frame extraction, face detection, and the
+ * x264 encode are all CPU-heavy, so only MAX_CONCURRENT_RENDERS run at once.
  */
-export async function generateClip(input: ClipGeneratorInput): Promise<ClipGeneratorOutput> {
+export function generateClip(input: ClipGeneratorInput): Promise<ClipGeneratorOutput> {
+  return withRenderSlot(
+    `generateClip(job ${input.jobId}, video ${input.videoId})`,
+    () => generateClipUngated(input),
+  );
+}
+
+async function generateClipUngated(input: ClipGeneratorInput): Promise<ClipGeneratorOutput> {
   const {
     videoPath, videoId, clip, platformConfig, placements,
     captionsEnabled, captionSegments, outputDir, jobId
@@ -122,7 +145,7 @@ export async function generateClip(input: ClipGeneratorInput): Promise<ClipGener
       await generateWithPlacements(input, clipPath);
     } else {
       // Simple path: direct FFmpeg clip extraction + reformat
-      await generateCleanClip(videoPath, clip, platformConfig, captionsEnabled, captionSegments, clipPath, input.faceTracking);
+      await generateCleanClip(videoPath, clip, platformConfig, captionsEnabled, captionSegments, clipPath, input.faceTracking, input.captionStyle);
     }
 
     // Verify output exists
@@ -164,7 +187,8 @@ async function generateCleanClip(
   captionsEnabled: boolean,
   captionSegments: CaptionSegment[] | undefined,
   outputPath: string,
-  faceTracking?: { enabled: boolean; sampleIntervalSec?: number }
+  faceTracking?: { enabled: boolean; sampleIntervalSec?: number },
+  captionStyle?: string,
 ): Promise<void> {
   const args = [
     "-nostdin", "-y",
@@ -199,40 +223,86 @@ async function generateCleanClip(
     filters.push(`pad=${config.targetWidth}:${config.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`);
   }
 
-  // Burn-in captions if enabled and segments provided
+  // Burn-in captions if enabled and segments provided. Preferred path is
+  // ASS/libass (word-timed karaoke styling); the legacy drawtext filter is
+  // the fallback so a styling failure never costs the clip.
+  const baseFilters = [...filters];
+  let assPath: string | null = null;
   if (captionsEnabled && captionSegments && captionSegments.length > 0) {
-    const subtitleFilter = buildCaptionFilter(captionSegments, config);
-    if (subtitleFilter) filters.push(subtitleFilter);
+    const assContent = buildAssSubtitles(captionSegments, captionStyle ?? "highlight", config);
+    if (assContent) {
+      assPath = `${outputPath}.captions.ass`;
+      try {
+        fs.writeFileSync(assPath, assContent);
+        filters.push(`ass='${escapeAssFilterPath(assPath)}'`);
+      } catch {
+        assPath = null;
+      }
+    }
+    if (!assPath) {
+      const subtitleFilter = buildCaptionFilter(captionSegments, config);
+      if (subtitleFilter) filters.push(subtitleFilter);
+    }
   }
 
-  args.push("-vf", filters.join(","));
-  args.push("-r", config.targetFps.toString());
-  args.push("-c:v", "libx264", "-pix_fmt", "yuv420p");
-  args.push("-preset", CLIP_CONFIG.PRESET);
-  args.push("-crf", CLIP_CONFIG.CRF.toString());
-  args.push("-c:a", "aac", "-b:a", CLIP_CONFIG.AUDIO_BITRATE);
-  args.push("-shortest");
-  args.push("-movflags", "+faststart");
-  args.push(outputPath);
+  const encodeArgs = (vf: string[]): string[] => [
+    ...args,
+    "-vf", vf.join(","),
+    "-r", config.targetFps.toString(),
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "-preset", CLIP_CONFIG.PRESET,
+    "-crf", CLIP_CONFIG.CRF.toString(),
+    "-c:a", "aac", "-b:a", CLIP_CONFIG.AUDIO_BITRATE,
+    "-shortest",
+    "-movflags", "+faststart",
+    outputPath,
+  ];
 
-  await runFFmpeg(args);
+  // Budget scales with clip length — a flat 5 minutes silently killed longer
+  // 1080x1920 encodes, and the ASS fallback below deliberately re-throws on
+  // timeout, so the clip was lost rather than retried.
+  const encodeTimeoutMs = ffmpegTimeoutForClip(clip.duration);
+
+  try {
+    await runFFmpeg(encodeArgs(filters), encodeTimeoutMs);
+  } catch (err) {
+    if (!assPath) throw err;
+    if (/timeout|timed out/i.test(String((err as any)?.message || err))) throw err;
+    // ASS render failed (missing fonts / libass quirk) — retry with the
+    // legacy drawtext captions rather than shipping no clip.
+    console.warn(`[ClipGen] ASS caption render failed — retrying with drawtext fallback`);
+    const fallbackFilters = [...baseFilters];
+    const subtitleFilter = buildCaptionFilter(captionSegments!, config);
+    if (subtitleFilter) fallbackFilters.push(subtitleFilter);
+    await runFFmpeg(encodeArgs(fallbackFilters), encodeTimeoutMs);
+  } finally {
+    if (assPath) { try { fs.unlinkSync(assPath); } catch { /* ignore */ } }
+  }
+}
+
+/** A computed portrait reframe: the crop trajectory plus the source dimensions
+ * it is expressed in. Shared by the clean-clip filter path and the placement
+ * frame-composite path so both reframe identically. */
+interface ReframeData {
+  trajectory: CropTrajectory;
+  srcW: number;
+  srcH: number;
 }
 
 /**
- * Build a smart crop filter using face detection.
- * Returns a crop filter string, or null to fall back to center crop.
+ * Compute a crop trajectory for reframing a clip to the target aspect ratio.
+ * Runs face detection (with a hard timeout + fallback) when enabled and faces
+ * are found; otherwise returns a static center-crop trajectory (which still
+ * fills the target with no black bars). Returns null only on hard failure.
  */
-async function buildSmartCropFilter(
+async function detectCropTrajectory(
   videoPath: string,
   clip: ClipCandidate,
   config: PlatformConfig,
   faceTracking?: { enabled: boolean; sampleIntervalSec?: number }
-): Promise<string | null> {
+): Promise<ReframeData | null> {
   try {
-    // Get source video dimensions
     const srcSize = await getVideoSize(videoPath);
-
-    // Compute crop dimensions for target AR
     const targetAR = config.targetWidth / config.targetHeight;
     const cropW = Math.min(Math.round(srcSize.height * targetAR), srcSize.width);
     const cropH = srcSize.height;
@@ -275,19 +345,64 @@ async function buildSmartCropFilter(
           frames, srcSize.width, srcSize.height,
           config.targetWidth, config.targetHeight
         );
-        return buildCropFilterExpr(trajectory);
+        return { trajectory, srcW: srcSize.width, srcH: srcSize.height };
       }
 
       console.log("[ClipGenerator] No faces detected — using center crop");
     }
 
-    // Center crop fallback
+    // Static center-crop trajectory (fills the frame, no black bars)
     const centerX = Math.round((srcSize.width - cropW) / 2);
-    return `crop=${cropW}:${cropH}:${centerX}:0`;
+    return {
+      trajectory: { frames: [{ time: 0, cropX: centerX, cropY: 0 }], cropW, cropH },
+      srcW: srcSize.width,
+      srcH: srcSize.height,
+    };
   } catch (err: any) {
-    console.warn(`[ClipGenerator] Smart crop failed: ${err.message} — using center crop`);
+    console.warn(`[ClipGenerator] Crop trajectory failed: ${err.message}`);
     return null;
   }
+}
+
+/**
+ * Build a smart crop filter using face detection.
+ * Returns a crop filter string, or null to fall back to center crop.
+ */
+async function buildSmartCropFilter(
+  videoPath: string,
+  clip: ClipCandidate,
+  config: PlatformConfig,
+  faceTracking?: { enabled: boolean; sampleIntervalSec?: number }
+): Promise<string | null> {
+  const reframe = await detectCropTrajectory(videoPath, clip, config, faceTracking);
+  if (!reframe) return null;
+  const { trajectory } = reframe;
+  // A single static keyframe → a constant crop expression (same as the old
+  // center-crop fallback string). Multiple keyframes → a time-varying pan.
+  if (trajectory.frames.length <= 1) {
+    const f = trajectory.frames[0];
+    return `crop=${trajectory.cropW}:${trajectory.cropH}:${f ? f.cropX : 0}:0`;
+  }
+  return buildCropFilterExpr(trajectory);
+}
+
+/** Linearly interpolate the crop-X of a trajectory at a clip-relative time. */
+function cropXAtTime(trajectory: CropTrajectory, t: number): number {
+  const f = trajectory.frames;
+  if (f.length === 0) return 0;
+  if (f.length === 1 || t <= f[0].time) return f[0].cropX;
+  const last = f[f.length - 1];
+  if (t >= last.time) return last.cropX;
+  for (let i = 1; i < f.length; i++) {
+    if (t <= f[i].time) {
+      const a = f[i - 1];
+      const b = f[i];
+      const span = b.time - a.time;
+      const frac = span > 0 ? (t - a.time) / span : 0;
+      return Math.round(a.cropX + (b.cropX - a.cropX) * frac);
+    }
+  }
+  return last.cropX;
 }
 
 /**
@@ -304,6 +419,20 @@ async function generateWithPlacements(
 
   // Clear the keyframe stabilization cache for this new clip
   clearStabilizationCache();
+
+  // Portrait targets must be reframed (smart crop) before compositing — otherwise
+  // the source frame is letterboxed into 9:16 with black bars AND the product
+  // overlays (whose coordinates are normalized to the SOURCE frame) land in the
+  // wrong place. Compute the crop trajectory once, then crop + map coords per frame.
+  const [arW, arH] = platformConfig.aspectRatio.split(":").map(Number);
+  const isPortrait = arW / arH < 1;
+  let reframe: ReframeData | null = null;
+  if (isPortrait) {
+    reframe = await detectCropTrajectory(videoPath, clip, platformConfig, input.faceTracking);
+    if (reframe) {
+      console.log(`[ClipGenerator] Reframing ${placements.length} placement clip(s) to ${platformConfig.aspectRatio} (crop ${reframe.trajectory.cropW}x${reframe.trajectory.cropH})`);
+    }
+  }
 
   fs.mkdirSync(framesDir, { recursive: true });
   fs.mkdirSync(compositedDir, { recursive: true });
@@ -356,15 +485,49 @@ async function generateWithPlacements(
     const totalFrames = frames.length;
     const clipDuration = clip.duration;
 
+    // Read the ACTUAL first-frame dimensions. Two uses: (1) the crop trajectory
+    // was computed from ffprobe's coded dimensions, but extracted JPEGs have
+    // auto-rotation applied — on mismatch, sharp's .extract() would throw and
+    // abort the clip, so we fall back to letterboxing; (2) the letterbox
+    // fallback needs the real dims to map placement coords into the displayed
+    // image region instead of the full canvas (black bars).
+    let frameDims: { width: number; height: number } | null = null;
+    if (totalFrames > 0) {
+      try {
+        const meta = await sharp(path.join(framesDir, frames[0])).metadata();
+        if (meta.width && meta.height) frameDims = { width: meta.width, height: meta.height };
+      } catch (err: any) {
+        console.warn(`[ClipGenerator] Could not read frame metadata (${err.message})`);
+      }
+    }
+    if (reframe && (!frameDims || frameDims.width !== reframe.srcW || frameDims.height !== reframe.srcH)) {
+      console.warn(
+        `[ClipGenerator] Frame dims ${frameDims?.width}x${frameDims?.height} differ from probed ${reframe.srcW}x${reframe.srcH} ` +
+          `(rotation/anamorphic?) — disabling smart reframe for this clip, letterboxing instead`
+      );
+      reframe = null;
+    }
+
     for (let i = 0; i < totalFrames; i++) {
       const framePath = path.join(framesDir, frames[i]);
       const outputFrame = path.join(compositedDir, frames[i]);
       // Current time in seconds relative to clip start
       const currentTime = totalFrames > 1 ? (i / (totalFrames - 1)) * clipDuration : 0;
 
+      // Per-frame crop window for portrait reframing (null = letterbox fallback)
+      const reframeWindow = reframe
+        ? {
+            cropX: cropXAtTime(reframe.trajectory, currentTime),
+            cropW: reframe.trajectory.cropW,
+            cropH: reframe.trajectory.cropH,
+            srcW: reframe.srcW,
+            srcH: reframe.srcH,
+          }
+        : null;
+
       await compositeFrameWithPlacements(
         framePath, outputFrame, placements, currentTime, clipDuration, platformConfig,
-        i, cumulativeTransforms, motionRefPositions, motionData
+        i, cumulativeTransforms, motionRefPositions, motionData, reframeWindow, frameDims
       );
     }
 
@@ -415,17 +578,46 @@ async function compositeFrameWithPlacements(
   cumulativeTransforms?: CumulativeTransform[] | null,
   motionRefPositions?: Map<number, { x: number; y: number; width: number; height: number }> | null,
   cameraMotion?: CameraMotionData | null,
+  // Portrait reframe window in SOURCE pixels (null = letterbox the source frame)
+  reframeWindow?: { cropX: number; cropW: number; cropH: number; srcW: number; srcH: number } | null,
+  // Actual frame dimensions (for correct letterbox coordinate mapping)
+  frameDims?: { width: number; height: number } | null,
 ): Promise<void> {
   let pipeline = sharp(framePath);
 
-  // Resize for target platform
-  const [arW, arH] = config.aspectRatio.split(":").map(Number);
-  const targetAR = arW / arH;
+  // Letterbox geometry (contain fit): where the source image actually lands on
+  // the target canvas. Needed to map source-normalized placement coords when we
+  // are NOT smart-cropping — mapping them straight to canvas coords puts
+  // products on the black bars.
+  let letterbox: { offX: number; offY: number; dispW: number; dispH: number } | null = null;
 
-  pipeline = pipeline.resize(config.targetWidth, config.targetHeight, {
-    fit: "contain",
-    background: { r: 0, g: 0, b: 0, alpha: 1 },
-  });
+  if (reframeWindow) {
+    // Smart-crop the source frame to the target AR (no black bars), then scale.
+    const left = Math.max(0, Math.min(reframeWindow.srcW - reframeWindow.cropW, reframeWindow.cropX));
+    pipeline = pipeline
+      .extract({ left, top: 0, width: reframeWindow.cropW, height: reframeWindow.cropH })
+      .resize(config.targetWidth, config.targetHeight);
+  } else {
+    // No reframe (landscape, or reframe unavailable) — letterbox into target
+    pipeline = pipeline.resize(config.targetWidth, config.targetHeight, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 1 },
+    });
+    if (frameDims && frameDims.width > 0 && frameDims.height > 0) {
+      const scale = Math.min(
+        config.targetWidth / frameDims.width,
+        config.targetHeight / frameDims.height,
+      );
+      const dispW = frameDims.width * scale;
+      const dispH = frameDims.height * scale;
+      letterbox = {
+        offX: (config.targetWidth - dispW) / 2,
+        offY: (config.targetHeight - dispH) / 2,
+        dispW,
+        dispH,
+      };
+    }
+  }
 
   // Composite each placement
   const composites: sharp.OverlayOptions[] = [];
@@ -463,11 +655,34 @@ async function compositeFrameWithPlacements(
         bbox = interpolatePlacement(placement, currentTime, clipDuration);
       }
 
-      // Convert normalized coords to pixel coords
-      const px = Math.round(bbox.x * config.targetWidth);
-      const py = Math.round(bbox.y * config.targetHeight);
-      const pw = Math.round(bbox.width * config.targetWidth);
-      const ph = Math.round(bbox.height * config.targetHeight);
+      // Convert normalized (source-frame) coords to target pixel coords.
+      let px: number, py: number, pw: number, ph: number;
+      if (reframeWindow) {
+        // Map through the crop window: source px → crop-relative → target px.
+        const { cropX, cropW, cropH, srcW, srcH } = reframeWindow;
+        px = Math.round(((bbox.x * srcW - cropX) / cropW) * config.targetWidth);
+        py = Math.round(((bbox.y * srcH) / cropH) * config.targetHeight);
+        pw = Math.round(((bbox.width * srcW) / cropW) * config.targetWidth);
+        ph = Math.round(((bbox.height * srcH) / cropH) * config.targetHeight);
+      } else if (letterbox) {
+        // Map into the letterboxed image region, not the full canvas — the
+        // source only occupies [offX..offX+dispW] × [offY..offY+dispH].
+        px = Math.round(letterbox.offX + bbox.x * letterbox.dispW);
+        py = Math.round(letterbox.offY + bbox.y * letterbox.dispH);
+        pw = Math.round(bbox.width * letterbox.dispW);
+        ph = Math.round(bbox.height * letterbox.dispH);
+      } else {
+        px = Math.round(bbox.x * config.targetWidth);
+        py = Math.round(bbox.y * config.targetHeight);
+        pw = Math.round(bbox.width * config.targetWidth);
+        ph = Math.round(bbox.height * config.targetHeight);
+      }
+
+      // Surface entirely outside the canvas (cropped out by the reframe, or a
+      // motion-tracked box that drifted off) — don't composite it.
+      if (px + pw <= 0 || py + ph <= 0 || px >= config.targetWidth || py >= config.targetHeight) {
+        continue;
+      }
 
       // Resize product image
       let productBuffer = await sharp(placement.productImagePath)
@@ -485,6 +700,27 @@ async function compositeFrameWithPlacements(
           }
           productBuffer = await sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toBuffer();
         }
+      }
+
+      // Clip the overlay to the visible canvas region. Two failure modes
+      // otherwise: (1) sharp THROWS if an overlay is larger than the canvas
+      // (a reframed wide surface easily is), killing the whole clip; (2) a
+      // product straddling the crop's left/top edge would be slid into frame by
+      // the left/top clamp instead of being edge-cropped, detaching it from its
+      // surface. Crop the buffer to the intersection instead.
+      const meta = await sharp(productBuffer).metadata();
+      const bufW = meta.width ?? pw;
+      const bufH = meta.height ?? ph;
+      const cropLeft = Math.max(0, -px);
+      const cropTop = Math.max(0, -py);
+      const visW = Math.min(bufW - cropLeft, config.targetWidth - Math.max(0, px));
+      const visH = Math.min(bufH - cropTop, config.targetHeight - Math.max(0, py));
+      if (visW <= 0 || visH <= 0) continue;
+      if (cropLeft > 0 || cropTop > 0 || visW < bufW || visH < bufH) {
+        productBuffer = await sharp(productBuffer)
+          .extract({ left: cropLeft, top: cropTop, width: visW, height: visH })
+          .png()
+          .toBuffer();
       }
 
       composites.push({
@@ -795,9 +1031,41 @@ function interpolatePlacement(
 }
 
 /**
- * Build FFmpeg drawtext filter for caption segments.
+ * Escape caption text for an FFmpeg drawtext `text='...'` value.
+ *
+ * FFmpeg is spawned directly (no shell), but the value still passes through TWO
+ * quote/backslash-aware unescape passes — the graph tokenizer, then the
+ * per-filter option splitter (which splits on `:` AFTER the outer quotes are
+ * gone). drawtext's own text-expansion pass would be a THIRD, so the filter is
+ * built with `expansion=none` (we use no %{...} features), which also makes a
+ * literal `%` safe. Escapes, in this exact order (empirically pixel-verified
+ * against ffmpeg 6.0 and 8.0):
+ *   1. literal backslashes → `\\` (one doubling per surviving unescape level)
+ *   2. literal colons → `\:` (survives the option split; added AFTER (1) so its
+ *      backslash is not re-doubled)
+ *   3. literal single quotes → the bytes  '\\\''  — close the level-1 quote,
+ *      emit `\\` + `\'` (level 1 reduces them to `\'`, level 2 to a literal,
+ *      non-quoting `'`), reopen the quote. The single-level `'\''` idiom is NOT
+ *      enough here: level 1 collapses it to a bare `'`, which flips level 2
+ *      into quote mode and silently swallows every following option.
  */
-function buildCaptionFilter(segments: CaptionSegment[], config: PlatformConfig): string | null {
+function escapeDrawtext(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "'\\\\\\''");
+}
+
+/**
+ * Build FFmpeg drawtext filter for caption segments.
+ * Exported for other render paths (editorial pipeline) so caption burn-in and
+ * its escaping stay in ONE place. Param is the structural subset actually
+ * read, so callers without a full PlatformConfig can use it.
+ */
+export function buildCaptionFilter(
+  segments: CaptionSegment[],
+  config: { aspectRatio: string; targetHeight: number },
+): string | null {
   if (segments.length === 0) return null;
 
   // Position captions in the lower third
@@ -805,12 +1073,9 @@ function buildCaptionFilter(segments: CaptionSegment[], config: PlatformConfig):
   const yPos = Math.round(config.targetHeight * 0.82);
 
   const parts = segments.map(seg => {
-    const escapedText = seg.text
-      .replace(/'/g, "\\'")
-      .replace(/:/g, "\\:")
-      .replace(/\\/g, "\\\\");
+    const escapedText = escapeDrawtext(seg.text);
 
-    return `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=${yPos}:enable='between(t,${seg.startTime},${seg.endTime})'`;
+    return `drawtext=text='${escapedText}':expansion=none:fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=${yPos}:enable='between(t,${seg.startTime},${seg.endTime})'`;
   });
 
   return parts.join(",");
@@ -862,6 +1127,14 @@ async function getClipDuration(clipPath: string): Promise<number> {
     });
     proc.on("error", () => resolve(0));
   });
+}
+
+/** Render budget for a clip of `durationSec`. ~12x realtime covers a 1080x1920
+ *  CRF-20 encode with caption burn-in on a shared box, with the 5-minute floor
+ *  preserved for short clips. Capped so a bad input can't hang a worker. */
+export function ffmpegTimeoutForClip(durationSec: number): number {
+  const scaled = Math.ceil((Number(durationSec) || 0) * 12_000);
+  return Math.min(20 * 60 * 1000, Math.max(CLIP_CONFIG.FFMPEG_TIMEOUT_MS, scaled));
 }
 
 function runFFmpeg(args: string[], timeoutMs: number = CLIP_CONFIG.FFMPEG_TIMEOUT_MS): Promise<string> {

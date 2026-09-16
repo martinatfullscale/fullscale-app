@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, X, Loader2, BarChart3, TrendingUp, Eye, Heart,
@@ -9,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { useJobPoll } from "@/hooks/use-job-poll";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -40,6 +42,11 @@ interface GeneratedClip {
   exportPath: string | null;
   thumbnailPath: string | null;
   status: string | null;
+  /** Which table this id belongs to — both use serial ids, so it is ambiguous
+   *  on its own. "editorial" clips come from the transcript-first editor. */
+  clipSource?: "remix" | "editorial";
+  title?: string | null;
+  aspectRatio?: string | null;
 }
 
 interface AggregateMetrics {
@@ -70,6 +77,11 @@ interface DistributionDashboardProps {
   videoId: number;
   open: boolean;
   onClose: () => void;
+  /**
+   * Open straight onto the Publish tab with this clip selected. Carries the
+   * source because remix and editorial ids collide.
+   */
+  initialClip?: { id: number; clipSource: "remix" | "editorial" } | null;
 }
 
 // ─── Constants ──────────────────────────────────────────────────
@@ -78,6 +90,7 @@ const PLATFORM_CONFIG: Record<string, { label: string; icon: any; color: string;
   tiktok: { label: "TikTok", icon: Smartphone, color: "text-pink-400", bgColor: "bg-pink-500/20" },
   instagram_reels: { label: "Instagram", icon: Smartphone, color: "text-purple-400", bgColor: "bg-purple-500/20" },
   instagram: { label: "Instagram", icon: Smartphone, color: "text-purple-400", bgColor: "bg-purple-500/20" },
+  facebook: { label: "Facebook Page", icon: Users, color: "text-blue-400", bgColor: "bg-blue-600/20" },
   youtube_shorts: { label: "YouTube", icon: Tv, color: "text-red-400", bgColor: "bg-red-500/20" },
   youtube: { label: "YouTube", icon: Tv, color: "text-red-400", bgColor: "bg-red-500/20" },
   twitter: { label: "Twitter/X", icon: Globe, color: "text-blue-400", bgColor: "bg-blue-500/20" },
@@ -86,7 +99,7 @@ const PLATFORM_CONFIG: Record<string, { label: string; icon: any; color: string;
 
 // ─── Component ──────────────────────────────────────────────────
 
-export default function DistributionDashboard({ videoId, open, onClose }: DistributionDashboardProps) {
+export default function DistributionDashboard({ videoId, open, onClose, initialClip }: DistributionDashboardProps) {
   const { toast } = useToast();
   const [tab, setTab] = useState<"overview" | "publish" | "schedule" | "analytics">("overview");
   const [profiles, setProfiles] = useState<DistributionProfile[]>([]);
@@ -99,26 +112,117 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
 
   // Publishing state
   const [selectedClipId, setSelectedClipId] = useState<number | null>(null);
+  // Selection must carry the SOURCE, not just the id. generated_clips and
+  // editorial_clips are independent serial-id tables, so a video can hold a
+  // remix clip and an editorial clip that share the same number. Resolving the
+  // source with clips.find(c => c.id === selectedClipId) returned whichever came
+  // first in the merged list (remix), so picking the editorial clip published
+  // the remix one. Track the pair.
+  const [selectedClipSource, setSelectedClipSource] = useState<"remix" | "editorial">("remix");
+  const selectClip = (id: number | null, source: "remix" | "editorial" = "remix") => {
+    setSelectedClipId(id);
+    if (id != null) setSelectedClipSource(source);
+  };
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
   const [customCaption, setCustomCaption] = useState("");
+  /**
+   * Who can see the video once it lands. Defaults to "private" so an
+   * accidental publish is recoverable — the creator opts into an audience
+   * rather than being given one.
+   */
+  const [privacyStatus, setPrivacyStatus] = useState<"public" | "unlisted" | "private">("private");
+  const [available, setAvailable] = useState<Array<{ platform: string; label: string; handle: string | null; enableVia: string }>>([]);
+  /** Connected, but no publisher exists for it. Named so its absence from the
+   *  list above is explained rather than looking like a missing feature. */
+  const [unsupported, setUnsupported] = useState<Array<{ platform: string; label: string; reason: string }>>([]);
+  const [enabling, setEnabling] = useState<string | null>(null);
+
+  /** Turn a connected account into a publishing profile. Explicit, because a
+   *  publishing profile is permission to post on someone's account. */
+  const enableProfile = async (a: { platform: string; enableVia: string }) => {
+    setEnabling(a.platform);
+    try {
+      const res = await fetchWithTimeout(a.enableVia, { method: "POST", credentials: "include" });
+      if (res.ok) await loadDataRef.current?.();
+      else {
+        const b = await res.json().catch(() => ({}));
+        console.error("[Distribution] enable failed:", b?.error);
+      }
+    } finally {
+      setEnabling(null);
+    }
+  };
+
+  const [disconnecting, setDisconnecting] = useState<number | null>(null);
+
+  /**
+   * Disconnect a platform. Confirms first when posts are queued to it, because
+   * disconnecting cancels them — silently publishing to a disconnected account
+   * later would be worse, but so would cancelling without saying so.
+   */
+  const disconnectProfile = async (p: DistributionProfile) => {
+    const queued = posts.filter((x: any) => x.profileId === p.id && x.status === "scheduled").length;
+    const label = p.accountName || p.platform;
+    const warning = queued > 0
+      ? `Disconnect ${label}?\n\n${queued} scheduled post${queued === 1 ? "" : "s"} will be cancelled. Posts already published stay in your history.`
+      : `Disconnect ${label}?\n\nPosts already published stay in your history.`;
+    if (!window.confirm(warning)) return;
+
+    setDisconnecting(p.id);
+    try {
+      const res = await fetchWithTimeout(`/api/distribution/profiles/${p.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (body?.cancelledSchedules > 0) {
+          console.log(`[Distribution] cancelled ${body.cancelledSchedules} scheduled post(s)`);
+        }
+        await loadDataRef.current?.();
+      } else {
+        const b = await res.json().catch(() => ({}));
+        window.alert(b?.error || "Could not disconnect that account.");
+      }
+    } finally {
+      setDisconnecting(null);
+    }
+  };
+
   const [showCaptionPreview, setShowCaptionPreview] = useState(false);
   const [captionPreview, setCaptionPreview] = useState<{ caption: string; hashtags: string[] } | null>(null);
+
+  const loadDataRef = useRef<null | (() => Promise<void>)>(null);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [profilesRes, postsRes, clipsRes, metricsRes] = await Promise.all([
-        fetch("/api/distribution/profiles", { credentials: "include" }),
-        fetch(`/api/distribution/posts/video/${videoId}`, { credentials: "include" }),
-        fetch(`/api/remix/clips/${videoId}`, { credentials: "include" }),
-        fetch(`/api/distribution/analytics/video/${videoId}`, { credentials: "include" }),
+      const [profilesRes, postsRes, clipsRes, metricsRes, availableRes] = await Promise.all([
+        fetchWithTimeout("/api/distribution/profiles", { credentials: "include" }),
+        fetchWithTimeout(`/api/distribution/posts/video/${videoId}`, { credentials: "include" }),
+        fetchWithTimeout(`/api/remix/clips/${videoId}`, { credentials: "include" }),
+        fetchWithTimeout(`/api/distribution/analytics/video/${videoId}`, { credentials: "include" }),
+        // Accounts that are CONNECTED but have no publishing profile. Without
+        // this the hub says "no social platform connected" to a creator who
+        // connected one — the connection and the publishing profile live in
+        // different tables and nothing bridges them automatically.
+        fetchWithTimeout("/api/distribution/profiles/available", { credentials: "include" }),
       ]);
 
       if (profilesRes.ok) setProfiles(await profilesRes.json());
+      if (availableRes.ok) {
+        const a = await availableRes.json();
+        setAvailable(a.available ?? []);
+        setUnsupported(a.unsupported ?? []);
+      }
       if (postsRes.ok) setPosts(await postsRes.json());
       if (clipsRes.ok) {
         const allClips = await clipsRes.json();
-        setClips(allClips.filter((c: GeneratedClip) => c.status === "ready" || c.status === "generated"));
+        // "rendered" is the editorial pipeline's finished state. Accept it
+        // directly as well as the server's normalisation, so a mismatch on
+        // either side cannot silently empty this list again.
+        setClips(allClips.filter((c: GeneratedClip) =>
+          c.status === "ready" || c.status === "generated" || c.status === "rendered"));
       }
       if (metricsRes.ok) setMetrics(await metricsRes.json());
     } catch (err) {
@@ -128,43 +232,142 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
   }, [videoId]);
 
   useEffect(() => {
+    loadDataRef.current = loadData;
+  }, [loadData]);
+
+  useEffect(() => {
     if (open) loadData();
   }, [open, loadData]);
 
-  const publishClip = async () => {
+  // Opened from a clip's Publish button: land on Publish with it selected.
+  useEffect(() => {
+    if (!open || !initialClip) return;
+    selectClip(initialClip.id, initialClip.clipSource);
+    setTab("publish");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialClip?.id, initialClip?.clipSource]);
+
+  /**
+   * A publish acks immediately (202 + a `publishing` row) and finishes in the
+   * background; this poll is the receipt. Holding the request open for the
+   * upload made every proxy/client timeout look like a failure — which is
+   * what taught creators to click Publish again.
+   */
+  const [pendingPublish, setPendingPublish] = useState<{ postId: number; platform?: string } | null>(null);
+  useJobPoll<{ platform?: string; postUrl?: string | null }>(
+    pendingPublish ? { kind: "publish", id: pendingPublish.postId } : null,
+    {
+      intervalMs: 4000,
+      maxMs: 25 * 60_000,
+      onTerminal: async (view) => {
+        setPendingPublish(null);
+        setIsPublishing(false);
+        if (view.state === "succeeded") {
+          const platform = view.result?.platform ?? pendingPublish?.platform;
+          toast({
+            title: "Published!",
+            description: `Clip posted to ${platform ? (PLATFORM_CONFIG[platform]?.label ?? platform) : "your account"}`,
+          });
+          setSelectedClipId(null);
+          setCustomCaption("");
+        } else {
+          toast({
+            title: "Publish failed",
+            description: view.error || "The platform rejected the upload. Nothing was posted.",
+            variant: "destructive",
+          });
+        }
+        await loadData();
+      },
+      onTimeout: async () => {
+        setPendingPublish(null);
+        setIsPublishing(false);
+        toast({
+          title: "Still publishing",
+          description: "The upload is taking unusually long. It'll show under Overview → Recent Posts when it lands — don't publish again.",
+        });
+        await loadData();
+      },
+    },
+  );
+
+  /**
+   * @param force Re-publish a clip the server already has a published record
+   *   for. Only ever set from the confirmation below — never on a first click.
+   */
+  const publishClip = async (force = false) => {
     if (!selectedClipId || !selectedProfileId) return;
     setIsPublishing(true);
+    let stillWorking = false;
     try {
-      const res = await fetch("/api/distribution/publish", {
+      const res = await fetchWithTimeout("/api/distribution/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
           clipId: selectedClipId,
+          // Which table the id belongs to — tracked with the selection, since
+          // remix and editorial ids collide (see selectedClipSource).
+          clipSource: selectedClipSource,
           profileId: selectedProfileId,
           caption: customCaption || undefined,
+          privacyStatus,
+          force: force || undefined,
         }),
-      });
+      // The request only validates and records the job now; the upload
+      // itself is tracked by the poll above.
+      }, 60_000);
 
       const data = await res.json();
-      if (data.success) {
-        toast({ title: "Published!", description: `Clip posted to ${data.post.platform}` });
+      if (res.status === 202 || data.pending) {
+        // Accepted: keep the button busy and let the job poll deliver the verdict.
+        stillWorking = true;
+        const platform: string | undefined = data.platform;
+        setPendingPublish({ postId: data.job?.id ?? data.postId, platform });
+        toast({
+          title: "Publishing…",
+          description: `Uploading to ${platform ? (PLATFORM_CONFIG[platform]?.label ?? platform) : "your account"}. This usually takes 30–90s — you can keep working; you'll get a notice here when it lands.`,
+        });
+        await loadData();
+      } else if (data.success) {
+        // Legacy synchronous success (kept so an older server still reads well).
+        toast({ title: "Published!", description: `Clip posted to ${data.post?.platform ?? "your account"}` });
         await loadData();
         setSelectedClipId(null);
         setCustomCaption("");
+      } else if (data.alreadyPublished && data.canForce) {
+        // Not a failure — a question. Republishing is legitimate (the creator
+        // may have deleted the video on the platform), so the answer is a
+        // confirmation rather than a dead end.
+        const again = window.confirm(
+          `${data.error}\n\nPublish it again anyway? This will upload a second copy to the platform.`,
+        );
+        if (again) {
+          setIsPublishing(false);
+          return publishClip(true);
+        }
+      } else if (data.alreadyPublishing) {
+        // The first click's upload is still running. This is NOT a failure —
+        // rendering it as a destructive "Failed" is what taught creators to
+        // click Publish again. Say so, and adopt the running job.
+        toast({ title: "Still publishing", description: "Your first click is still uploading — this usually takes 30–90s. You'll get a notice here when it lands." });
+        if (data.job?.id) {
+          stillWorking = true;
+          setPendingPublish({ postId: data.job.id });
+        }
       } else {
         toast({ title: "Failed", description: data.error, variant: "destructive" });
       }
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     }
-    setIsPublishing(false);
+    if (!stillWorking) setIsPublishing(false);
   };
 
   const refreshAnalytics = async () => {
     setIsRefreshing(true);
     try {
-      const res = await fetch(`/api/distribution/analytics/video/${videoId}/refresh`, {
+      const res = await fetchWithTimeout(`/api/distribution/analytics/video/${videoId}/refresh`, {
         method: "POST",
         credentials: "include",
       });
@@ -179,13 +382,16 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
 
   const previewCaption = async (platform: string) => {
     try {
-      const res = await fetch("/api/distribution/format-caption", {
+      const res = await fetchWithTimeout("/api/distribution/format-caption", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
           platform,
           clipId: selectedClipId,
+          // Which table the id belongs to — tracked with the selection (remix
+          // and editorial ids collide).
+          clipSource: selectedClipSource,
           customCaption: customCaption || undefined,
         }),
       });
@@ -261,28 +467,51 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
               </div>
             ) : (
               <>
-                {tab === "overview" && <OverviewTab metrics={metrics} posts={posts} profiles={profiles} />}
+                {tab === "overview" && (
+                  <OverviewTab
+                    metrics={metrics}
+                    posts={posts}
+                    profiles={profiles}
+                    available={available}
+                    unsupported={unsupported}
+                    enabling={enabling}
+                    onEnable={enableProfile}
+                    disconnecting={disconnecting}
+                    onDisconnect={disconnectProfile}
+                  />
+                )}
                 {tab === "publish" && (
                   <PublishTab
                     clips={clips}
                     profiles={profiles}
                     selectedClipId={selectedClipId}
+                    selectedClipSource={selectedClipSource}
                     selectedProfileId={selectedProfileId}
                     customCaption={customCaption}
                     isPublishing={isPublishing}
                     captionPreview={captionPreview}
                     showCaptionPreview={showCaptionPreview}
-                    onSelectClip={setSelectedClipId}
+                    onSelectClip={selectClip}
                     onSelectProfile={setSelectedProfileId}
                     onCaptionChange={setCustomCaption}
-                    onPublish={publishClip}
+                    // Wrapped, NOT passed bare: the button below is
+                    // onClick={onPublish}, so React would hand the MouseEvent
+                    // to publishClip's `force` parameter — a truthy value that
+                    // would force-publish on every ordinary click and silently
+                    // disable the duplicate guard.
+                    privacyStatus={privacyStatus}
+                    onPrivacyChange={setPrivacyStatus}
+                    onPublish={() => publishClip()}
                     onPreviewCaption={previewCaption}
                     onToggleCaptionPreview={() => setShowCaptionPreview(!showCaptionPreview)}
                   />
                 )}
                 {tab === "schedule" && <ScheduleTab videoId={videoId} clips={clips} profiles={profiles} />}
                 {tab === "analytics" && (
-                  <AnalyticsTab metrics={metrics} isRefreshing={isRefreshing} onRefresh={refreshAnalytics} />
+                  <div className="space-y-6">
+                    <AnalyticsTab metrics={metrics} isRefreshing={isRefreshing} onRefresh={refreshAnalytics} />
+                    <AudienceResponseCard videoId={videoId} />
+                  </div>
                 )}
               </>
             )}
@@ -295,14 +524,29 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
 
 // ─── Tab Components ─────────────────────────────────────────────
 
+interface AvailableAccount { platform: string; label: string; handle: string | null; enableVia: string }
+
 function OverviewTab({
   metrics,
   posts,
   profiles,
+  available,
+  unsupported,
+  enabling,
+  onEnable,
+  disconnecting,
+  onDisconnect,
 }: {
   metrics: AggregateMetrics | null;
   posts: PublishedPost[];
   profiles: DistributionProfile[];
+  /** Connected accounts with no publishing profile yet. */
+  available: AvailableAccount[];
+  unsupported: Array<{ platform: string; label: string; reason: string }>;
+  enabling: string | null;
+  onEnable: (a: AvailableAccount) => void;
+  disconnecting: number | null;
+  onDisconnect: (p: DistributionProfile) => void;
 }) {
   return (
     <div className="space-y-6">
@@ -317,11 +561,41 @@ function OverviewTab({
       {/* Connected Platforms */}
       <div>
         <h3 className="text-sm font-semibold text-gray-300 mb-3">Connected Platforms</h3>
-        {profiles.length === 0 ? (
+        {profiles.length === 0 && available.length > 0 ? (
+          // CONNECTED, just not enabled for publishing. Saying "no platforms
+          // connected" to someone who connected one is the bug being fixed:
+          // the connection and the publishing profile are different records,
+          // and nothing bridged them.
+          <div className="bg-gray-800/50 rounded-xl p-4">
+            <p className="text-gray-300 text-sm font-medium">Ready to enable</p>
+            <p className="text-gray-500 text-xs mt-0.5 mb-3">
+              These accounts are connected. Turn on publishing to send clips to them.
+            </p>
+            <div className="space-y-2">
+              {available.map((a) => (
+                <div key={a.platform} className="flex items-center gap-3 bg-gray-900/60 rounded-lg px-3 py-2">
+                  <Globe className="w-4 h-4 text-gray-400 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-gray-200">{a.label}</p>
+                    {a.handle && <p className="text-xs text-gray-500 truncate">{a.handle}</p>}
+                  </div>
+                  <Button
+                    size="sm"
+                    disabled={enabling !== null}
+                    onClick={() => onEnable(a)}
+                    data-testid={`enable-${a.platform}`}
+                  >
+                    {enabling === a.platform ? "Enabling…" : "Enable"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : profiles.length === 0 ? (
           <div className="bg-gray-800/50 rounded-xl p-6 text-center">
             <Globe className="w-8 h-8 text-gray-600 mx-auto mb-2" />
             <p className="text-gray-400 text-sm">No platforms connected yet</p>
-            <p className="text-gray-500 text-xs mt-1">Connect your social accounts to start distributing clips</p>
+            <p className="text-gray-500 text-xs mt-1">Connect your social accounts in Settings to start distributing clips</p>
           </div>
         ) : (
           <div className="flex flex-wrap gap-2">
@@ -333,9 +607,34 @@ function OverviewTab({
                   <Icon className={`w-4 h-4 ${config.color}`} />
                   <span className="text-sm text-gray-200">{p.accountName || config.label}</span>
                   <CheckCircle className="w-3 h-3 text-green-400" />
+                  {/* Enabling a platform with no way to leave it is a trap —
+                      switching platforms is a normal thing to want. */}
+                  <button
+                    onClick={() => onDisconnect(p)}
+                    disabled={disconnecting !== null}
+                    title={`Disconnect ${config.label}`}
+                    className="ml-1 text-gray-500 hover:text-red-400 disabled:opacity-50 transition-colors"
+                    data-testid={`disconnect-${p.platform}`}
+                  >
+                    {disconnecting === p.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <X className="w-3.5 h-3.5" />
+                    )}
+                  </button>
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {unsupported.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {unsupported.map((u) => (
+              <p key={u.platform} className="text-[11px] text-gray-500 leading-snug">
+                <span className="text-gray-400">{u.label}:</span> {u.reason}
+              </p>
+            ))}
           </div>
         )}
       </div>
@@ -382,22 +681,26 @@ function OverviewTab({
 }
 
 function PublishTab({
-  clips, profiles, selectedClipId, selectedProfileId, customCaption,
+  clips, profiles, selectedClipId, selectedClipSource, selectedProfileId, customCaption,
   isPublishing, captionPreview, showCaptionPreview,
   onSelectClip, onSelectProfile, onCaptionChange, onPublish, onPreviewCaption, onToggleCaptionPreview,
+  privacyStatus, onPrivacyChange,
 }: {
   clips: GeneratedClip[];
   profiles: DistributionProfile[];
   selectedClipId: number | null;
+  selectedClipSource: "remix" | "editorial";
   selectedProfileId: number | null;
   customCaption: string;
   isPublishing: boolean;
   captionPreview: { caption: string; hashtags: string[] } | null;
   showCaptionPreview: boolean;
-  onSelectClip: (id: number | null) => void;
+  onSelectClip: (id: number | null, source?: "remix" | "editorial") => void;
   onSelectProfile: (id: number | null) => void;
   onCaptionChange: (v: string) => void;
   onPublish: () => void;
+  privacyStatus: "public" | "unlisted" | "private";
+  onPrivacyChange: (v: "public" | "unlisted" | "private") => void;
   onPreviewCaption: (platform: string) => void;
   onToggleCaptionPreview: () => void;
 }) {
@@ -412,12 +715,18 @@ function PublishTab({
           <p className="text-gray-500 text-sm">No clips ready for publishing. Generate clips in Remix Studio first.</p>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            {clips.map(clip => (
+            {clips.map(clip => {
+              // Match on BOTH id and source — a remix and an editorial clip can
+              // share the same id, and comparing id alone selected both cards
+              // and published the wrong one.
+              const clipSrc = clip.clipSource ?? "remix";
+              const isSelected = clip.id === selectedClipId && clipSrc === selectedClipSource;
+              return (
               <button
-                key={clip.id}
-                onClick={() => onSelectClip(clip.id === selectedClipId ? null : clip.id)}
+                key={`${clipSrc}:${clip.id}`}
+                onClick={() => onSelectClip(isSelected ? null : clip.id, clipSrc)}
                 className={`relative rounded-lg overflow-hidden border-2 transition-all ${
-                  clip.id === selectedClipId
+                  isSelected
                     ? "border-green-500 ring-2 ring-green-500/30"
                     : "border-gray-700 hover:border-gray-500"
                 }`}
@@ -430,18 +739,30 @@ function PublishTab({
                   )}
                 </div>
                 <div className="p-2 bg-gray-800/90">
-                  <div className="flex items-center justify-between">
+                  {clip.title && (
+                    <p className="text-[11px] text-gray-300 truncate text-left mb-0.5">{clip.title}</p>
+                  )}
+                  <div className="flex items-center justify-between gap-1">
                     <span className="text-xs text-gray-400">{clip.duration?.toFixed(1)}s</span>
-                    <span className="text-xs text-gray-400">{clip.platformTarget}</span>
+                    {/* Which pipeline produced this. Editorial clips come from
+                        the transcript-first editor and were previously absent
+                        from this list entirely. */}
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                      clip.clipSource === "editorial"
+                        ? "bg-purple-500/20 text-purple-300"
+                        : "bg-gray-700 text-gray-400"
+                    }`}>
+                      {clip.clipSource === "editorial" ? "Story clip" : (clip.aspectRatio || clip.platformTarget || "Remix")}
+                    </span>
                   </div>
                 </div>
-                {clip.id === selectedClipId && (
+                {isSelected && (
                   <div className="absolute top-2 right-2">
                     <CheckCircle className="w-5 h-5 text-green-400" />
                   </div>
                 )}
               </button>
-            ))}
+            );})}
           </div>
         )}
       </div>
@@ -518,6 +839,41 @@ function PublishTab({
         </div>
       )}
 
+      {/* Visibility.
+          The creator decides who sees the video. Before this existed the
+          setting lived only in server code and took a stored default nobody
+          could see or change, which made "a privacy status they control" a
+          claim the product did not back. Ordered least-exposed first, and
+          Private is preselected — publishing is not reversible from here. */}
+      {selectedClipId && selectedProfileId && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-3">4. Visibility</h3>
+          <div className="grid grid-cols-3 gap-2">
+            {([
+              { value: "private", label: "Private", hint: "Only you" },
+              { value: "unlisted", label: "Unlisted", hint: "Anyone with the link" },
+              { value: "public", label: "Public", hint: "Everyone" },
+            ] as const).map(opt => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => onPrivacyChange(opt.value)}
+                aria-pressed={privacyStatus === opt.value}
+                className={`rounded-lg border p-3 text-left transition-colors ${
+                  privacyStatus === opt.value
+                    ? "bg-green-500/15 border-green-500/60 text-white"
+                    : "bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200"
+                }`}
+                data-testid={`button-privacy-${opt.value}`}
+              >
+                <span className="block text-sm font-medium">{opt.label}</span>
+                <span className="block text-[11px] text-gray-500 mt-0.5">{opt.hint}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Publish Button */}
       {selectedClipId && selectedProfileId && (
         <Button
@@ -552,7 +908,7 @@ function ScheduleTab({
   const [scheduledTime, setScheduledTime] = useState("");
 
   useEffect(() => {
-    fetch("/api/distribution/schedules", { credentials: "include" })
+    fetchWithTimeout("/api/distribution/schedules", { credentials: "include" })
       .then(r => r.ok ? r.json() : [])
       .then(setSchedules)
       .catch(() => {});
@@ -563,7 +919,7 @@ function ScheduleTab({
     const profile = profiles.find(p => p.id === selectedProfile);
 
     try {
-      const res = await fetch("/api/distribution/schedule", {
+      const res = await fetchWithTimeout("/api/distribution/schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -586,7 +942,7 @@ function ScheduleTab({
 
   const cancelSchedule = async (id: number) => {
     try {
-      await fetch(`/api/distribution/schedules/${id}`, { method: "DELETE", credentials: "include" });
+      await fetchWithTimeout(`/api/distribution/schedules/${id}`, { method: "DELETE", credentials: "include" });
       setSchedules(prev => prev.filter(s => s.id !== id));
     } catch {}
   };
@@ -680,6 +1036,122 @@ function ScheduleTab({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+interface AudienceResponse {
+  total: number;
+  classified: number;
+  sentiment: { positive: number; neutral: number; negative: number; mixed: number };
+  brandMentions: number;
+  afterPlacement: number;
+  samples: Array<{ text: string; sentiment: string | null; likeCount: number | null; publishedAt: string | null }>;
+}
+
+/**
+ * Creator-facing audience-response summary — the "we summarise audience
+ * response" the privacy policy and OAuth justification promise. Self-contained
+ * so it renders even before any distribution metrics exist (comments can be
+ * captured before the creator publishes anything). Aggregate only; the endpoint
+ * never returns commenter names.
+ */
+function AudienceResponseCard({ videoId }: { videoId: number }) {
+  const [data, setData] = useState<AudienceResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await fetchWithTimeout(`/api/videos/${videoId}/audience-response`, { credentials: "include" });
+        if (!cancelled && res.ok) setData(await res.json());
+      } catch { /* leave null; card self-hides */ }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [videoId]);
+
+  // Nothing captured yet — say so quietly rather than showing an empty shell.
+  if (loading) return null;
+  if (!data || data.total === 0) {
+    return (
+      <div className="rounded-xl border border-gray-700/50 bg-gray-800/40 p-4">
+        <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+          <MessageCircle className="w-4 h-4 text-violet-400" /> Audience Response
+        </h3>
+        <p className="text-xs text-gray-500 mt-2">
+          No viewer comments captured yet. Once this video's comments are collected, we'll summarise
+          the sentiment and any brand mentions here.
+        </p>
+      </div>
+    );
+  }
+
+  const s = data.sentiment;
+  const denom = Math.max(1, s.positive + s.neutral + s.negative + s.mixed);
+  const bars: Array<{ key: string; n: number; color: string; label: string }> = [
+    { key: "positive", n: s.positive, color: "bg-emerald-500", label: "Positive" },
+    { key: "neutral", n: s.neutral, color: "bg-gray-500", label: "Neutral" },
+    { key: "mixed", n: s.mixed, color: "bg-amber-500", label: "Mixed" },
+    { key: "negative", n: s.negative, color: "bg-red-500", label: "Negative" },
+  ];
+
+  return (
+    <div className="rounded-xl border border-gray-700/50 bg-gray-800/40 p-4 space-y-4">
+      <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+        <MessageCircle className="w-4 h-4 text-violet-400" /> Audience Response
+        <span className="text-xs font-normal text-gray-500">
+          {data.classified} of {data.total} comments analysed
+        </span>
+      </h3>
+
+      {/* Sentiment bar */}
+      <div>
+        <div className="flex h-2.5 rounded-full overflow-hidden bg-gray-700">
+          {bars.map(b => b.n > 0 && (
+            <div key={b.key} className={b.color} style={{ width: `${(b.n / denom) * 100}%` }} title={`${b.label}: ${b.n}`} />
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+          {bars.map(b => (
+            <span key={b.key} className="flex items-center gap-1.5 text-[11px] text-gray-400">
+              <span className={`w-2 h-2 rounded-full ${b.color}`} />
+              {b.label} {b.n}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Brand-mention + pre/post split */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-lg bg-gray-800/60 p-3">
+          <div className="text-lg font-bold text-violet-300">{data.brandMentions}</div>
+          <div className="text-[11px] text-gray-500">mention the product or brand</div>
+        </div>
+        <div className="rounded-lg bg-gray-800/60 p-3">
+          <div className="text-lg font-bold text-emerald-300">{data.afterPlacement}</div>
+          <div className="text-[11px] text-gray-500">posted after the placement went live</div>
+        </div>
+      </div>
+
+      {/* Representative comments — text only, no author. */}
+      {data.samples.length > 0 && (
+        <div className="space-y-2">
+          <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">What viewers said</span>
+          {data.samples.map((c, i) => (
+            <div key={i} className="text-xs text-gray-300 bg-gray-800/60 rounded-lg px-3 py-2 leading-snug">
+              <span className={`mr-1.5 ${
+                c.sentiment === "positive" ? "text-emerald-400"
+                  : c.sentiment === "negative" ? "text-red-400"
+                  : c.sentiment === "mixed" ? "text-amber-400" : "text-gray-500"
+              }`}>●</span>
+              {c.text.length > 240 ? c.text.slice(0, 240) + "…" : c.text}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

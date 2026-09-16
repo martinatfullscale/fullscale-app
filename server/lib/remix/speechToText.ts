@@ -6,7 +6,13 @@
  */
 
 import fs from "fs";
+import path from "path";
+import os from "os";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import FormData from "form-data";
+
+const execFileAsync = promisify(execFile);
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -95,6 +101,19 @@ async function transcribeWithWhisper(
   audioPath: string,
   language: string
 ): Promise<SpeechToTextOutput> {
+  const stats = fs.statSync(audioPath);
+  if (stats.size > STT_CONFIG.whisper.maxFileSize) {
+    // ~13.6 minutes of 16kHz mono 16-bit WAV hits the 25MB Whisper cap.
+    // Long-form videos go through time-based chunking instead of failing.
+    return transcribeWhisperChunked(audioPath, language);
+  }
+  return transcribeWhisperSingle(audioPath, language);
+}
+
+async function transcribeWhisperSingle(
+  audioPath: string,
+  language: string
+): Promise<SpeechToTextOutput> {
   const startTime = Date.now();
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -102,14 +121,7 @@ async function transcribeWithWhisper(
     throw new Error("OPENAI_API_KEY required for Whisper speech-to-text");
   }
 
-  // Check file size
   const stats = fs.statSync(audioPath);
-  if (stats.size > STT_CONFIG.whisper.maxFileSize) {
-    throw new Error(
-      `Audio file too large for Whisper: ${(stats.size / 1024 / 1024).toFixed(1)}MB (max 25MB). Consider chunking.`
-    );
-  }
-
   console.log(`[SpeechToText] Whisper: Transcribing ${audioPath} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
 
   // Build multipart form data
@@ -189,6 +201,85 @@ async function transcribeWithWhisper(
   }
 }
 
+// ── Whisper chunked transcription (long-form audio) ────────────────
+
+// 600s of 16kHz mono 16-bit PCM ≈ 18.3MB — comfortably under the 25MB
+// Whisper cap even with header overhead or slight format drift.
+const WHISPER_CHUNK_SECONDS = 600;
+
+async function transcribeWhisperChunked(
+  audioPath: string,
+  language: string
+): Promise<SpeechToTextOutput> {
+  const startTime = Date.now();
+  const stats = fs.statSync(audioPath);
+  const chunkDir = fs.mkdtempSync(path.join(os.tmpdir(), "whisper-chunks-"));
+
+  try {
+    // Stream-copy split on sample boundaries — no re-encode, fast even
+    // for hours of audio.
+    await execFileAsync("ffmpeg", [
+      "-hide_banner", "-loglevel", "error",
+      "-i", audioPath,
+      "-f", "segment",
+      "-segment_time", String(WHISPER_CHUNK_SECONDS),
+      "-c", "copy",
+      path.join(chunkDir, "chunk-%04d.wav"),
+    ], { timeout: 120000 });
+
+    const chunkFiles = fs.readdirSync(chunkDir).filter(f => f.startsWith("chunk-")).sort();
+    if (chunkFiles.length === 0) throw new Error("Whisper chunking produced no segments");
+
+    console.log(
+      `[SpeechToText] Whisper chunked: ${(stats.size / 1024 / 1024).toFixed(1)}MB → ${chunkFiles.length} chunks of ≤${WHISPER_CHUNK_SECONDS}s`
+    );
+
+    const allSegments: TranscriptSegment[] = [];
+    const textParts: string[] = [];
+    let offset = 0;
+    let detectedLanguage = language;
+
+    for (let i = 0; i < chunkFiles.length; i++) {
+      const chunkPath = path.join(chunkDir, chunkFiles[i]);
+      const result = await transcribeWhisperSingle(chunkPath, language);
+      if (i === 0 && result.language) detectedLanguage = result.language;
+
+      for (const seg of result.segments) {
+        allSegments.push({
+          ...seg,
+          start: seg.start + offset,
+          end: seg.end + offset,
+          words: seg.words?.map(w => ({ ...w, start: w.start + offset, end: w.end + offset })),
+        });
+      }
+      textParts.push(result.fullText);
+
+      // Advance by the chunk's true duration (API-reported, falling back
+      // to PCM byte math) so later chunks stay aligned to source time.
+      const chunkStats = fs.statSync(chunkPath);
+      const pcmDuration = Math.max(0, chunkStats.size - 44) / 32000; // 16kHz mono 16-bit
+      offset += result.audioDuration || pcmDuration;
+      console.log(`[SpeechToText] Whisper chunk ${i + 1}/${chunkFiles.length} done (offset now ${offset.toFixed(1)}s)`);
+    }
+
+    const fullText = textParts.join(" ").trim();
+    return {
+      success: true,
+      provider: "whisper",
+      fullText,
+      segments: allSegments,
+      speakerMap: {},
+      language: detectedLanguage,
+      audioDuration: offset,
+      wordCount: fullText.split(/\s+/).filter(Boolean).length,
+      segmentCount: allSegments.length,
+      processingTimeMs: Date.now() - startTime,
+    };
+  } finally {
+    fs.rmSync(chunkDir, { recursive: true, force: true });
+  }
+}
+
 // ── Deepgram Implementation ────────────────────────────────────────
 
 interface DeepgramWord {
@@ -256,7 +347,14 @@ async function transcribeWithDeepgram(
   });
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), STT_CONFIG.deepgram.timeout);
+  // Long-form audio needs proportionally longer upload+processing time —
+  // a fixed 2min cap aborted every 1hr+ video. 2s per MB, floor at the
+  // configured base.
+  const timeoutMs = Math.max(
+    STT_CONFIG.deepgram.timeout,
+    Math.ceil(stats.size / (1024 * 1024)) * 2000
+  );
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(
