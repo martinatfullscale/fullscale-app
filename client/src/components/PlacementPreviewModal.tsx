@@ -38,6 +38,7 @@ import {
   useTeachSurface, TEACH_SURFACE_TYPES, teachTypeLabel,
 } from "@/components/teach-surface/useTeachSurface";
 import { readCanvasDims } from "@shared/placementCanvas";
+import type { PlacementVector } from "@shared/placementVector";
 
 // ============================================================================
 // TYPES
@@ -989,6 +990,10 @@ export default function PlacementPreviewModal({
   // not the raw surface bbox.
   const [harmonizeEnabled, setHarmonizeEnabled] = useState(false);
   const [liveHarmonizedUrl, setLiveHarmonizedUrl] = useState<string | null>(null);
+  // What the last harmonize MEASURED about this spot — surface tilt, the
+  // shadow already there, the scene's light, how crowded it is. Saved with the
+  // placement so it carries its own measurements, not just a picture.
+  const [placementVector, setPlacementVector] = useState<PlacementVector | null>(null);
   // Track whether the user is actively dragging — we hide the harmonized
   // overlay during interaction so they can manipulate the canvas freely.
   const [isInteractingWithCanvas, setIsInteractingWithCanvas] = useState(false);
@@ -1424,6 +1429,9 @@ export default function PlacementPreviewModal({
   // overlay until they manually re-harmonize.
   useEffect(() => {
     setLiveHarmonizedUrl(null);
+    // The measurement described the old product/surface/framing, so it is
+    // stale now too. Toggling harmonize OFF is different and keeps it.
+    setPlacementVector(null);
     if (harmonizeEnabled) setHarmonizeEnabled(false);
     // intentionally not depending on harmonizeEnabled (avoid loop)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2625,6 +2633,9 @@ export default function PlacementPreviewModal({
           // any. Empty array → backend stores null which falls back to
           // the constant `transform` at render time.
           keyframes: keyframes.length > 0 ? keyframes : null,
+          // Only when this session measured something: omitting the key
+          // leaves an existing measurement alone instead of nulling it.
+          ...(placementVector ? { placementVector } : {}),
           // Explicit scope — exactly the canonical surfaces this placement
           // applies to. Omitted (legacy) when the anchor has no groupId.
           ...(anchorGroupId
@@ -2834,6 +2845,7 @@ export default function PlacementPreviewModal({
                           // Seed the live overlay AND enable it so the canvas
                           // shows the harmonized result immediately.
                           setLiveHarmonizedUrl(data.imageUrl || null);
+                          if (data.placementVector) setPlacementVector(data.placementVector);
                           if (data.imageUrl) setHarmonizeEnabled(true);
                           // Append to rolling history so the user can re-apply
                           // this exact result later without rerunning.
@@ -2950,6 +2962,7 @@ export default function PlacementPreviewModal({
                           setHarmonizeFlatUrl(data.flatCompositeUrl || null);
                           setHarmonizeResultUrl(data.imageUrl || null);
                           setLiveHarmonizedUrl(data.imageUrl || null);
+                          if (data.placementVector) setPlacementVector(data.placementVector);
                           if (data.imageUrl) setHarmonizeEnabled(true);
                           // Append to rolling history — same shape as the
                           // regular Harmonize button, just mode="ai-3d".

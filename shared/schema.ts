@@ -290,6 +290,32 @@ export const detectedSurfaces = pgTable("detected_surfaces", {
   // rows written before grouping shipped — fall back to a (surfaceType,
   // sceneId) composite when null, never treat raw rows as distinct surfaces.
   surfaceGroupId: text("surface_group_id"),
+  /**
+   * Where the people were, relative to this surface, on the frame it was
+   * detected in. The scanner already runs a person detector on every analysed
+   * frame and the vision model returns its own people boxes; both were used as
+   * a yes/no ghost filter and discarded. "Next to the host's face" is a
+   * placement variable, so it is measured and kept.
+   *
+   * The raw boxes are stored beside the derived numbers on purpose: a later
+   * normalisation pass rewrites every row in a cluster to the cluster's median
+   * box, and the product's own rect isn't known until a creator places one, so
+   * both need recomputing from the source geometry. Null on rows from the
+   * edge-detection fallback, from teaching, or when the detector was off —
+   * null means "not measured", never "nobody there".
+   */
+  personContext: jsonb("person_context").$type<{
+    frame: { width: number; height: number };
+    source: "detector" | "gemini";
+    people: Array<{ x: number; y: number; w: number; h: number }>;
+    measured: {
+      personCount: number;
+      overlapFraction: number;
+      nearestGap: number | null;
+      nearestSide: string | null;
+    };
+    measuredAgainst: string;
+  }>(),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
   // This table had NO indexes, and it is the highest-volume table the scanner
@@ -616,6 +642,19 @@ export const savedPlacements = pgTable("saved_placements", {
       flipH: boolean;
     };
   }>>(),
+  /**
+   * What harmonizing this placement MEASURED about the spot: the surface's
+   * normal and tilt, the shadow already in the scene, the dominant hue and
+   * luminance, what sits nearby, how crowded it is, the scale the model
+   * suggested, and the scene's own light. Computed on every harmonize and
+   * previously discarded at the function boundary.
+   *
+   * This is the placement's coordinate vector — what makes one placement
+   * comparable to another rather than just a picture. Null when the creator
+   * saved without harmonizing, which is a coverage gap, not a measurement of
+   * zero. See shared/placementVector.ts for the shape and its validation.
+   */
+  placementVector: jsonb("placement_vector").$type<import("./placementVector").PlacementVector>(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 }, (table) => [

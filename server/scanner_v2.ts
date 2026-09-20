@@ -38,6 +38,7 @@ import { buildSceneConsensus, type FrameDetection, type ConsensusSurface } from 
 // Tier 2: tight person boxes (COCO-SSD, lazily loaded inside faceTracker —
 // importing this module does NOT pull the TF native binding onto boot).
 import { detectPeopleInFrame } from "./lib/remix/faceTracker";
+import { personProximity, type PersonBox } from "./lib/scenes/proximity";
 // Tier 2: grounded geometry proposals (fal Florence-2, fail-open).
 import { detectGroundedSurfaces, groundedDetectorAvailable } from "./lib/groundedDetector";
 // Twitch/TikTok/X: generic yt-dlp platform registry.
@@ -338,6 +339,10 @@ interface DetectedSurface {
   lightingDirection?: string;  // left, right, top, top-left, top-right, ambient
   lightingIntensity?: number;  // 0.0-1.0
   cameraAngle?: string;        // eye-level, slightly-above, top-down, low-angle
+  /** People in this frame, carried to the insert so proximity can be measured
+   *  against the box that actually gets stored. Absent when the frame had no
+   *  people data at all — which is not the same as "no people in frame". */
+  people?: { boxes: PersonBox[]; source: "detector" | "gemini"; frameW: number; frameH: number };
   // Set when this detection is a CONFIRMATION of a room-model surface (the
   // model's stable per-surface index, not a fresh discovery). Confirmations
   // carry the model's canonical surfaceType/orientation and bypass the
@@ -2573,7 +2578,19 @@ async function analyzeFrameWithGemini(
           return !twin;
         });
 
+    // Carry this frame's people through to the row insert. Proximity is
+    // measured there, against the bbox that is actually stored, rather than
+    // here against a box post-processing may still rewrite.
     const combinedSurfaces = [...freshSurfaces, ...knownConfirmed];
+    if (hasPeopleData && peopleSource) {
+      const framePeople = {
+        boxes: peopleBoxes.slice(0, 12),
+        source: peopleSource,
+        frameW: metadata.width ?? 0,
+        frameH: metadata.height ?? 0,
+      };
+      for (const cs of combinedSurfaces) cs.people = framePeople;
+    }
     if (combinedSurfaces.length === 0) {
       return { ...defaultResult, aiAnalyzed: true, personCoverage, peopleSource, knownGhostVetoedIdx };
     }
@@ -5375,6 +5392,21 @@ async function processVideoScanInner(
             // Canonical-surface identity — shared by every supporting-frame
             // row of this consensus surface.
             surfaceGroupId,
+            // Where the people were on this frame, measured against the box
+            // being stored. Null when the frame carried no people data at all.
+            personContext: surface.people
+              ? {
+                  frame: { width: surface.people.frameW, height: surface.people.frameH },
+                  source: surface.people.source,
+                  people: surface.people.boxes,
+                  measured: personProximity(
+                    member.bbox,
+                    surface.people.boxes,
+                    surface.people.frameH > 0 ? surface.people.frameW / surface.people.frameH : 1,
+                  ),
+                  measuredAgainst: "detection-frame-bbox",
+                }
+              : null,
             // creatorApproved defaults to false in schema — surfaces hidden from
             // brands until creator explicitly approves via UI toggle
           };

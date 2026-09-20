@@ -56,6 +56,7 @@ import { SCHEMA_REMEDY, SCHEMA_REPAIR_WHERE } from "./lib/schemaCheck";
 import { retentionAtPlacement } from "./lib/postTimeline";
 import { asyncRoute } from "./lib/asyncRoute";
 import { sanitizeCanvasDims } from "@shared/placementCanvas";
+import { sanitizePlacementVector } from "@shared/placementVector";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
@@ -5609,6 +5610,19 @@ export async function registerRoutes(
       trellisRenderUrl: result.trellisRenderUrl,
       meshUrl: result.meshUrl,
       kontextOutputUrl: result.kontextOutputUrl,
+      // What this run MEASURED about the spot, assembled here because the
+      // server knows the exact box and frame it measured against. The client
+      // carries it back when the placement is saved, where it is re-validated.
+      placementVector: (result.regionAnalysis || result.atmosphere)
+        ? {
+            regionAnalysis: result.regionAnalysis ?? null,
+            atmosphere: result.atmosphere ?? null,
+            mode: result.mode ?? mode,
+            bbox: placementBbox,
+            frameDimensions: { width: frameW, height: frameH },
+            measuredAt: new Date().toISOString(),
+          }
+        : null,
       // requestedMode is what the client asked for; mode is what actually
       // ran. When the user requests "generative" but Kontext fails, mode
       // comes back "procedural" — the client should surface that so the
@@ -12291,9 +12305,12 @@ export async function registerRoutes(
   app.post("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userEmail = req.authEmail || "unknown";
-      const { videoId, surfaceId, productId, productImageUrl, transform: rawTransform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized, keyframes, appliesToGroupIds, editorialClipId } = req.body;
+      const { videoId, surfaceId, productId, productImageUrl, transform: rawTransform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized, keyframes, appliesToGroupIds, editorialClipId, placementVector: rawVector } = req.body;
       // Offsets are canvas pixels: keep the canvas they were dragged on, when usable.
       const transform = rawTransform && typeof rawTransform === "object" ? sanitizeCanvasDims(rawTransform) : rawTransform;
+      // Measured by harmonize in the browser, so validated like any other
+      // input: a partial region is dropped rather than stored half-measured.
+      const placementVector = sanitizePlacementVector(rawVector);
 
       if (!videoId || !surfaceId || !productImageUrl || !transform || !blend) {
         return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
@@ -12427,6 +12444,7 @@ export async function registerRoutes(
         harmonizedImageUrl: harmonizedImageUrl || null,
         isHarmonized: !!isHarmonized,
         keyframes: validatedKeyframes,
+        placementVector,
       });
 
       // Auto-propagate to sibling rows of the SAME PHYSICAL FIXTURE.
@@ -12914,6 +12932,7 @@ export async function registerRoutes(
       // render-time lerp (NaN propagates and product disappears).
       const updates = { ...req.body };
       if (updates.transform && typeof updates.transform === "object") updates.transform = sanitizeCanvasDims(updates.transform);
+      if ("placementVector" in updates) updates.placementVector = sanitizePlacementVector(updates.placementVector);
       if ("keyframes" in updates) {
         if (Array.isArray(updates.keyframes)) {
           updates.keyframes = updates.keyframes

@@ -97,6 +97,20 @@ export interface HarmonizationResult {
   error?: string;
   elapsedMs?: number;
   mode?: "flat" | "procedural" | "ai-3d" | "ai" | "generative";
+  /**
+   * What this harmonize MEASURED about the spot, as opposed to what it drew.
+   * Every mode computes these and used to discard them at the function
+   * boundary; they are the placement's coordinate vector.
+   */
+  regionAnalysis?: PlacementRegionAnalysis | null;
+  atmosphere?: SceneAtmosphere | null;
+}
+
+/** The scene's own light, sampled from a ring around the placement. */
+export interface SceneAtmosphere {
+  brightnessFactor: number;
+  sceneRgb: { r: number; g: number; b: number };
+  sceneBrightness: number;
 }
 
 async function asBuffer(input: string | Buffer): Promise<Buffer> {
@@ -1933,8 +1947,28 @@ async function applyProceduralHarmonization(
   };
 }
 
+/** Filled in where the measurements are computed, so no return path can drop
+ *  them. Threading them through eight returns would eventually miss one. */
+interface MeasuredScene {
+  regionAnalysis?: PlacementRegionAnalysis | null;
+  atmosphere?: SceneAtmosphere | null;
+}
+
 export async function harmonizeProductIntoScene(
   input: HarmonizationInput,
+): Promise<HarmonizationResult> {
+  const measured: MeasuredScene = {};
+  const result = await runHarmonize(input, measured);
+  return {
+    ...result,
+    regionAnalysis: measured.regionAnalysis ?? null,
+    atmosphere: measured.atmosphere ?? null,
+  };
+}
+
+async function runHarmonize(
+  input: HarmonizationInput,
+  measured: MeasuredScene,
 ): Promise<HarmonizationResult> {
   // Default changed: "flat" instead of "procedural". User testing across
   // multiple product/scene pairs (Shinju whiskey + DJ setup, Shark vacuum
@@ -1965,6 +1999,17 @@ export async function harmonizeProductIntoScene(
       mode === "flat"
         ? Promise.resolve(null) // flat doesn't use it, save the cost
         : analyzePlacementRegion(sceneBuf, input.bbox, input.frameDimensions);
+    // Capture whichever branch runs — generative pays for this call today and
+    // never reads it, which is a measurement we were buying and binning.
+    void regionAnalysisPromise.then((r) => { measured.regionAnalysis = r; }).catch(() => {});
+
+    // Every atmosphere sample comes from this one function, so capture it here
+    // instead of at each of its five call sites.
+    const applyProcedural = (async (...args: Parameters<typeof applyProceduralHarmonization>) => {
+      const out = await applyProceduralHarmonization(...args);
+      if ((out as any)?.atmosphere) measured.atmosphere = (out as any).atmosphere;
+      return out;
+    }) as typeof applyProceduralHarmonization;
 
     // ─── FLAT MODE — just composite, no processing ───────────────────
     // What the user described as "what it looks like when product is
@@ -1974,7 +2019,7 @@ export async function harmonizeProductIntoScene(
       // Re-use the flatComposite output of applyProceduralHarmonization
       // since it already builds exactly this image. We just don't apply
       // the brightness/shadow/cast layers on top.
-      const { flatComposite } = await applyProceduralHarmonization(
+      const { flatComposite } = await applyProcedural(
         sceneBuf, productBuf, input.bbox, input.frameDimensions,
       );
       const falKey = process.env.FAL_KEY;
@@ -2050,7 +2095,7 @@ export async function harmonizeProductIntoScene(
         // so a Kontext failure produces no degradation. Procedural is
         // still available via mode="procedural" explicitly.
         console.warn(`[Harmonize/generative] ⚠️  FLUX Kontext FAILED — returning FLAT composite (no procedural processing). Check FAL_KEY and the [Harmonize/kontext] error line above.`);
-        const { flatComposite } = await applyProceduralHarmonization(
+        const { flatComposite } = await applyProcedural(
           sceneBuf, productBuf, input.bbox, input.frameDimensions,
         );
         const [imageUrl, flatCompositeUrl] = await Promise.all([
@@ -2088,7 +2133,7 @@ export async function harmonizeProductIntoScene(
       // atmosphere, the lock pass undoes everything Kontext changed on
       // the product itself (only Kontext's surface-around-product edits
       // survive — usually invisible).
-      const { flatComposite, atmosphere } = await applyProceduralHarmonization(
+      const { flatComposite, atmosphere } = await applyProcedural(
         sceneBuf, productBuf, input.bbox, input.frameDimensions,
       );
 
@@ -2135,7 +2180,7 @@ export async function harmonizeProductIntoScene(
     if (mode === "procedural") {
       console.log(`[Harmonize] Mode: procedural (sharp, scene-preserving)`);
       const regionAnalysis = await regionAnalysisPromise;
-      const { result, flatComposite } = await applyProceduralHarmonization(
+      const { result, flatComposite } = await applyProcedural(
         sceneBuf, productBuf, input.bbox, input.frameDimensions,
         { direction: input.lightingDirection, intensity: input.lightingIntensity },
         { regionAnalysis },
@@ -2461,7 +2506,7 @@ export async function harmonizeProductIntoScene(
       // Also: thread the per-placement region analysis through so the
       // procedural shadow/lighting uses Gemini's measurement at this
       // exact bbox rather than the coarse per-surface DB metadata.
-      const { result, flatComposite, atmosphere } = await applyProceduralHarmonization(
+      const { result, flatComposite, atmosphere } = await applyProcedural(
         sceneBuf, renderedProductBuf, input.bbox, input.frameDimensions,
         { direction: input.lightingDirection, intensity: input.lightingIntensity },
         { flatCompositeProductBuf: productBuf, regionAnalysis },
