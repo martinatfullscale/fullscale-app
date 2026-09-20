@@ -57,6 +57,7 @@ import { retentionAtPlacement } from "./lib/postTimeline";
 import { asyncRoute } from "./lib/asyncRoute";
 import { sanitizeCanvasDims } from "@shared/placementCanvas";
 import { sanitizePlacementVector } from "@shared/placementVector";
+import { PLACEMENT_DATASET_COLUMNS, buildDatasetRow, toCsv } from "./lib/measurement/placementDataset";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
@@ -1666,6 +1667,125 @@ export async function registerRoutes(
   // of viewers were still watching there, and how that compares to the
   // video's own average. Handles the source→post coordinate mapping so the
   // curve is never silently misaligned.
+  // THE DATASET. One row per placement, joining what the vision layer measured
+  // to what the audience did — geometry, the scene measurements, proximity to
+  // people, dose, the exposure, and the outcome. These have never been joinable
+  // in one query before, which is what made the placement vector a claim rather
+  // than a file.
+  //
+  // It ships its own dictionary (?format=dictionary): every column states its
+  // unit and what it is measured against, because several are proxies and a
+  // covering email is not where a caveat survives. Seeded and demo rows are
+  // labelled and excluded by default — the database seeds itself on first boot,
+  // and those rows must never be read as results.
+  app.get("/api/admin/measurement/placement-dataset", asyncRoute(async (req: any, res) => {
+    const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+    if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const format = String(req.query.format ?? "csv").toLowerCase();
+    if (format === "dictionary") {
+      return res.json({
+        grain: "one row per placement (saved_placements.id)",
+        columns: PLACEMENT_DATASET_COLUMNS,
+        knownLimits: [
+          "Treatment is not randomised: which fixtures carry a product is chosen by brand match and viability, so differences here are descriptive, not causal.",
+          "scene_screen_time_sec is a scene-level quantity replicated onto every fixture in that scene, not a per-surface measurement.",
+          "Retention is only readable when the post IS the source upload; a clip posted on its own has a curve we do not capture.",
+          "conversions is always 0 today: the postback endpoint issues no key, so no brand can report one.",
+          "Scene measurements cover placements where the creator harmonized; proximity covers frames analysed by the model since it shipped. Nulls mean not measured, never zero.",
+        ],
+      });
+    }
+
+    const limit = Math.min(2000, Math.max(1, parseInt(String(req.query.limit ?? "500"), 10) || 500));
+    const offset = Math.max(0, parseInt(String(req.query.offset ?? "0"), 10) || 0);
+    const includeDemo = String(req.query.includeDemo ?? "") === "true";
+
+    const placements = await storage.getPlacementsForDataset(limit, offset);
+    const total = await storage.countActivePlacements();
+    const exposures = await storage.getPlacementExposuresForPlacements(placements.map((p: any) => p.id));
+    const exposureByPlacement = new Map<number, any>(exposures.map((e: any) => [e.placementId as number, e]));
+    const attribution = new Map<number, any>((await storage.getAttributionTotals()).map((a: any) => [a.placementId, a]));
+
+    // Cached per video/fixture: a page of placements usually covers a handful
+    // of videos, and this is the difference between 5 queries and 500.
+    const videoCache = new Map<number, any>();
+    const surfaceCache = new Map<number, any[]>();
+    const curveCache = new Map<number, any>();
+    const fixtureCache = new Map<string, any>();
+    const builtAt = new Date().toISOString();
+
+    const rows: any[] = [];
+    for (const placement of placements as any[]) {
+      const videoId = placement.videoId as number;
+      if (!videoCache.has(videoId)) {
+        videoCache.set(videoId, (await storage.getVideoById(videoId).catch(() => undefined)) ?? null);
+      }
+      if (!surfaceCache.has(videoId)) {
+        surfaceCache.set(videoId, (await storage.getDetectedSurfaces(videoId).catch(() => [])) as any[]);
+      }
+      if (!curveCache.has(videoId)) {
+        curveCache.set(videoId, (await storage.getLatestRetentionCurve(videoId).catch(() => undefined)) ?? undefined);
+      }
+      const video = videoCache.get(videoId);
+      const surface = (surfaceCache.get(videoId) ?? []).find((s: any) => s.id === placement.surfaceId) ?? null;
+      const exposure = exposureByPlacement.get(placement.id) ?? null;
+
+      // Dose as of the day it went live, so a later rescan cannot rewrite the
+      // exposure a placement actually ran against.
+      let fixture: any = null;
+      const groupId = surface?.surfaceGroupId ?? null;
+      if (groupId) {
+        const key = `${groupId}|${exposure?.liveAt ? new Date(exposure.liveAt).toISOString() : "current"}`;
+        if (!fixtureCache.has(key)) {
+          const found = exposure?.liveAt
+            ? await storage.getFixtureExposureAsOf(groupId, new Date(exposure.liveAt)).catch(() => [])
+            : await storage.getFixtureExposureByGroup(groupId).catch(() => []);
+          fixtureCache.set(key, (found as any[]).find((f: any) => !f.supersededAt) ?? (found as any[])[0] ?? null);
+        }
+        fixture = fixtureCache.get(key);
+      }
+
+      const attr = attribution.get(placement.id);
+      rows.push(buildDatasetRow({
+        placement,
+        video,
+        surface,
+        fixture,
+        exposure,
+        curve: curveCache.get(videoId),
+        sourcePlatformPostId: video?.youtubeId ?? null,
+        clicks: attr?.clicks ?? 0,
+        conversions: attr?.conversions ?? 0,
+        builtAt,
+      }));
+    }
+
+    const visible = includeDemo ? rows : rows.filter((r) => !r.is_demo_data);
+    const demoExcluded = rows.length - visible.length;
+    const page = { limit, offset, returned: visible.length, totalPlacements: total, hasMore: offset + placements.length < total };
+    console.log(
+      `[Dataset] ${callerEmail} exported ${visible.length} row(s) (offset ${offset} of ${total})` +
+      (demoExcluded > 0 ? `, ${demoExcluded} seeded/demo row(s) excluded` : "") +
+      (page.hasMore ? " — more pages remain" : ""),
+    );
+
+    if (format === "json") {
+      return res.json({
+        grain: "one row per placement (saved_placements.id)",
+        columns: PLACEMENT_DATASET_COLUMNS,
+        page,
+        demoExcluded,
+        rows: visible,
+      });
+    }
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="placement-dataset-${offset}.csv"`);
+    return res.send(toCsv(visible));
+  }));
+
   app.get("/api/admin/measurement/retention", async (req: any, res) => {
     try {
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;

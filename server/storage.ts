@@ -3297,6 +3297,27 @@ export class DatabaseStorage implements IStorage {
    * applies_to_group_ids jsonb across for every row. Keyframe arrays on a
    * motion-tracked placement are long, and none of it reaches the response.
    */
+  /** Placements for the measurement dataset, oldest first so paging is stable
+   *  while rows are being added underneath it. */
+  async getPlacementsForDataset(limit: number, offset: number): Promise<SavedPlacement[]> {
+    return await db
+      .select()
+      .from(savedPlacements)
+      .where(eq(savedPlacements.status, "active"))
+      .orderBy(asc(savedPlacements.id))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  /** Total the dataset pages through, so a caller knows what it has not seen. */
+  async countActivePlacements(): Promise<number> {
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(savedPlacements)
+      .where(eq(savedPlacements.status, "active"));
+    return row?.n ?? 0;
+  }
+
   async getReviewQueuePlacements(): Promise<Array<{
     id: number; videoId: number; createdBy: string;
     hasImage: boolean;
