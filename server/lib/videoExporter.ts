@@ -20,6 +20,10 @@ import sharp from "sharp";
 import { storage } from "../storage";
 import { uploadFileToStorage, downloadToTempFile } from "./objectStorage";
 import { offsetScale } from "@shared/placementCanvas";
+import {
+  GeometrySampler, buildDeliveredPlacement, medianRect, visibilityWindows,
+  type DeliveredPlacement,
+} from "@shared/deliveredGeometry";
 
 // ── Types ──
 
@@ -247,6 +251,9 @@ async function tryFastExport(
   exportCtx: ExportContext,
   duration: number,
   tempDir: string,
+  /** Filled with where each placement actually landed. The renderer is the only
+   *  thing that knows this, and it used to keep it to itself. */
+  delivered: DeliveredPlacement[] = [],
 ): Promise<string | null> {
   console.log(`[VideoExporter] Using FAST export path (static FFmpeg overlay)`);
   await storage.updateVideoExportProgress(exportId, 10);
@@ -255,6 +262,15 @@ async function tryFastExport(
   // Offsets and shadow sizes are editor-canvas pixels. offsetScale uses the
   // canvas each placement records, and this request's canvas for rows that don't.
   const frameSize = { width, height };
+
+  // The gate the render uses and the dwell we record come from ONE function,
+  // so the number in the dataset cannot drift from what ffmpeg drew.
+  const windowsFor = (placement: ExportPlacementData): Array<[number, number]> =>
+    visibilityWindows((placement.keyframes || []).map((k) => k.timestamp), {
+      gapThresholdSec: GAP_THRESHOLD_SECONDS * 2,
+      duration,
+      padSec: 0.75,
+    });
 
   const overlayPaths: string[] = [];
   const overlayPositions: Array<{ x: number; y: number }> = [];
@@ -396,6 +412,27 @@ async function tryFastExport(
 
     overlayPositions.push({ x: left, y: top });
     overlayPlacements.push(placement);
+
+    // What the viewer will actually see: the rect in rendered pixels and the
+    // windows the overlay is gated by. Nothing downstream can reconstruct this
+    // from the stored transform alone.
+    const unclampedLeft = Math.round(centerX - renderedW / 2);
+    const unclampedTop = Math.round(centerY - renderedH / 2);
+    delivered.push(buildDeliveredPlacement({
+      placementIndex: pi,
+      surfaceId: placement.surfaceId ?? null,
+      renderKind: "video_export",
+      frame: { width, height },
+      rect: { x: left, y: top, w: renderedW, h: renderedH },
+      visibleWindows: windowsFor(placement),
+      windowsKnown: (placement.keyframes || []).length > 0,
+      dwellBasis: "visibility-windows",
+      clippedAtEdge:
+        unclampedLeft !== left || unclampedTop !== top ||
+        left + renderedW > width || top + renderedH > height,
+      canvasKnown: offsetScale(placement.transform, frameSize, exportCtx).canvasKnown,
+      renderedAt: new Date().toISOString(),
+    }));
     console.log(`[VideoExporter] Fast path: placement ${pi} "${placement.surfaceType}" at (${left}, ${top}), size ${renderedW}x${renderedH}`);
   }
 
@@ -425,26 +462,11 @@ async function tryFastExport(
   // doesn't pop a frame early/late. Placements with no keyframes keep the
   // legacy full-duration behavior, loudly.
   const enableExprFor = (placement: ExportPlacementData): string | null => {
-    const kfs = (placement.keyframes || [])
-      .map((k) => k.timestamp)
-      .filter((t) => Number.isFinite(t))
-      .sort((a, b) => a - b);
-    if (kfs.length === 0) return null;
-    const PAD = 0.75;
-    const windows: Array<[number, number]> = [];
-    let start = kfs[0];
-    let prev = kfs[0];
-    for (let i = 1; i < kfs.length; i++) {
-      if (kfs[i] - prev > GAP_THRESHOLD_SECONDS * 2) {
-        windows.push([start, prev]);
-        start = kfs[i];
-      }
-      prev = kfs[i];
-    }
-    windows.push([start, prev]);
+    const windows = windowsFor(placement);
+    if (windows.length === 0) return null;
     const clauses = windows
       .slice(0, 32)
-      .map(([a, b]) => `between(t,${Math.max(0, a - PAD).toFixed(2)},${Math.min(duration, b + PAD).toFixed(2)})`);
+      .map(([a, b]) => `between(t,${a.toFixed(2)},${b.toFixed(2)})`);
     if (windows.length > 32) {
       console.warn(`[VideoExporter] Placement has ${windows.length} visibility windows — capping at 32`);
     }
@@ -548,6 +570,9 @@ async function compositeFrame(
   currentTime: number,
   productImageCache: Map<string, { buffer: Buffer; width: number; height: number }>,
   exportCtx: ExportContext,
+  /** Collects where each placement landed, bounded — a three-minute export is
+   *  thousands of frames, and one row per frame is a log, not a measurement. */
+  sampler?: GeometrySampler,
 ): Promise<Buffer> {
   const frameBuffer = fs.readFileSync(framePath);
   const metadata = await sharp(frameBuffer).metadata();
@@ -561,7 +586,8 @@ async function compositeFrame(
 
   const composites: sharp.OverlayOptions[] = [];
 
-  for (const placement of placements) {
+  for (let placementIndex = 0; placementIndex < placements.length; placementIndex++) {
+    const placement = placements[placementIndex];
     // ── FAST PATH: Pre-computed motion-track data from preview ──
     // When the client sends motionTrackData, use it DIRECTLY so export matches preview exactly.
     // This skips the separate dense-scan + stabilization pipeline that caused position mismatch.
@@ -657,10 +683,13 @@ async function compositeFrame(
         const left = Math.round(centerX - finalW / 2);
         const top = Math.round(centerY - finalH / 2);
 
+        const drawnLeft = Math.max(0, Math.min(width - 1, left));
+        const drawnTop = Math.max(0, Math.min(height - 1, top));
+        sampler?.add(placementIndex, currentTime, { x: drawnLeft, y: drawnTop, w: finalW, h: finalH });
         composites.push({
           input: productBuffer,
-          left: Math.max(0, Math.min(width - 1, left)),
-          top: Math.max(0, Math.min(height - 1, top)),
+          left: drawnLeft,
+          top: drawnTop,
           blend: "over" as const,
         });
       } catch (err: any) {
@@ -915,10 +944,13 @@ async function compositeFrame(
         const left = Math.round(centerX - finalW / 2);
         const top = Math.round(centerY - finalH / 2);
 
+        const drawnLeft = Math.max(0, Math.min(width - 1, left));
+        const drawnTop = Math.max(0, Math.min(height - 1, top));
+        sampler?.add(placementIndex, currentTime, { x: drawnLeft, y: drawnTop, w: finalW, h: finalH });
         composites.push({
           input: productBuffer,
-          left: Math.max(0, Math.min(width - 1, left)),
-          top: Math.max(0, Math.min(height - 1, top)),
+          left: drawnLeft,
+          top: drawnTop,
           blend: "over" as const,
         });
       } else {
@@ -934,10 +966,13 @@ async function compositeFrame(
         const left = Math.round(centerX - finalW / 2);
         const top = Math.round(centerY - finalH / 2);
 
+        const drawnLeft = Math.max(0, Math.min(width - 1, left));
+        const drawnTop = Math.max(0, Math.min(height - 1, top));
+        sampler?.add(placementIndex, currentTime, { x: drawnLeft, y: drawnTop, w: finalW, h: finalH });
         composites.push({
           input: productBuffer,
-          left: Math.max(0, Math.min(width - 1, left)),
-          top: Math.max(0, Math.min(height - 1, top)),
+          left: drawnLeft,
+          top: drawnTop,
           blend: "over" as const,
         });
       }
@@ -1038,14 +1073,15 @@ async function processVideoExportInner(
 
     // ── FAST PATH: Single FFmpeg overlay command (skips frame extraction entirely) ──
     try {
-      const fastResult = await tryFastExport(exportId, absoluteVideoPath, placements, exportCtx, duration, tempDir);
+      const fastDelivered: DeliveredPlacement[] = [];
+      const fastResult = await tryFastExport(exportId, absoluteVideoPath, placements, exportCtx, duration, tempDir, fastDelivered);
       if (fastResult) {
         await storage.updateVideoExportProgress(exportId, 90);
         const outputFilename = path.basename(fastResult);
         const objectKey = `public/exports/${outputFilename}`;
         const storageUrl = await uploadFileToStorage(fastResult, objectKey);
         console.log(`[VideoExporter] Fast path uploaded: ${storageUrl}`);
-        await storage.updateVideoExportComplete(exportId, storageUrl, storageUrl);
+        await storage.updateVideoExportComplete(exportId, storageUrl, storageUrl, fastDelivered);
         try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
         return; // Done — skip slow path entirely
       }
@@ -1150,6 +1186,9 @@ async function processVideoExportInner(
 
     // ── Step 3: Composite frames in parallel batches ──
     const fps = EXPORT_CONFIG.TARGET_FPS;
+    // One sample per second per placement, capped: enough to see the product
+    // move and to measure how long it was up, without a row per frame.
+    const sampler = new GeometrySampler({ maxSamples: 180, minIntervalSec: 1 });
     const BATCH_SIZE = 8; // Process 8 frames concurrently for ~4-5x speedup
     let completedFrames = 0;
 
@@ -1163,7 +1202,7 @@ async function processVideoExportInner(
         const currentTime = i / fps;
 
         batchPromises.push(
-          compositeFrame(framePath, placements, currentTime, productImageCache, exportCtx)
+          compositeFrame(framePath, placements, currentTime, productImageCache, exportCtx, sampler)
             .then(compositedBuffer => {
               fs.writeFileSync(outputPath, compositedBuffer);
               // Delete original frame to save disk space
@@ -1181,6 +1220,35 @@ async function processVideoExportInner(
     }
 
     console.log(`[VideoExporter] Composited ${totalFrames} frames (batch size ${BATCH_SIZE})`);
+
+    // Where the per-frame path actually drew each placement. Windows come from
+    // runs of consecutive samples, so a placement that drops out mid-render is
+    // not credited the gap.
+    const slowDelivered: DeliveredPlacement[] = [];
+    const slowFrame = await getVideoResolution(absoluteVideoPath);
+    const slowRenderedAt = new Date().toISOString();
+    for (const idx of sampler.indices()) {
+      const samples = sampler.samplesFor(idx);
+      const rect = medianRect(samples);
+      const placement = placements[idx];
+      if (!rect || !placement) continue;
+      slowDelivered.push(buildDeliveredPlacement({
+        placementIndex: idx,
+        surfaceId: placement.surfaceId ?? null,
+        renderKind: "video_export",
+        frame: slowFrame,
+        rect,
+        samples,
+        visibleWindows: visibilityWindows(samples.map((sample) => sample.t), {
+          gapThresholdSec: 2.5,
+          duration,
+        }),
+        windowsKnown: samples.length > 0,
+        dwellBasis: "sampled",
+        canvasKnown: offsetScale(placement.transform, slowFrame, exportCtx).canvasKnown,
+        renderedAt: slowRenderedAt,
+      }));
+    }
     await storage.updateVideoExportProgress(exportId, 90);
 
     // ── Step 4: Re-encode to MP4 ──
@@ -1227,7 +1295,7 @@ async function processVideoExportInner(
     const storageUrl = await uploadFileToStorage(outputMp4, objectKey);
     console.log(`[VideoExporter] Uploaded to Object Storage: ${storageUrl}`);
 
-    await storage.updateVideoExportComplete(exportId, storageUrl, storageUrl);
+    await storage.updateVideoExportComplete(exportId, storageUrl, storageUrl, slowDelivered);
 
     // ── Step 6: Cleanup temp directories ──
     try {

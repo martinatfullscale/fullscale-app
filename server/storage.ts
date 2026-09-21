@@ -3533,6 +3533,17 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  /** Completed exports for a video, newest first — the dataset reads delivered
+   *  geometry from the most recent render that carried a placement. */
+  async getCompletedExportsForVideo(videoId: number, limit = 5): Promise<VideoExport[]> {
+    return await db
+      .select()
+      .from(videoExports)
+      .where(and(eq(videoExports.videoId, videoId), eq(videoExports.status, "complete")))
+      .orderBy(desc(videoExports.completedAt))
+      .limit(limit);
+  }
+
   async getVideoExport(exportId: number): Promise<VideoExport | undefined> {
     const [result] = await db
       .select()
@@ -3548,7 +3559,14 @@ export class DatabaseStorage implements IStorage {
       .where(eq(videoExports.id, exportId));
   }
 
-  async updateVideoExportComplete(exportId: number, outputPath: string, outputUrl: string): Promise<void> {
+  async updateVideoExportComplete(
+    exportId: number,
+    outputPath: string,
+    outputUrl: string,
+    /** Where each placement actually landed — recorded by the renderer that
+     *  drew it. Omitted by callers with no geometry to report. */
+    deliveredPlacements?: import("@shared/deliveredGeometry").DeliveredPlacement[],
+  ): Promise<void> {
     await db
       .update(videoExports)
       .set({
@@ -3556,6 +3574,7 @@ export class DatabaseStorage implements IStorage {
         progress: 100,
         outputPath,
         outputUrl,
+        ...(deliveredPlacements && deliveredPlacements.length > 0 ? { deliveredPlacements } : {}),
         completedAt: new Date(),
       })
       .where(eq(videoExports.id, exportId));
@@ -4258,6 +4277,8 @@ export class DatabaseStorage implements IStorage {
       renderError?: string | null;
       /** Post-render quality rubric score (0-1); null = scoring failed */
       qualityScore?: number | null;
+      /** Where each brand placement landed in the rendered clip. */
+      renderGeometry?: import("@shared/deliveredGeometry").DeliveredPlacement[] | null;
     }
   ): Promise<EditorialClip | undefined> {
     const patch: Record<string, any> = {};
@@ -4265,6 +4286,7 @@ export class DatabaseStorage implements IStorage {
     if (updates.exportPath !== undefined) patch.exportPath = updates.exportPath;
     if (updates.thumbnailPath !== undefined) patch.thumbnailPath = updates.thumbnailPath;
     if (updates.aspectRatio !== undefined) patch.aspectRatio = updates.aspectRatio;
+    if (updates.renderGeometry !== undefined) patch.renderGeometry = updates.renderGeometry;
     if (updates.renderStatus !== undefined) patch.renderStatus = updates.renderStatus;
     if (updates.renderError !== undefined) patch.renderError = updates.renderError;
     if (updates.renderStatus === "rendered") patch.renderedAt = new Date();

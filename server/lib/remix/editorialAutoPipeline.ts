@@ -36,6 +36,7 @@ import { buildCaptionFilter } from "./clipGenerator";
 import { downloadToTempFile, uploadFileToStorage, objectKeyFromServeUrl } from "../objectStorage";
 import sharp from "sharp";
 import { offsetScale, readCanvasDims } from "@shared/placementCanvas";
+import { buildDeliveredPlacement } from "@shared/deliveredGeometry";
 
 // ── Configuration ──────────────────────────────────────────────────
 
@@ -1360,6 +1361,27 @@ export async function renderSingleEditorialClip(
     try { fs.unlinkSync(outputPath); } catch {}
     try { fs.unlinkSync(thumbPath); } catch {}
 
+    // Where each brand placement actually landed in this cut. The overlay is
+    // static for the clip, so dwell is the cut's own length — an upper bound
+    // that does NOT subtract stretches where full-frame b-roll covered it,
+    // which is why the basis travels with the number.
+    const clipDurationSec = Number(clip.duration) || 0;
+    const renderGeometry = (brandOverlays ?? [])
+      .filter((ov) => ov.baked && ov.bakedFrame)
+      .map((ov, idx) => buildDeliveredPlacement({
+        placementIndex: idx,
+        savedPlacementId: ov.savedPlacementId ?? null,
+        surfaceId: ov.surfaceId ?? null,
+        renderKind: "editorial_clip",
+        frame: ov.bakedFrame!,
+        rect: { x: ov.baked!.x, y: ov.baked!.y, w: ov.baked!.w, h: ov.baked!.h },
+        visibleWindows: clipDurationSec > 0 ? [[0, clipDurationSec]] : [],
+        windowsKnown: clipDurationSec > 0,
+        dwellBasis: "full-render",
+        canvasKnown: readCanvasDims(ov.creatorPlacement?.transform ?? null) !== null,
+        renderedAt: new Date().toISOString(),
+      }));
+
     await storage.updateEditorialClipRender(clip.id, {
       exportPath: mp4Url,
       thumbnailPath: thumbUrl,
@@ -1367,6 +1389,7 @@ export async function renderSingleEditorialClip(
       renderStatus: "rendered",
       renderError: null,
       qualityScore,
+      ...(renderGeometry.length > 0 ? { renderGeometry } : {}),
     });
 
     console.log(`[RenderSingle] ✓ Rendered clip ${clip.id} → ${mp4Url}`);
@@ -1450,6 +1473,7 @@ async function loadBrandOverlaysForClip(
         // precedent as the harmonized-export path). Fail-open: no match =
         // legacy raw-PNG overlay, exactly as before.
         let creatorPlacement: BrandOverlay["creatorPlacement"];
+        let savedPlacementId: number | null = null;
         try {
           const saved = await storage.getPlacementsForVideo(videoId);
           const surfaceGid = (surface as any).surfaceGroupId as string | null | undefined;
@@ -1498,6 +1522,7 @@ async function loadBrandOverlaysForClip(
               harmonizedCompositePath,
               hasKeyframes,
             };
+            savedPlacementId = match.id;
             console.log(`[BrandOverlay] Using creator's saved placement ${match.id} for assignment ${placement.id} (${harmonizedCompositePath ? "harmonized crop" : "styled sprite"})`);
           }
         } catch (spErr: any) {
@@ -1513,6 +1538,8 @@ async function loadBrandOverlaysForClip(
           surfaceTimestamp: parseFloat(String(surface.timestamp)) || undefined,
           surfaceType: surface.surfaceType || undefined,
           creatorPlacement,
+          savedPlacementId,
+          surfaceId: surface.id,
         });
       } catch (err: any) {
         console.warn(`[BrandOverlay] Skipping placement ${placement.id}: ${err.message}`);
@@ -1606,6 +1633,13 @@ interface BrandOverlay {
   /** Set by bakeCreatorOverlaySprite AFTER full-res bbox refinement — the
    *  final sprite file and its exact pixel rect in the source frame. */
   baked?: { spritePath: string; w: number; h: number; x: number; y: number };
+  /** The frame `baked` is expressed in, so the rect can be turned into a
+   *  fraction later without guessing the render size. */
+  bakedFrame?: { width: number; height: number };
+  /** Which saved placement and detection row this overlay came from, so the
+   *  delivered rect can be joined back to the placement that intended it. */
+  savedPlacementId?: number | null;
+  surfaceId?: number | null;
 }
 
 /**
@@ -1634,6 +1668,9 @@ async function bakeCreatorOverlaySprite(
   const bboxPxY = ov.bboxY * srcHeight;
   const bboxPxW = Math.max(8, ov.bboxWidth * srcWidth);
   const bboxPxH = Math.max(8, ov.bboxHeight * srcHeight);
+  // The frame these pixel rects are expressed in — kept so the delivered rect
+  // can be expressed as a fraction later without re-deriving the render size.
+  ov.bakedFrame = { width: srcWidth, height: srcHeight };
   const spritePath = path.join(tmpDir, `creator-sprite-${Date.now()}-${Math.round(bboxPxX)}.png`);
   const opacity = Math.max(0, Math.min(100, cp.blend.opacity)) / 100;
 

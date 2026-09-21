@@ -25,6 +25,7 @@
 import { retentionAtPlacement, type RetentionCurveRow } from "../postTimeline";
 import { readCanvasDims } from "@shared/placementCanvas";
 import type { PlacementVector } from "@shared/placementVector";
+import type { DeliveredPlacement } from "@shared/deliveredGeometry";
 
 export interface DatasetColumn {
   key: string;
@@ -71,6 +72,24 @@ export const PLACEMENT_DATASET_COLUMNS: DatasetColumn[] = [
   { key: "product_rotation_deg", description: "Creator's rotation.", unit: "degrees" },
   { key: "product_area_share_est", description: "ESTIMATED share of frame the product covers: surface area x scale squared.", unit: "fraction of frame area", basis: "an estimate — the product's own aspect ratio is not stored, so this is the fitted box, not the drawn pixels" },
   { key: "geometry_trusted", description: "False when the placement predates canvas recording, so its offsets are interpreted with a renderer's assumption rather than a recorded size.", unit: "boolean" },
+
+  // ── where it actually landed, from the renderer that drew it ──
+  { key: "delivered_source", description: "Which render this geometry came from: a video export or an editorial clip.", unit: "", basis: "null when no render of this placement recorded geometry — including a render produced outside the platform and uploaded by hand" },
+  { key: "delivered_x", description: "Left edge of the product as drawn.", unit: "fraction of rendered frame width" },
+  { key: "delivered_y", description: "Top edge of the product as drawn.", unit: "fraction of rendered frame height" },
+  { key: "delivered_w", description: "Product width as drawn.", unit: "fraction of rendered frame width" },
+  { key: "delivered_h", description: "Product height as drawn.", unit: "fraction of rendered frame height" },
+  { key: "delivered_center_x", description: "Horizontal centre of the product as drawn.", unit: "fraction of rendered frame width" },
+  { key: "delivered_center_y", description: "Vertical centre of the product as drawn.", unit: "fraction of rendered frame height" },
+  { key: "delivered_area_share", description: "Share of the rendered frame the product covers. This is the drawn pixels, not an estimate.", unit: "fraction of frame area" },
+  { key: "intent_to_delivered_drift", description: "How far the delivered centre sits from the intended centre.", unit: "fraction of frame diagonal", basis: "null unless both the intent and the delivery are known; a crop or a different frame size moves it legitimately" },
+  { key: "delivered_visible_sec", description: "Seconds the product was on screen in the render.", unit: "seconds", basis: "read delivered_dwell_basis before comparing two rows" },
+  { key: "delivered_dwell_basis", description: "How the dwell was derived: visibility-windows (exact), sampled (measured from drawn frames), full-render (upper bound, does not subtract b-roll), or unknown.", unit: "" },
+  { key: "delivered_sample_kind", description: "static for one fixed rect, frame-sampled for a tracked placement.", unit: "" },
+  { key: "delivered_frame_w", description: "Width of the frame it was rendered into.", unit: "pixels" },
+  { key: "delivered_frame_h", description: "Height of the frame it was rendered into.", unit: "pixels" },
+  { key: "delivered_clipped_at_edge", description: "True when the product had to be pushed back inside the frame to stay visible.", unit: "boolean" },
+  { key: "delivered_rendered_at", description: "When that render was produced.", unit: "ISO 8601" },
 
   // ── what harmonize measured about the spot ──
   { key: "region_surface_normal", description: "Measured orientation of the surface plane.", unit: "" },
@@ -136,6 +155,8 @@ export interface DatasetInput {
   sourcePlatformPostId: string | null;
   clicks: number;
   conversions: number;
+  /** Where the renderer actually drew it, when any render recorded geometry. */
+  delivered: DeliveredPlacement | null;
   builtAt: string;
 }
 
@@ -181,6 +202,19 @@ export function buildDatasetRow(input: DatasetInput): DatasetRow {
     : null;
 
   const frame = vector?.frameDimensions ?? null;
+
+  // Where it was actually drawn, and how far that is from where it was meant
+  // to go. They diverge for ordinary reasons — a crop, a different frame size,
+  // a clamp at the edge — which is exactly why both are recorded.
+  const deliveredCenter = input.delivered
+    ? {
+        x: input.delivered.rectFrac.x + input.delivered.rectFrac.w / 2,
+        y: input.delivered.rectFrac.y + input.delivered.rectFrac.h / 2,
+      }
+    : null;
+  const drift = deliveredCenter && centerX !== null && centerY !== null
+    ? round(Math.hypot(deliveredCenter.x - centerX, deliveredCenter.y - centerY) / Math.SQRT2)
+    : null;
   const placed = retentionAtPlacement({
     exposure: exposure ?? { platformPostId: null, sourceStartSec: null },
     curve,
@@ -220,6 +254,23 @@ export function buildDatasetRow(input: DatasetInput): DatasetRow {
     product_rotation_deg: round(numOrNull(transform?.rotation), 2),
     product_area_share_est: surfaceArea === null || scale === null ? null : round(surfaceArea * scale * scale),
     geometry_trusted: dims !== null,
+
+    delivered_source: input.delivered?.renderKind ?? null,
+    delivered_x: input.delivered?.rectFrac.x ?? null,
+    delivered_y: input.delivered?.rectFrac.y ?? null,
+    delivered_w: input.delivered?.rectFrac.w ?? null,
+    delivered_h: input.delivered?.rectFrac.h ?? null,
+    delivered_center_x: deliveredCenter ? round(deliveredCenter.x) : null,
+    delivered_center_y: deliveredCenter ? round(deliveredCenter.y) : null,
+    delivered_area_share: input.delivered?.areaShare ?? null,
+    intent_to_delivered_drift: drift,
+    delivered_visible_sec: input.delivered?.visibleSec ?? null,
+    delivered_dwell_basis: input.delivered?.dwellBasis ?? null,
+    delivered_sample_kind: input.delivered?.sampleKind ?? null,
+    delivered_frame_w: input.delivered?.frame.width ?? null,
+    delivered_frame_h: input.delivered?.frame.height ?? null,
+    delivered_clipped_at_edge: input.delivered ? input.delivered.clippedAtEdge : null,
+    delivered_rendered_at: input.delivered?.renderedAt ?? null,
 
     region_surface_normal: vector?.regionAnalysis?.surfaceNormal ?? null,
     region_tilt_deg: round(vector?.regionAnalysis?.tiltDegrees ?? null, 2),

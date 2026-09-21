@@ -684,6 +684,14 @@ export const videoExports = pgTable("video_exports", {
   status: varchar("status").notNull().default("queued"), // 'queued' | 'processing' | 'complete' | 'failed'
   progress: integer("progress").default(0), // 0-100 percentage
   placementData: jsonb("placement_data").notNull(), // Array of placement configs with keyframes
+  /**
+   * Where each placement actually landed in the rendered file: the pixel rect,
+   * the frame it was rendered in, and the seconds it was on screen. The
+   * renderer computes all of this and used to discard it, so a placement's
+   * record described the creator's intent rather than what a viewer saw.
+   * See shared/deliveredGeometry.ts.
+   */
+  deliveredPlacements: jsonb("delivered_placements").$type<import("./deliveredGeometry").DeliveredPlacement[]>(),
   outputPath: text("output_path"), // Path to exported MP4 file
   outputUrl: text("output_url"), // Relative URL for download
   error: text("error"), // Error message if failed
@@ -1298,6 +1306,9 @@ export const editorialClips = pgTable('editorial_clips', {
     wordsPerPhrase?: number; // 1–12
     outline?: number;        // 0–8
   }>(),
+  /** Where each brand placement landed in this clip's render — pixel rect,
+   *  frame size, and time on screen. See shared/deliveredGeometry.ts. */
+  renderGeometry: jsonb('render_geometry').$type<import("./deliveredGeometry").DeliveredPlacement[]>(),
   renderStatus: varchar('render_status', { length: 20 }).default('pending'), // pending, rendering, rendered, failed
   renderError: text('render_error'),
   renderedAt: timestamp('rendered_at'),

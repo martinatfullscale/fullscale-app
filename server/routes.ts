@@ -1695,6 +1695,8 @@ export async function registerRoutes(
           "Retention is only readable when the post IS the source upload; a clip posted on its own has a curve we do not capture.",
           "conversions is always 0 today: the postback endpoint issues no key, so no brand can report one.",
           "Scene measurements cover placements where the creator harmonized; proximity covers frames analysed by the model since it shipped. Nulls mean not measured, never zero.",
+          "delivered_* columns come from our own renderers. A final render produced outside the platform and uploaded by hand carries no geometry, so those columns are null for it — that is a gap in the pipeline, not a measurement of zero.",
+          "Read delivered_dwell_basis before comparing dwell across rows: an exporter's windows are exact, a clip overlay's dwell is the cut's length and does not subtract full-frame b-roll.",
         ],
       });
     }
@@ -1715,6 +1717,8 @@ export async function registerRoutes(
     const surfaceCache = new Map<number, any[]>();
     const curveCache = new Map<number, any>();
     const fixtureCache = new Map<string, any>();
+    const clipGeometryCache = new Map<number, any[]>();
+    const exportGeometryCache = new Map<number, any[]>();
     const builtAt = new Date().toISOString();
 
     const rows: any[] = [];
@@ -1748,6 +1752,30 @@ export async function registerRoutes(
         fixture = fixtureCache.get(key);
       }
 
+      // Where the renderer actually drew it. The clip this placement was
+      // authored for wins, then the most recent completed export of the video.
+      // Null is the honest answer for a render produced outside the platform
+      // and uploaded by hand — nothing in that file tells us where it landed.
+      let delivered: any = null;
+      const clipId = (placement.editorialClipId ?? null) as number | null;
+      const matches = (g: any) =>
+        g?.savedPlacementId === placement.id ||
+        (g?.surfaceId != null && g.surfaceId === placement.surfaceId);
+      if (clipId) {
+        if (!clipGeometryCache.has(clipId)) {
+          const clip: any = await storage.getEditorialClipById(clipId).catch(() => undefined);
+          clipGeometryCache.set(clipId, (clip?.renderGeometry ?? []) as any[]);
+        }
+        delivered = (clipGeometryCache.get(clipId) ?? []).find(matches) ?? null;
+      }
+      if (!delivered) {
+        if (!exportGeometryCache.has(videoId)) {
+          const exports = (await storage.getCompletedExportsForVideo(videoId).catch(() => [])) as any[];
+          exportGeometryCache.set(videoId, exports.flatMap((e) => (e.deliveredPlacements ?? []) as any[]));
+        }
+        delivered = (exportGeometryCache.get(videoId) ?? []).find(matches) ?? null;
+      }
+
       const attr = attribution.get(placement.id);
       rows.push(buildDatasetRow({
         placement,
@@ -1759,6 +1787,7 @@ export async function registerRoutes(
         sourcePlatformPostId: video?.youtubeId ?? null,
         clicks: attr?.clicks ?? 0,
         conversions: attr?.conversions ?? 0,
+        delivered,
         builtAt,
       }));
     }

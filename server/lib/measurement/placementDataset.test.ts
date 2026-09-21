@@ -34,6 +34,7 @@ const base = (over: Partial<DatasetInput> = {}): DatasetInput => ({
   sourcePlatformPostId: null,
   clicks: 0,
   conversions: 0,
+  delivered: null,
   builtAt: "2026-09-20T12:00:00.000Z",
   ...over,
 });
@@ -115,6 +116,50 @@ test("measurements are carried through when they exist", () => {
   assert.equal(row.person_nearest_gap, 0.12);
   // Pixels only exist because a harmonize run recorded the frame size.
   assert.equal(row.dist_from_left_px, Math.round(0.6 * 1920));
+});
+
+test("delivered geometry is recorded next to intent, with the drift between them", () => {
+  const withoutRender = buildDatasetRow(base());
+  assert.equal(withoutRender.delivered_source, null);
+  assert.equal(withoutRender.delivered_visible_sec, null);
+  assert.equal(withoutRender.intent_to_delivered_drift, null, "no render means no drift, not zero drift");
+
+  const row = buildDatasetRow(base({
+    delivered: {
+      placementIndex: 0, savedPlacementId: 7, surfaceId: 5, renderKind: "video_export",
+      frame: { width: 1920, height: 1080 },
+      rect: { x: 1056, y: 540, w: 192, h: 108 },
+      rectFrac: { x: 0.55, y: 0.5, w: 0.1, h: 0.1 },
+      areaShare: 0.01, sampleKind: "static", sampleCount: 0,
+      visibleWindows: [[3, 12]], visibleSec: 9, dwellBasis: "visibility-windows",
+      clippedAtEdge: false, canvasKnown: true, renderedAt: "2026-09-21T09:00:00.000Z",
+    },
+  }));
+  assert.equal(row.delivered_source, "video_export");
+  assert.equal(row.delivered_area_share, 0.01);
+  assert.equal(row.delivered_visible_sec, 9);
+  assert.equal(row.delivered_dwell_basis, "visibility-windows");
+  // Intent centre is 0.6, 0.55; delivered centre is 0.6, 0.55 — they agree here.
+  assert.equal(row.delivered_center_x, 0.6);
+  assert.equal(row.intent_to_delivered_drift, 0);
+});
+
+test("a placement that landed somewhere else shows the drift", () => {
+  const row = buildDatasetRow(base({
+    delivered: {
+      placementIndex: 0, savedPlacementId: 7, surfaceId: 5, renderKind: "editorial_clip",
+      frame: { width: 1080, height: 1920 },
+      rect: { x: 0, y: 0, w: 108, h: 192 },
+      rectFrac: { x: 0.2, y: 0.2, w: 0.1, h: 0.1 },
+      areaShare: 0.01, sampleKind: "static", sampleCount: 0,
+      visibleWindows: [[0, 30]], visibleSec: 30, dwellBasis: "full-render",
+      clippedAtEdge: true, canvasKnown: true, renderedAt: "2026-09-21T09:00:00.000Z",
+    },
+  }));
+  // Intent 0.6/0.55 vs delivered 0.25/0.25 — a vertical crop moved it.
+  assert.ok((row.intent_to_delivered_drift as number) > 0.2, String(row.intent_to_delivered_drift));
+  assert.equal(row.delivered_clipped_at_edge, true);
+  assert.equal(row.delivered_dwell_basis, "full-render");
 });
 
 test("retention is scored only against the post's own curve, and says why when it cannot be", () => {
