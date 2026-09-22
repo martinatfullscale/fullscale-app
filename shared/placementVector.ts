@@ -49,12 +49,11 @@ export interface PlacementVector {
   measuredAt: string;
 }
 
-const SURFACE_NORMALS = ["horizontal", "vertical", "tilted-toward-camera", "tilted-away"] as const;
-const SHADOW_DIRECTIONS = [
-  "top-left", "top", "top-right", "left", "right",
-  "bottom-left", "bottom", "bottom-right", "ambient",
-] as const;
-const OPEN_SPACE = ["cramped", "open", "isolated"] as const;
+// One vocabulary, defined with the surface-level measurement. A placement's
+// region analysis is the same description applied to a sub-region of a
+// surface, so the two are only comparable if they share these exact terms.
+import { SURFACE_NORMALS, SHADOW_DIRECTIONS, OPEN_SPACE } from "./surfaceMeasurement";
+
 const MAX_NEIGHBORS = 16;
 
 const num = (v: unknown, min: number, max: number): number | null => {

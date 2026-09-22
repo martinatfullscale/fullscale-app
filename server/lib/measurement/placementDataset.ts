@@ -26,6 +26,11 @@ import { retentionAtPlacement, type RetentionCurveRow } from "../postTimeline";
 import { readCanvasDims } from "@shared/placementCanvas";
 import type { PlacementVector } from "@shared/placementVector";
 import type { DeliveredPlacement } from "@shared/deliveredGeometry";
+import {
+  foldSurfaceMeasurements,
+  sanitizeSurfaceMeasurement,
+  type SurfaceMeasurement,
+} from "@shared/surfaceMeasurement";
 
 export interface DatasetColumn {
   key: string;
@@ -100,12 +105,15 @@ export const PLACEMENT_DATASET_COLUMNS: DatasetColumn[] = [
   { key: "region_saturation", description: "Dominant saturation of the region.", unit: "0-1" },
   { key: "region_luminance", description: "Average luminance of the region.", unit: "0-1" },
   { key: "region_open_space", description: "How crowded the spot is: cramped, open or isolated.", unit: "" },
-  { key: "region_recommended_scale", description: "Scale the model thought the product should be.", unit: "multiplier" },
+  { key: "region_recommended_scale", description: "Scale the model thought the product should be.", unit: "multiplier", basis: "harmonize-only: it is a multiplier on one product's chosen size, so a scan-measured surface leaves it null" },
   { key: "region_neighbors", description: "Objects the model saw next to the spot.", unit: "list" },
+  { key: "region_measured_on", description: "Which reading the region columns came from: placement (measured against the exact box the product was dropped in, during a harmonize) or surface (measured by the scan for the surface as a whole).", unit: "", basis: "a placement reading describes a product-sized crop; a surface reading describes the whole surface. Do not average the two without splitting on this column." },
+  { key: "region_sample_count", description: "How many scanned frames the surface reading was folded from.", unit: "count", basis: "null for a placement reading, which is a single measurement" },
+  { key: "region_hue_agreement", description: "How much the scanned frames agreed about the hue, as the resultant length of their angles.", unit: "0-1", basis: "near 0 means the frames disagreed and region_hue_deg carries no information; null for a placement reading" },
   { key: "atmosphere_brightness_factor", description: "Brightness correction the scene implied for the product.", unit: "multiplier" },
   { key: "atmosphere_scene_brightness", description: "Measured brightness of the scene around the placement.", unit: "0-1" },
   { key: "scene_measurement_mode", description: "Which harmonize path produced the measurements.", unit: "" },
-  { key: "has_scene_measurement", description: "False when the creator saved without harmonizing, so the region columns are null.", unit: "boolean" },
+  { key: "has_scene_measurement", description: "False when neither the scan nor a harmonize run produced a reading of the spot, so the region columns are null.", unit: "boolean", basis: "read with region_measured_on: true no longer implies a harmonize ran, because the scan now measures every surface it finds" },
 
   // ── proximity to people ──
   { key: "person_count", description: "People detected in the frame this surface was measured on.", unit: "count" },
@@ -157,6 +165,17 @@ export interface DatasetInput {
   conversions: number;
   /** Where the renderer actually drew it, when any render recorded geometry. */
   delivered: DeliveredPlacement | null;
+  /**
+   * Every scanned frame's reading of the fixture this placement sits on.
+   *
+   * Optional, and the reason it is a list: the scan writes one row per
+   * supporting frame, so a desk seen in twelve frames has twelve readings. A
+   * caller that has the whole group should pass it, and region_sample_count
+   * then says how many frames the answer rests on. When it is absent the
+   * anchor row's own reading is used, which is a sample of one and reports
+   * itself as such.
+   */
+  surfaceMeasurements?: SurfaceMeasurement[] | null;
   builtAt: string;
 }
 
@@ -180,6 +199,25 @@ export function buildDatasetRow(input: DatasetInput): DatasetRow {
   const transform = placement?.transform ?? {};
   const vector: PlacementVector | null = placement?.placementVector ?? null;
   const person = surface?.personContext ?? null;
+
+  // The same spot can be described twice: once by the scan, for the surface as
+  // a whole, and once by a harmonize run, against the exact box the product
+  // was dropped in. The harmonize reading is the tighter one where it exists,
+  // so it wins — but the scan's reading is the one that exists for EVERY
+  // surface, including the ones nobody ever bought. `region_measured_on` says
+  // which, because averaging the two without knowing would compare a
+  // product-sized crop against a whole desk.
+  const groupReadings = Array.isArray(input.surfaceMeasurements) && input.surfaceMeasurements.length
+    ? input.surfaceMeasurements
+    : [surface?.surfaceMeasurement];
+  const surfaceMeasurement = foldSurfaceMeasurements(
+    groupReadings
+      .map((m) => sanitizeSurfaceMeasurement(m))
+      .filter((m): m is SurfaceMeasurement => m !== null),
+  );
+  const region = vector?.regionAnalysis ?? surfaceMeasurement ?? null;
+  const regionSource: "placement" | "surface" | null =
+    vector?.regionAnalysis ? "placement" : surfaceMeasurement ? "surface" : null;
 
   const sx = numOrNull(surface?.boundingBoxX);
   const sy = numOrNull(surface?.boundingBoxY);
@@ -272,20 +310,27 @@ export function buildDatasetRow(input: DatasetInput): DatasetRow {
     delivered_clipped_at_edge: input.delivered ? input.delivered.clippedAtEdge : null,
     delivered_rendered_at: input.delivered?.renderedAt ?? null,
 
-    region_surface_normal: vector?.regionAnalysis?.surfaceNormal ?? null,
-    region_tilt_deg: round(vector?.regionAnalysis?.tiltDegrees ?? null, 2),
-    region_shadow_direction: vector?.regionAnalysis?.existingShadowDirection ?? null,
-    region_shadow_intensity: round(vector?.regionAnalysis?.existingShadowIntensity ?? null),
-    region_hue_deg: round(vector?.regionAnalysis?.dominantHueDeg ?? null, 1),
-    region_saturation: round(vector?.regionAnalysis?.dominantSaturation ?? null),
-    region_luminance: round(vector?.regionAnalysis?.averageLuminance ?? null),
-    region_open_space: vector?.regionAnalysis?.openSpaceClass ?? null,
+    region_surface_normal: region?.surfaceNormal ?? null,
+    region_tilt_deg: round(region?.tiltDegrees ?? null, 2),
+    region_shadow_direction: region?.existingShadowDirection ?? null,
+    region_shadow_intensity: round(region?.existingShadowIntensity ?? null),
+    region_hue_deg: round(region?.dominantHueDeg ?? null, 1),
+    region_saturation: round(region?.dominantSaturation ?? null),
+    region_luminance: round(region?.averageLuminance ?? null),
+    region_open_space: region?.openSpaceClass ?? null,
+    // Only a harmonize run produces this: it is a multiplier on a specific
+    // product's size, so the scan has no opinion on it and leaves it null.
     region_recommended_scale: round(vector?.regionAnalysis?.recommendedScale ?? null),
-    region_neighbors: vector?.regionAnalysis?.neighboringObjects?.join("; ") ?? null,
+    region_neighbors: region?.neighboringObjects?.join("; ") ?? null,
+    region_measured_on: regionSource,
+    region_sample_count: surfaceMeasurement?.sampleCount ?? null,
+    region_hue_agreement: regionSource === "surface"
+      ? round(surfaceMeasurement?.hueAgreement ?? null)
+      : null,
     atmosphere_brightness_factor: round(vector?.atmosphere?.brightnessFactor ?? null),
     atmosphere_scene_brightness: round(vector?.atmosphere?.sceneBrightness ?? null),
     scene_measurement_mode: vector?.mode ?? null,
-    has_scene_measurement: !!(vector?.regionAnalysis || vector?.atmosphere),
+    has_scene_measurement: !!(region || vector?.atmosphere),
 
     person_count: person?.measured?.personCount ?? null,
     person_overlap_fraction: round(person?.measured?.overlapFraction ?? null),

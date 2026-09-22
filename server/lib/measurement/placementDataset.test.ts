@@ -202,3 +202,104 @@ test("CSV escapes anything that would break a parser", () => {
   // A null must be an empty cell, never the string "null".
   assert.ok(!csv.includes(",null,"), csv.slice(0, 200));
 });
+
+// ── scan-measured surfaces ──────────────────────────────────────────────
+// The scan now measures every surface it finds, so the region columns are no
+// longer a harmonize-only artefact. Two readings of one spot exist, they mean
+// different things, and the dataset has to say which one a row carries.
+
+const reading = (over: Record<string, unknown> = {}) => ({
+  surfaceNormal: "horizontal",
+  tiltDegrees: 6,
+  existingShadowDirection: "top-left",
+  existingShadowIntensity: 0.3,
+  dominantHueDeg: 30,
+  dominantSaturation: 0.2,
+  averageLuminance: 0.5,
+  neighboringObjects: ["mic arm"],
+  openSpaceClass: "open",
+  source: "scan",
+  ...over,
+});
+
+test("a placement that was never harmonized still carries the scan's reading", () => {
+  const row = buildDatasetRow(base({
+    surface: { ...base().surface, surfaceMeasurement: reading() },
+  }));
+  assert.equal(row.region_surface_normal, "horizontal");
+  assert.equal(row.region_tilt_deg, 6);
+  assert.equal(row.region_measured_on, "surface");
+  assert.equal(row.has_scene_measurement, true);
+});
+
+test("the scan's reading never invents a product-specific scale", () => {
+  const row = buildDatasetRow(base({
+    surface: { ...base().surface, surfaceMeasurement: reading() },
+  }));
+  // recommendedScale is a multiplier on one product's chosen size. The scan
+  // has no product, so it must stay null rather than borrow a default.
+  assert.equal(row.region_recommended_scale, null);
+});
+
+test("a harmonize reading wins over the scan's, and says so", () => {
+  const row = buildDatasetRow(base({
+    placement: {
+      ...base().placement,
+      placementVector: {
+        regionAnalysis: { ...reading({ tiltDegrees: 21 }), recommendedScale: 1.2 },
+        atmosphere: null, mode: "procedural", bbox: null, frameDimensions: null,
+        measuredAt: "2026-09-20T00:00:00.000Z",
+      },
+    },
+    surface: { ...base().surface, surfaceMeasurement: reading({ tiltDegrees: 6 }) },
+  }));
+  assert.equal(row.region_tilt_deg, 21, "the placement-box reading is the tighter one");
+  assert.equal(row.region_measured_on, "placement");
+  assert.equal(row.region_recommended_scale, 1.2);
+  // Sample count and hue agreement describe a fold of scanned frames, so they
+  // must not be attached to a single harmonize reading.
+  assert.equal(row.region_hue_agreement, null);
+});
+
+test("an unmeasured surface reports no reading rather than zeros", () => {
+  const row = buildDatasetRow(base());
+  assert.equal(row.region_measured_on, null);
+  assert.equal(row.region_tilt_deg, null);
+  assert.equal(row.region_luminance, null);
+  assert.equal(row.region_sample_count, null);
+  assert.equal(row.has_scene_measurement, false);
+});
+
+test("the fixture's frames fold into one reading, and the count is reported", () => {
+  const row = buildDatasetRow(base({
+    surface: { ...base().surface, surfaceMeasurement: reading({ averageLuminance: 0.9 }) },
+    surfaceMeasurements: [
+      reading({ averageLuminance: 0.4 }),
+      reading({ averageLuminance: 0.5 }),
+      reading({ averageLuminance: 0.6 }),
+    ],
+  }));
+  assert.equal(row.region_luminance, 0.5, "the group's median, not the anchor row's value");
+  assert.equal(row.region_sample_count, 3);
+});
+
+test("a surface reading carries its hue agreement so a disputed hue is visible", () => {
+  const row = buildDatasetRow(base({
+    surface: { ...base().surface, surfaceMeasurement: reading() },
+    surfaceMeasurements: [reading({ dominantHueDeg: 0 }), reading({ dominantHueDeg: 180 })],
+  }));
+  assert.ok(
+    (row.region_hue_agreement as number) < 0.05,
+    `frames that disagree must report it (got ${row.region_hue_agreement})`,
+  );
+});
+
+test("a partial reading on the surface is treated as no reading", () => {
+  const broken = reading();
+  delete (broken as Record<string, unknown>).dominantHueDeg;
+  const row = buildDatasetRow(base({
+    surface: { ...base().surface, surfaceMeasurement: broken },
+  }));
+  assert.equal(row.region_measured_on, null);
+  assert.equal(row.region_surface_normal, null, "a half-read spot must not half-populate the row");
+});

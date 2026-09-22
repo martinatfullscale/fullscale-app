@@ -2,6 +2,7 @@ import { pgTable, text, serial, timestamp, boolean, varchar, integer, numeric, u
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import type { SurfaceMeasurement } from "./surfaceMeasurement";
 
 // Import Auth Definitions
 import { users } from "./models/auth";
@@ -228,7 +229,10 @@ export const videoIndex = pgTable("video_index", {
   //                             bbox: {x,y,w,h},          // median, 0-1
   //                             confidence, screenTimeSec, // = scene totalSec
   //                             rowCount, representativeRowId,
-  //                             frameUrl }] }],
+  //                             frameUrl,
+  //                             measurement }] }],   // folded SurfaceMeasurement
+  //                                                  // + sampleCount/hueAgreement,
+  //                                                  // null when no frame read it
   //     generatedAt }
   // source="grid" marks streamed scans where the scene index was synthesized
   // from dense-grid frame hashes rather than shot-midpoint keyframes. Null
@@ -316,6 +320,21 @@ export const detectedSurfaces = pgTable("detected_surfaces", {
     };
     measuredAgainst: string;
   }>(),
+  /**
+   * What this spot is physically like, measured on the frame this row is for.
+   *
+   * The same description used to be produced only inside the harmonizer, per
+   * placement, after a brand had already bought the spot. That made the
+   * inventory unmeasured by construction: a surface nobody placed on had no
+   * measurement, so nothing could rank spots before a product was chosen, and
+   * the numbers would leave with the renderer whenever it was replaced.
+   *
+   * It rides along in the scan's existing vision response — the same call that
+   * already returns lighting and camera angle — so it costs no extra request.
+   * Null on rows scanned before this shipped, and on any frame whose reading
+   * came back incomplete; null means "not measured", never "featureless".
+   */
+  surfaceMeasurement: jsonb("surface_measurement").$type<SurfaceMeasurement>(),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
   // This table had NO indexes, and it is the highest-volume table the scanner

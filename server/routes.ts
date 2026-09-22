@@ -1788,6 +1788,16 @@ export async function registerRoutes(
         clicks: attr?.clicks ?? 0,
         conversions: attr?.conversions ?? 0,
         delivered,
+        // Every scanned frame's reading of this fixture, not just the anchor
+        // row's. The scan writes one row per supporting frame, so the group is
+        // already in hand here — passing it is what makes the folded value a
+        // consensus rather than a sample of one.
+        surfaceMeasurements: groupId
+          ? (surfaceCache.get(videoId) ?? [])
+              .filter((s: any) => s.surfaceGroupId === groupId)
+              .map((s: any) => s.surfaceMeasurement)
+              .filter(Boolean)
+          : null,
         builtAt,
       }));
     }

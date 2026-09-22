@@ -25,6 +25,7 @@ import ffmpegStaticPath from "ffmpeg-static";
 import sharp from "sharp";
 import { storage } from "./storage";
 import type { InsertDetectedSurface, RoomModel } from "@shared/schema";
+import { sanitizeSurfaceMeasurement, foldSurfaceMeasurements, type SurfaceMeasurement } from "@shared/surfaceMeasurement";
 import { GoogleGenAI } from "@google/genai";
 import { uploadFileToStorage, downloadToTempFile, storageServeUrl } from "./lib/objectStorage";
 import { downloadVideo as downloadYouTubeVideo, getYoutubeVideoDuration } from "./lib/scanner";
@@ -339,6 +340,10 @@ interface DetectedSurface {
   lightingDirection?: string;  // left, right, top, top-left, top-right, ambient
   lightingIntensity?: number;  // 0.0-1.0
   cameraAngle?: string;        // eye-level, slightly-above, top-down, low-angle
+  /** What this spot is physically like on this frame. Undefined when the
+   *  model's reading came back incomplete — partial measurements are dropped
+   *  rather than half-stored. */
+  measurement?: SurfaceMeasurement;
   /** People in this frame, carried to the insert so proximity can be measured
    *  against the box that actually gets stored. Absent when the frame had no
    *  people data at all — which is not the same as "no people in frame". */
@@ -394,6 +399,19 @@ interface GeminiDetectedSurface {
   lighting_direction?: string;  // left, right, top, top-left, top-right, ambient
   lighting_intensity?: number;  // 0.0-1.0
   camera_angle?: string;        // eye-level, slightly-above, top-down, low-angle
+  // What the spot itself is like — snake_case as the model returns it, mapped
+  // and validated into a SurfaceMeasurement below. Optional here because a
+  // frame scanned by an older prompt, or a response that came back short,
+  // simply has no measurement; the sanitizer drops partials whole.
+  surface_normal?: string;
+  tilt_degrees?: number;
+  existing_shadow_direction?: string;
+  existing_shadow_intensity?: number;
+  dominant_hue_deg?: number;
+  dominant_saturation?: number;
+  average_luminance?: number;
+  neighboring_objects?: string[];
+  open_space_class?: string;
 }
 
 interface GeminiSurfaceDetectionResult {
@@ -821,6 +839,34 @@ For each surface, provide:
 - **lighting_intensity**: 0.0 to 1.0
 - **camera_angle**: "eye-level", "slightly-above", "top-down", "low-angle"
 
+MEASUREMENT FIELDS (REQUIRED for every surface — these describe the SPOT
+itself, not any product. They are what lets one spot be compared against
+another later, so answer them for the surface as you see it, and answer all
+of them or none):
+- **surface_normal**: "horizontal", "vertical", "tilted-toward-camera", "tilted-away"
+  — how the plane faces the camera. Distinct from the orientation field:
+  a desk shot
+  from above is orientation "horizontal" but normal "tilted-toward-camera".
+- **tilt_degrees**: -90 to 90. 0 = the plane faces the camera square on.
+  Negative tilts away from the viewer, positive tilts toward.
+- **existing_shadow_direction**: "top-left", "top", "top-right", "left",
+  "right", "bottom-left", "bottom", "bottom-right", "ambient" — which way
+  shadows ALREADY fall in this region. "ambient" when light is flat and
+  objects here cast no directional shadow.
+- **existing_shadow_intensity**: 0.0 (no visible shadow) to 1.0 (hard black).
+- **dominant_hue_deg**: 0 to 360 — the prevailing colour of the surface
+  itself (red=0, yellow=60, green=120, cyan=180, blue=240, magenta=300).
+  For a neutral grey/white/black surface give your best estimate of its
+  colour cast and set dominant_saturation low.
+- **dominant_saturation**: 0.0 (neutral grey) to 1.0 (vivid).
+- **average_luminance**: 0.0 (black) to 1.0 (blown white) — how bright the
+  surface region reads.
+- **neighboring_objects**: up to 6 short names of what actually sits on or
+  immediately beside this surface ("mic arm", "water bottle", "plant").
+  Empty array when the spot is genuinely bare — that is a real answer.
+- **open_space_class**: "cramped" (clutter crowds it), "open" (room around
+  it), "isolated" (nothing else near it at all).
+
 RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
 {
   "surfaces_found": true,
@@ -838,7 +884,16 @@ RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
       "reasoning": "Clear studio desk surface, well-lit, main placement area",
       "lighting_direction": "top-left",
       "lighting_intensity": 0.7,
-      "camera_angle": "slightly-above"
+      "camera_angle": "slightly-above",
+      "surface_normal": "tilted-toward-camera",
+      "tilt_degrees": 12,
+      "existing_shadow_direction": "bottom-right",
+      "existing_shadow_intensity": 0.35,
+      "dominant_hue_deg": 28,
+      "dominant_saturation": 0.22,
+      "average_luminance": 0.48,
+      "neighboring_objects": ["mic arm", "water bottle"],
+      "open_space_class": "open"
     },
     {
       "location": {"x": 5, "y": 5, "width": 35, "height": 45},
@@ -848,7 +903,16 @@ RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
       "reasoning": "Empty unobstructed wall section behind subject, in focus",
       "lighting_direction": "top",
       "lighting_intensity": 0.6,
-      "camera_angle": "eye-level"
+      "camera_angle": "eye-level",
+      "surface_normal": "vertical",
+      "tilt_degrees": 0,
+      "existing_shadow_direction": "ambient",
+      "existing_shadow_intensity": 0.1,
+      "dominant_hue_deg": 210,
+      "dominant_saturation": 0.08,
+      "average_luminance": 0.55,
+      "neighboring_objects": [],
+      "open_space_class": "open"
     }
   ],
   "recommended_placement": {
@@ -2557,6 +2621,20 @@ async function analyzeFrameWithGemini(
         lightingDirection: s.lighting_direction || undefined,
         lightingIntensity: typeof s.lighting_intensity === 'number' ? s.lighting_intensity : undefined,
         cameraAngle: s.camera_angle || undefined,
+        // camelCase the model's snake_case, then validate. Anything short or
+        // out of range comes back null and the surface simply carries no
+        // measurement — which reads correctly downstream as "not measured".
+        measurement: sanitizeSurfaceMeasurement({
+          surfaceNormal: s.surface_normal,
+          tiltDegrees: s.tilt_degrees,
+          existingShadowDirection: s.existing_shadow_direction,
+          existingShadowIntensity: s.existing_shadow_intensity,
+          dominantHueDeg: s.dominant_hue_deg,
+          dominantSaturation: s.dominant_saturation,
+          averageLuminance: s.average_luminance,
+          neighboringObjects: s.neighboring_objects,
+          openSpaceClass: s.open_space_class,
+        }, "scan") ?? undefined,
       }))
       .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)
       .slice(0, 8); // Max 8 surfaces per frame — full room inventory; consensus prunes
@@ -5386,6 +5464,10 @@ async function processVideoScanInner(
             lightingDirection: surface.lightingDirection || null,
             lightingIntensity: surface.lightingIntensity != null ? surface.lightingIntensity.toString() : null,
             cameraAngle: surface.cameraAngle || null,
+            // This frame's own reading of the spot. Per-frame like the
+            // lighting above; the scene inventory folds the frames into one
+            // consensus measurement for the surface as a whole.
+            surfaceMeasurement: surface.measurement ?? null,
             // Scene cluster — same physical set across cuts gets same ID,
             // unlocks placement continuity in the frontend.
             sceneId: sceneIdForFrame,
@@ -5806,6 +5888,16 @@ async function processVideoScanInner(
               rowCount: rows.length,
               representativeRowId: rep.id,
               frameUrl: rep.frameUrl ?? null,
+              // Every frame's reading of this one physical surface, rolled
+              // into a single description of the spot. This is the inventory
+              // view a ranking pass reads: it exists for every surface the
+              // scan found, whether or not anyone ever placed on it. Null
+              // when no frame produced a complete reading.
+              measurement: foldSurfaceMeasurements(
+                rows
+                  .map(r => sanitizeSurfaceMeasurement((r as any).surfaceMeasurement))
+                  .filter((m): m is SurfaceMeasurement => m !== null),
+              ),
             });
             surfacesByScene.set(groupSceneId, arr);
           }
