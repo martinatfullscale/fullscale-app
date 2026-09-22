@@ -28,6 +28,7 @@
 import { fal } from "@fal-ai/client";
 import sharp from "sharp";
 import { renderGlbAtAngle } from "./glbRenderer";
+import type { DepthReading } from "@shared/surfaceMeasurement";
 
 export interface HarmonizationInput {
   /** URL or local path to the base scene frame (jpg/png). */
@@ -104,6 +105,11 @@ export interface HarmonizationResult {
    */
   regionAnalysis?: PlacementRegionAnalysis | null;
   atmosphere?: SceneAtmosphere | null;
+  /** How far into the scene the spot sits, sampled from a depth map. Only the
+   *  ai-3d path runs one, and only when the shear is not suppressed, so this
+   *  is null on almost every harmonize — the scan is what measures depth for
+   *  the other paths and for every surface nobody ever placed on. */
+  depth?: DepthReading | null;
 }
 
 /** The scene's own light, sampled from a ring around the placement. */
@@ -716,7 +722,7 @@ async function estimateSceneAngleFromDepth(
   sceneBuf: Buffer,
   bbox: HarmonizationInput["bbox"],
   dims: HarmonizationInput["frameDimensions"],
-): Promise<{ yawDeg: number; pitchDeg: number } | null> {
+): Promise<{ yawDeg: number; pitchDeg: number; relativeDepth: number } | null> {
   const falKey = process.env.FAL_KEY;
   if (!falKey) return null;
   fal.config({ credentials: falKey });
@@ -789,7 +795,11 @@ async function estimateSceneAngleFromDepth(
     console.log(
       `[Harmonize/depth] ${elapsed}ms — center:${center} L:${left} R:${right} T:${top} B:${bottom} → yaw:${yawDeg.toFixed(1)}° pitch:${pitchDeg.toFixed(1)}°`,
     );
-    return { yawDeg, pitchDeg };
+    // The centre sample IS how far into the scene this spot sits, and it was
+    // being read and thrown away — only the two derived angles survived. The
+    // map is normalised per image, so this ranks planes within THIS frame and
+    // is never comparable across frames.
+    return { yawDeg, pitchDeg, relativeDepth: clamp(center / 255, 0, 1) };
   } catch (err: any) {
     console.warn(`[Harmonize/depth] Failed: ${err?.message || err}`);
     return null;
@@ -1952,6 +1962,9 @@ async function applyProceduralHarmonization(
 interface MeasuredScene {
   regionAnalysis?: PlacementRegionAnalysis | null;
   atmosphere?: SceneAtmosphere | null;
+  /** Sampled from the depth map, on the rare paths that run one. Absent on
+   *  every other path — which is why the scan measures depth too. */
+  depth?: DepthReading | null;
 }
 
 export async function harmonizeProductIntoScene(
@@ -1963,6 +1976,7 @@ export async function harmonizeProductIntoScene(
     ...result,
     regionAnalysis: measured.regionAnalysis ?? null,
     atmosphere: measured.atmosphere ?? null,
+    depth: measured.depth ?? null,
   };
 }
 
@@ -2282,6 +2296,23 @@ async function runHarmonize(
             ? Promise.resolve(null)
             : estimateSceneAngleFromDepth(sceneBuf, input.bbox, input.frameDimensions),
         ]);
+        // Capture the depth reading where it is produced. The band is derived
+        // from the sample rather than asked for: the map is relative, so the
+        // thirds are a reading of this frame, not an absolute scale.
+        if (depthAngle) {
+          measured.depth = {
+            band: depthAngle.relativeDepth >= 0.66 ? "foreground"
+              : depthAngle.relativeDepth >= 0.33 ? "midground" : "background",
+            // A single placement was measured, so it is the only thing ranked.
+            rankInFrame: 1,
+            // The depth map says nothing about who is in the frame; the scan's
+            // own reading is the source for that, and claiming otherwise here
+            // would overwrite a real answer with a guess.
+            relativeToPerson: "no-person",
+            relativeDepth: depthAngle.relativeDepth,
+            source: "depth-model",
+          };
+        }
         const trellis = gen3DResult ?? { renderUrl: "", meshUrl: undefined, turnaroundVideoUrl: undefined };
         trellisRenderUrl = trellis.renderUrl;
         meshUrl = trellis.meshUrl;

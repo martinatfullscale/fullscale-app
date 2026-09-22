@@ -110,6 +110,14 @@ export const PLACEMENT_DATASET_COLUMNS: DatasetColumn[] = [
   { key: "region_measured_on", description: "Which reading the region columns came from: placement (measured against the exact box the product was dropped in, during a harmonize) or surface (measured by the scan for the surface as a whole).", unit: "", basis: "a placement reading describes a product-sized crop; a surface reading describes the whole surface. Do not average the two without splitting on this column." },
   { key: "region_sample_count", description: "How many scanned frames the surface reading was folded from.", unit: "count", basis: "null for a placement reading, which is a single measurement" },
   { key: "region_hue_agreement", description: "How much the scanned frames agreed about the hue, as the resultant length of their angles.", unit: "0-1", basis: "near 0 means the frames disagreed and region_hue_deg carries no information; null for a placement reading" },
+
+  // ── depth ──
+  { key: "depth_band", description: "Which layer of the scene the spot sits in: foreground, midground or background.", unit: "" },
+  { key: "depth_rank_in_frame", description: "Ordering of this surface among the surfaces in its frame, 1 being nearest the camera.", unit: "rank", basis: "ordinal WITHIN one frame; not comparable across frames or videos" },
+  { key: "depth_vs_person", description: "Where the spot sits relative to the nearest person along the camera axis: in-front-of-person, alongside-person, behind-person, or no-person.", unit: "", basis: "a depth-model reading cannot see people, so this always comes from the scan" },
+  { key: "depth_relative", description: "Sampled depth at the spot, 1 being closest to camera.", unit: "0-1", basis: "null unless a depth map was actually sampled — absent is NOT the far plane. Normalised per image, so it ranks planes within one frame and must never be compared across frames" },
+  { key: "depth_source", description: "vision (the scan's estimate, present for every surface) or depth-model (a sampled depth map, present only where one was run).", unit: "" },
+  { key: "depth_sample_count", description: "How many readings the folded depth rests on.", unit: "count" },
   { key: "atmosphere_brightness_factor", description: "Brightness correction the scene implied for the product.", unit: "multiplier" },
   { key: "atmosphere_scene_brightness", description: "Measured brightness of the scene around the placement.", unit: "0-1" },
   { key: "scene_measurement_mode", description: "Which harmonize path produced the measurements.", unit: "" },
@@ -219,6 +227,15 @@ export function buildDatasetRow(input: DatasetInput): DatasetRow {
   const regionSource: "placement" | "surface" | null =
     vector?.regionAnalysis ? "placement" : surfaceMeasurement ? "surface" : null;
 
+  // Depth resolves on its own, not with the region block, because the two
+  // come from different instruments. A sampled depth map beats the scan's
+  // estimate — but it cannot see people, so depth_vs_person always comes from
+  // the scan's reading even when the number beside it was measured.
+  const scanDepth = surfaceMeasurement?.depth ?? null;
+  const sampledDepth = vector?.depth ?? null;
+  const depth = sampledDepth ?? scanDepth;
+  const depthVsPerson = scanDepth?.relativeToPerson ?? null;
+
   const sx = numOrNull(surface?.boundingBoxX);
   const sy = numOrNull(surface?.boundingBoxY);
   const sw = numOrNull(surface?.boundingBoxWidth);
@@ -327,6 +344,15 @@ export function buildDatasetRow(input: DatasetInput): DatasetRow {
     region_hue_agreement: regionSource === "surface"
       ? round(surfaceMeasurement?.hueAgreement ?? null)
       : null,
+    depth_band: depth?.band ?? null,
+    depth_rank_in_frame: depth?.rankInFrame ?? null,
+    depth_vs_person: depthVsPerson,
+    depth_relative: round(depth?.relativeDepth ?? null),
+    depth_source: depth?.source ?? null,
+    // Describes the reading actually reported: a sampled placement is one
+    // measurement, not the scan's frame count sitting next to it.
+    depth_sample_count: sampledDepth ? 1 : (scanDepth?.sampleCount ?? null),
+
     atmosphere_brightness_factor: round(vector?.atmosphere?.brightnessFactor ?? null),
     atmosphere_scene_brightness: round(vector?.atmosphere?.sceneBrightness ?? null),
     scene_measurement_mode: vector?.mode ?? null,

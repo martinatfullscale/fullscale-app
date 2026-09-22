@@ -412,6 +412,9 @@ interface GeminiDetectedSurface {
   average_luminance?: number;
   neighboring_objects?: string[];
   open_space_class?: string;
+  depth_band?: string;
+  depth_rank?: number;
+  depth_vs_person?: string;
 }
 
 interface GeminiSurfaceDetectionResult {
@@ -867,6 +870,22 @@ of them or none):
 - **open_space_class**: "cramped" (clutter crowds it), "open" (room around
   it), "isolated" (nothing else near it at all).
 
+DEPTH (REQUIRED — you already worked this out in the 3D layout step above,
+so report it rather than discarding it). Answer relative to THIS frame only;
+never try to give a distance in metres:
+- **depth_band**: "foreground", "midground" or "background" — which of the
+  three layers you described this surface belongs to.
+- **depth_rank**: 1 for the surface NEAREST the camera in this frame, 2 for
+  the next nearest, and so on. Every surface you return gets a distinct rank.
+- **depth_vs_person**: where this surface sits relative to the NEAREST
+  person, along the camera axis — "in-front-of-person" (nearer the camera
+  than they are), "behind-person" (further away, e.g. the backdrop wall),
+  "alongside-person" (roughly the same distance, e.g. a side table level
+  with their chair), or "no-person" when nobody is visible in the frame.
+  Judge this by depth, NOT by where the boxes sit on screen: a wall high in
+  the frame is still BEHIND the host, and a desk low in the frame is
+  usually IN FRONT of them.
+
 RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
 {
   "surfaces_found": true,
@@ -893,7 +912,10 @@ RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
       "dominant_saturation": 0.22,
       "average_luminance": 0.48,
       "neighboring_objects": ["mic arm", "water bottle"],
-      "open_space_class": "open"
+      "open_space_class": "open",
+      "depth_band": "foreground",
+      "depth_rank": 1,
+      "depth_vs_person": "in-front-of-person"
     },
     {
       "location": {"x": 5, "y": 5, "width": 35, "height": 45},
@@ -912,7 +934,10 @@ RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
       "dominant_saturation": 0.08,
       "average_luminance": 0.55,
       "neighboring_objects": [],
-      "open_space_class": "open"
+      "open_space_class": "open",
+      "depth_band": "background",
+      "depth_rank": 2,
+      "depth_vs_person": "behind-person"
     }
   ],
   "recommended_placement": {
@@ -2634,6 +2659,16 @@ async function analyzeFrameWithGemini(
           averageLuminance: s.average_luminance,
           neighboringObjects: s.neighboring_objects,
           openSpaceClass: s.open_space_class,
+          depth: {
+            band: s.depth_band,
+            rankInFrame: s.depth_rank,
+            relativeToPerson: s.depth_vs_person,
+            // The scan estimates the ordering; it does not sample a depth
+            // map, so there is no relative depth to report and null is the
+            // honest answer rather than a placeholder.
+            relativeDepth: null,
+            source: "vision",
+          },
         }, "scan") ?? undefined,
       }))
       .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)

@@ -35,6 +35,26 @@ export const SHADOW_DIRECTIONS = [
 
 export const OPEN_SPACE = ["cramped", "open", "isolated"] as const;
 
+/** How far into the scene a surface sits. Coarse on purpose: a placement
+ *  grammar needs "behind the host" and "on the near table", not metres. */
+export const DEPTH_BANDS = ["foreground", "midground", "background"] as const;
+
+/** Where the surface sits relative to the nearest person — the z fact that
+ *  actually changes how a placement reads. A product on the near table in
+ *  front of the host is a different buy from one on the shelf behind them,
+ *  even when their x/y and screen time match exactly. */
+export const PERSON_DEPTH = [
+  "in-front-of-person", "alongside-person", "behind-person", "no-person",
+] as const;
+
+/** How a depth reading was obtained. `vision` is the scan's own estimate and
+ *  exists for every surface; `depth-model` is a sampled depth map and exists
+ *  only where one was run. They are not interchangeable — see relativeDepth. */
+export const DEPTH_SOURCES = ["vision", "depth-model"] as const;
+
+export type DepthBand = (typeof DEPTH_BANDS)[number];
+export type PersonDepth = (typeof PERSON_DEPTH)[number];
+export type DepthSource = (typeof DEPTH_SOURCES)[number];
 export type SurfaceNormal = (typeof SURFACE_NORMALS)[number];
 export type ShadowDirection = (typeof SHADOW_DIRECTIONS)[number];
 export type OpenSpaceClass = (typeof OPEN_SPACE)[number];
@@ -44,6 +64,39 @@ export type OpenSpaceClass = (typeof OPEN_SPACE)[number];
  *  future external engine reporting its own numbers is never mistaken for
  *  ours. */
 export type MeasurementSource = "scan" | "harmonize" | "external";
+
+/**
+ * How far into the scene the spot sits.
+ *
+ * Deliberately relative, never metric. Every depth source available here is
+ * relative by nature — a monocular depth map is only ordered within its own
+ * image, and the scan's estimate is a band — so a number that looked like
+ * metres would be a fiction. What a placement grammar needs is the ordering
+ * anyway: which plane is nearer, and whether the product sits in front of the
+ * person or behind them.
+ *
+ * Kept as its own block rather than flattened into SurfaceMeasurement so that
+ * a frame the model described without depth still yields a usable lighting and
+ * colour reading. Depth is dropped whole on its own terms.
+ */
+export interface DepthReading {
+  band: DepthBand;
+  /** 1 = nearest surface in this frame. Ordinal within the frame only —
+   *  never comparable across frames or videos. */
+  rankInFrame: number;
+  relativeToPerson: PersonDepth;
+  /**
+   * 0..1, 1 = closest to camera, sampled from a depth map.
+   *
+   * Null for a `vision` reading, and that null is load-bearing: it is the
+   * difference between "no depth model has looked at this" and "the depth
+   * model says it is at the far plane". A monocular depth map is normalised
+   * per image, so this ranks planes WITHIN one frame and must never be
+   * compared across frames.
+   */
+  relativeDepth: number | null;
+  source: DepthSource;
+}
 
 export interface SurfaceMeasurement {
   surfaceNormal: SurfaceNormal;
@@ -57,6 +110,9 @@ export interface SurfaceMeasurement {
   averageLuminance: number;
   neighboringObjects: string[];
   openSpaceClass: OpenSpaceClass;
+  /** Null when the reading carried no usable depth — never read as "at the
+   *  front". */
+  depth: DepthReading | null;
   source: MeasurementSource;
 }
 
@@ -69,6 +125,9 @@ export interface SurfaceMeasurement {
  * meaningless green — so the agreement is reported rather than hidden.
  */
 export interface FoldedSurfaceMeasurement extends SurfaceMeasurement {
+  /** Folded across the frames that carried depth, which can be fewer than
+   *  sampleCount. Null when none of them did. */
+  depth: (DepthReading & { sampleCount: number }) | null;
   sampleCount: number;
   /** 0..1 resultant length of the hue vectors. Near 1 = the frames agree;
    *  near 0 = they point opposite ways and dominantHueDeg means nothing. */
@@ -80,6 +139,11 @@ const MAX_NEIGHBOR_LEN = 64;
 const SOURCES: readonly MeasurementSource[] = ["scan", "harmonize", "external"];
 
 const num = (v: unknown, min: number, max: number): number | null => {
+  // null and "" must NOT coerce. Number(null) is 0 and Number("") is 0, both
+  // of which sit inside most of these ranges, so a model that answered null
+  // because it could not tell would have been recorded as a confident zero —
+  // a flat surface, or a spot at the far plane.
+  if (v === null || v === undefined || v === "" || typeof v === "boolean") return null;
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) && n >= min && n <= max ? n : null;
 };
@@ -94,6 +158,30 @@ const readNeighbors = (raw: unknown): string[] =>
         .slice(0, MAX_NEIGHBORS)
         .map((s: string) => s.slice(0, MAX_NEIGHBOR_LEN))
     : [];
+
+/**
+ * Validate the depth block on its own terms.
+ *
+ * Dropped whole when the band, the in-frame rank or the relation to a person
+ * is missing, because a half-known depth is worse than none: it reads as
+ * placed in the scene while carrying no usable ordering. relativeDepth is the
+ * exception — it is absent by design for a vision reading.
+ */
+function readDepth(raw: unknown): DepthReading | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const band = oneOf(r.band, DEPTH_BANDS);
+  const relativeToPerson = oneOf(r.relativeToPerson, PERSON_DEPTH);
+  const rankInFrame = num(r.rankInFrame, 1, 64);
+  if (band === null || relativeToPerson === null || rankInFrame === null) return null;
+  return {
+    band,
+    rankInFrame: Math.round(rankInFrame),
+    relativeToPerson,
+    relativeDepth: num(r.relativeDepth, 0, 1),
+    source: oneOf(r.source, DEPTH_SOURCES) ?? "vision",
+  };
+}
 
 /**
  * Validate one surface's measurement as it came back from the vision model.
@@ -132,6 +220,7 @@ export function sanitizeSurfaceMeasurement(
     averageLuminance,
     neighboringObjects: readNeighbors(r.neighboringObjects),
     openSpaceClass,
+    depth: readDepth(r.depth),
     source: oneOf(r.source, SOURCES) ?? source,
   };
 }
@@ -233,6 +322,20 @@ export function foldSurfaceMeasurements(
     .slice(0, MAX_NEIGHBORS)
     .map(([name]) => name);
 
+  // Only the frames that actually carried depth vote on it. Folding over the
+  // rest would let an unmeasured frame count as agreement.
+  const depths = samples
+    .map((s) => s.depth)
+    .filter((d): d is DepthReading => d !== null && d !== undefined);
+  // A depth-model reading is a sampled measurement; a vision reading is an
+  // estimate. Where both exist for one surface the measured one wins outright
+  // rather than being averaged into the estimate.
+  const measured = depths.filter((d) => d.source === "depth-model");
+  const depthVoters = measured.length > 0 ? measured : depths;
+  const relativeDepths = depthVoters
+    .map((d) => d.relativeDepth)
+    .filter((v): v is number => v !== null);
+
   return {
     surfaceNormal: majority(samples.map((s) => s.surfaceNormal)),
     tiltDegrees: round(median(samples.map((s) => s.tiltDegrees)), 2),
@@ -243,6 +346,16 @@ export function foldSurfaceMeasurements(
     averageLuminance: round(median(samples.map((s) => s.averageLuminance)), 4),
     neighboringObjects,
     openSpaceClass: majority(samples.map((s) => s.openSpaceClass)),
+    depth: depthVoters.length === 0 ? null : {
+      band: majority(depthVoters.map((d) => d.band)),
+      // Ranks are ordinal, so the median is the honest centre: averaging
+      // rank 1 and rank 4 into 2.5 invents a position nothing occupied.
+      rankInFrame: Math.round(median(depthVoters.map((d) => d.rankInFrame))),
+      relativeToPerson: majority(depthVoters.map((d) => d.relativeToPerson)),
+      relativeDepth: relativeDepths.length ? round(median(relativeDepths), 4) : null,
+      source: majority(depthVoters.map((d) => d.source)),
+      sampleCount: depthVoters.length,
+    },
     source: majority(samples.map((s) => s.source)),
     sampleCount: samples.length,
     hueAgreement: hue.agreement,

@@ -41,6 +41,10 @@ export interface SceneAtmosphere {
 export interface PlacementVector {
   regionAnalysis: RegionAnalysis | null;
   atmosphere: SceneAtmosphere | null;
+  /** Sampled depth at this exact placement, when a path ran a depth map.
+   *  Null on nearly every harmonize; the surface's own scan reading is the
+   *  answer the dataset falls back to. */
+  depth: DepthReading | null;
   /** Which harmonize path produced these numbers. */
   mode: string;
   /** The surface box they were measured against, frame-normalised. */
@@ -52,11 +56,20 @@ export interface PlacementVector {
 // One vocabulary, defined with the surface-level measurement. A placement's
 // region analysis is the same description applied to a sub-region of a
 // surface, so the two are only comparable if they share these exact terms.
-import { SURFACE_NORMALS, SHADOW_DIRECTIONS, OPEN_SPACE } from "./surfaceMeasurement";
+import {
+  SURFACE_NORMALS, SHADOW_DIRECTIONS, OPEN_SPACE,
+  DEPTH_BANDS, PERSON_DEPTH, DEPTH_SOURCES,
+  type DepthReading,
+} from "./surfaceMeasurement";
 
 const MAX_NEIGHBORS = 16;
 
 const num = (v: unknown, min: number, max: number): number | null => {
+  // null and "" must NOT coerce. Number(null) is 0 and Number("") is 0, both
+  // of which sit inside most of these ranges, so a model that answered null
+  // because it could not tell would have been recorded as a confident zero —
+  // a flat surface, or a spot at the far plane.
+  if (v === null || v === undefined || v === "" || typeof v === "boolean") return null;
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) && n >= min && n <= max ? n : null;
 };
@@ -94,6 +107,23 @@ function readRegionAnalysis(raw: any): RegionAnalysis | null {
   };
 }
 
+/** Same drop-whole rule as the surface-side reading, restated here because
+ *  this one arrives from a browser and shared/ cannot import server code. */
+function readDepth(raw: any): DepthReading | null {
+  if (!raw || typeof raw !== "object") return null;
+  const band = oneOf(raw.band, DEPTH_BANDS);
+  const relativeToPerson = oneOf(raw.relativeToPerson, PERSON_DEPTH);
+  const rankInFrame = num(raw.rankInFrame, 1, 64);
+  if (band === null || relativeToPerson === null || rankInFrame === null) return null;
+  return {
+    band,
+    rankInFrame: Math.round(rankInFrame),
+    relativeToPerson,
+    relativeDepth: num(raw.relativeDepth, 0, 1),
+    source: oneOf(raw.source, DEPTH_SOURCES) ?? "vision",
+  };
+}
+
 function readAtmosphere(raw: any): SceneAtmosphere | null {
   if (!raw || typeof raw !== "object") return null;
   const brightnessFactor = num(raw.brightnessFactor, 0, 10);
@@ -127,13 +157,15 @@ export function sanitizePlacementVector(raw: unknown): PlacementVector | null {
   const r = raw as Record<string, unknown>;
   const regionAnalysis = readRegionAnalysis(r.regionAnalysis);
   const atmosphere = readAtmosphere(r.atmosphere);
-  if (!regionAnalysis && !atmosphere) return null;
+  const depth = readDepth(r.depth);
+  if (!regionAnalysis && !atmosphere && !depth) return null;
   const measuredAt = typeof r.measuredAt === "string" && !Number.isNaN(Date.parse(r.measuredAt))
     ? r.measuredAt
     : new Date().toISOString();
   return {
     regionAnalysis,
     atmosphere,
+    depth,
     mode: typeof r.mode === "string" ? r.mode.slice(0, 32) : "unknown",
     bbox: readBox(r.bbox),
     frameDimensions: readDims(r.frameDimensions),

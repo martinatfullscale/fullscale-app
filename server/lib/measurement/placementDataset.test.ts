@@ -303,3 +303,93 @@ test("a partial reading on the surface is treated as no reading", () => {
   assert.equal(row.region_measured_on, null);
   assert.equal(row.region_surface_normal, null, "a half-read spot must not half-populate the row");
 });
+
+// ── depth ───────────────────────────────────────────────────────────────
+// Depth comes from two instruments that know different things: the scan
+// estimates the ordering and can see people, a depth map samples a number and
+// cannot. The columns have to keep that straight.
+
+const scanDepth = (over: Record<string, unknown> = {}) => ({
+  band: "background",
+  rankInFrame: 3,
+  relativeToPerson: "behind-person",
+  relativeDepth: null,
+  source: "vision",
+  ...over,
+});
+
+test("depth reaches the dataset from the scan alone", () => {
+  const row = buildDatasetRow(base({
+    surface: { ...base().surface, surfaceMeasurement: reading({ depth: scanDepth() }) },
+  }));
+  assert.equal(row.depth_band, "background");
+  assert.equal(row.depth_vs_person, "behind-person");
+  assert.equal(row.depth_source, "vision");
+  assert.equal(row.depth_relative, null, "the scan samples no map, and absent is not the far plane");
+});
+
+test("a sampled depth map outranks the scan's estimate", () => {
+  const row = buildDatasetRow(base({
+    placement: {
+      ...base().placement,
+      placementVector: {
+        regionAnalysis: null, atmosphere: null,
+        depth: { band: "foreground", rankInFrame: 1, relativeToPerson: "no-person", relativeDepth: 0.82, source: "depth-model" },
+        mode: "ai-3d", bbox: null, frameDimensions: null, measuredAt: "2026-09-21T00:00:00.000Z",
+      },
+    },
+    surface: { ...base().surface, surfaceMeasurement: reading({ depth: scanDepth() }) },
+    // Three scanned frames, so a count of 3 would prove the scan's fold was
+    // reported beside a number it did not produce.
+    surfaceMeasurements: [
+      reading({ depth: scanDepth() }),
+      reading({ depth: scanDepth() }),
+      reading({ depth: scanDepth() }),
+    ],
+  }));
+  assert.equal(row.depth_band, "foreground");
+  assert.equal(row.depth_relative, 0.82);
+  assert.equal(row.depth_source, "depth-model");
+  assert.equal(row.depth_sample_count, 1, "one placement measurement, not the scan's frame count");
+});
+
+test("the person relation always comes from the scan, which is what can see people", () => {
+  const row = buildDatasetRow(base({
+    placement: {
+      ...base().placement,
+      placementVector: {
+        regionAnalysis: null, atmosphere: null,
+        depth: { band: "foreground", rankInFrame: 1, relativeToPerson: "no-person", relativeDepth: 0.82, source: "depth-model" },
+        mode: "ai-3d", bbox: null, frameDimensions: null, measuredAt: "2026-09-21T00:00:00.000Z",
+      },
+    },
+    surface: { ...base().surface, surfaceMeasurement: reading({ depth: scanDepth() }) },
+  }));
+  // The depth map said "no-person" only because it cannot see them. Letting
+  // that overwrite the scan's reading would erase a real fact.
+  assert.equal(row.depth_vs_person, "behind-person");
+});
+
+test("an unmeasured depth is null everywhere, never the far plane", () => {
+  const row = buildDatasetRow(base({
+    surface: { ...base().surface, surfaceMeasurement: reading() },
+  }));
+  assert.equal(row.depth_band, null);
+  assert.equal(row.depth_relative, null);
+  assert.equal(row.depth_rank_in_frame, null);
+  assert.equal(row.depth_source, null);
+  assert.equal(row.depth_sample_count, null);
+});
+
+test("the folded depth reports how many frames carried one", () => {
+  const row = buildDatasetRow(base({
+    surface: { ...base().surface, surfaceMeasurement: reading({ depth: scanDepth() }) },
+    surfaceMeasurements: [
+      reading({ depth: scanDepth() }),
+      reading({ depth: scanDepth() }),
+      reading({ depth: null }),
+    ],
+  }));
+  assert.equal(row.depth_sample_count, 2, "the silent frame is not a vote");
+  assert.equal(row.region_sample_count, 3, "but it is still a reading of the spot");
+});

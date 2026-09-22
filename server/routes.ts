@@ -5772,10 +5772,14 @@ export async function registerRoutes(
       // What this run MEASURED about the spot, assembled here because the
       // server knows the exact box and frame it measured against. The client
       // carries it back when the placement is saved, where it is re-validated.
-      placementVector: (result.regionAnalysis || result.atmosphere)
+      placementVector: (result.regionAnalysis || result.atmosphere || result.depth)
         ? {
             regionAnalysis: result.regionAnalysis ?? null,
             atmosphere: result.atmosphere ?? null,
+            // Only the ai-3d path samples a depth map, so this is null on
+            // nearly every harmonize. The surface's own scan reading is what
+            // the dataset falls back to.
+            depth: result.depth ?? null,
             mode: result.mode ?? mode,
             bbox: placementBbox,
             frameDimensions: { width: frameW, height: frameH },
