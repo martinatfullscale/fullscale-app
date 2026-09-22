@@ -13,11 +13,17 @@
  */
 
 import { spawn } from "child_process";
+import { withRenderSlot } from "./remix/renderQueue";
 import * as fs from "fs";
 import * as path from "path";
 import sharp from "sharp";
 import { storage } from "../storage";
 import { uploadFileToStorage, downloadToTempFile } from "./objectStorage";
+import { offsetScale } from "@shared/placementCanvas";
+import {
+  GeometrySampler, buildDeliveredPlacement, medianRect, visibilityWindows,
+  type DeliveredPlacement,
+} from "@shared/deliveredGeometry";
 
 // ── Types ──
 
@@ -29,6 +35,14 @@ interface SurfaceKeyframe {
 
 interface ExportPlacementData {
   surfaceType: string;
+  // Placement scoping — all optional and additive. Legacy payloads omit every
+  // field here and keep today's behavior end-to-end. Routes passes the client
+  // payload through verbatim, so these arrive whenever the client sends them.
+  surfaceId?: number | null; // Target surface this entry renders on (detected_surfaces.id)
+  surfaceGroupId?: string | null; // Target surface's canonical group id (opaque string)
+  anchorSurfaceId?: number | null; // Saved placement row's anchor surface id
+  appliesToGroupIds?: string[] | null; // Saved row's explicit scope; null/absent = legacy fan-out
+  sceneId?: number | null; // Anchor surface's scene cluster id (matches sceneIndex shots)
   productImageUrl: string;
   transform: {
     offsetX: number;
@@ -36,6 +50,9 @@ interface ExportPlacementData {
     scale: number;
     rotation: number;
     flipH: boolean;
+    /** The editor canvas these offsets were dragged on, when the row records it. */
+    canvasWidth?: number;
+    canvasHeight?: number;
   };
   blend: {
     opacity: number;
@@ -234,16 +251,32 @@ async function tryFastExport(
   exportCtx: ExportContext,
   duration: number,
   tempDir: string,
+  /** Filled with where each placement actually landed. The renderer is the only
+   *  thing that knows this, and it used to keep it to itself. */
+  delivered: DeliveredPlacement[] = [],
 ): Promise<string | null> {
   console.log(`[VideoExporter] Using FAST export path (static FFmpeg overlay)`);
   await storage.updateVideoExportProgress(exportId, 10);
 
   const { width, height } = await getVideoResolution(absoluteVideoPath);
-  const scaleX = width / exportCtx.canvasWidth;
-  const scaleY = height / exportCtx.canvasHeight;
+  // Offsets and shadow sizes are editor-canvas pixels. offsetScale uses the
+  // canvas each placement records, and this request's canvas for rows that don't.
+  const frameSize = { width, height };
+
+  // The gate the render uses and the dwell we record come from ONE function,
+  // so the number in the dataset cannot drift from what ffmpeg drew.
+  const windowsFor = (placement: ExportPlacementData): Array<[number, number]> =>
+    visibilityWindows((placement.keyframes || []).map((k) => k.timestamp), {
+      gapThresholdSec: GAP_THRESHOLD_SECONDS * 2,
+      duration,
+      padSec: 0.75,
+    });
 
   const overlayPaths: string[] = [];
   const overlayPositions: Array<{ x: number; y: number }> = [];
+  // Parallel to overlayPaths — placements can be skipped mid-loop (failed
+  // image loads), so overlay index i is NOT placement index pi.
+  const overlayPlacements: ExportPlacementData[] = [];
 
   for (let pi = 0; pi < placements.length; pi++) {
     const placement = placements[pi];
@@ -372,12 +405,34 @@ async function tryFastExport(
     const renderedW = renderedMeta.width || finalW;
     const renderedH = renderedMeta.height || finalH;
 
-    const centerX = bboxX + bboxW / 2 + placement.transform.offsetX * scaleX;
-    const centerY = bboxY + bboxH / 2 + placement.transform.offsetY * scaleY;
+    const centerX = bboxX + bboxW / 2 + placement.transform.offsetX * offsetScale(placement.transform, frameSize, exportCtx).scaleX;
+    const centerY = bboxY + bboxH / 2 + placement.transform.offsetY * offsetScale(placement.transform, frameSize, exportCtx).scaleY;
     const left = Math.max(0, Math.round(centerX - renderedW / 2));
     const top = Math.max(0, Math.round(centerY - renderedH / 2));
 
     overlayPositions.push({ x: left, y: top });
+    overlayPlacements.push(placement);
+
+    // What the viewer will actually see: the rect in rendered pixels and the
+    // windows the overlay is gated by. Nothing downstream can reconstruct this
+    // from the stored transform alone.
+    const unclampedLeft = Math.round(centerX - renderedW / 2);
+    const unclampedTop = Math.round(centerY - renderedH / 2);
+    delivered.push(buildDeliveredPlacement({
+      placementIndex: pi,
+      surfaceId: placement.surfaceId ?? null,
+      renderKind: "video_export",
+      frame: { width, height },
+      rect: { x: left, y: top, w: renderedW, h: renderedH },
+      visibleWindows: windowsFor(placement),
+      windowsKnown: (placement.keyframes || []).length > 0,
+      dwellBasis: "visibility-windows",
+      clippedAtEdge:
+        unclampedLeft !== left || unclampedTop !== top ||
+        left + renderedW > width || top + renderedH > height,
+      canvasKnown: offsetScale(placement.transform, frameSize, exportCtx).canvasKnown,
+      renderedAt: new Date().toISOString(),
+    }));
     console.log(`[VideoExporter] Fast path: placement ${pi} "${placement.surfaceType}" at (${left}, ${top}), size ${renderedW}x${renderedH}`);
   }
 
@@ -398,15 +453,39 @@ async function tryFastExport(
     inputs.push("-i", op);
   }
 
-  // Build filter_complex chain with static x:y positions
+  // Visibility windows from the placement's keyframe track. The bare
+  // overlay stamped the product on EVERY frame of the video — during other
+  // scenes it painted Scene A's coordinates over whatever pixels Scene B
+  // had there (the "product on the wall" bug). Keyframes tell us exactly
+  // when the surface is on screen: contiguous runs (gaps <= the scene-cut
+  // threshold) become between(t,...) windows, padded slightly so a product
+  // doesn't pop a frame early/late. Placements with no keyframes keep the
+  // legacy full-duration behavior, loudly.
+  const enableExprFor = (placement: ExportPlacementData): string | null => {
+    const windows = windowsFor(placement);
+    if (windows.length === 0) return null;
+    const clauses = windows
+      .slice(0, 32)
+      .map(([a, b]) => `between(t,${a.toFixed(2)},${b.toFixed(2)})`);
+    if (windows.length > 32) {
+      console.warn(`[VideoExporter] Placement has ${windows.length} visibility windows — capping at 32`);
+    }
+    return `'${clauses.join("+")}'`;
+  };
+
+  // Build filter_complex chain with static x:y positions gated by visibility
   let filterChain = "";
   for (let i = 0; i < overlayPaths.length; i++) {
     const srcLabel = i === 0 ? "[0]" : `[tmp${i}]`;
     const overlayLabel = `[${i + 1}]`;
     const outLabel = i === overlayPaths.length - 1 ? "" : `[tmp${i + 1}]`;
     const pos = overlayPositions[i];
+    const enable = enableExprFor(overlayPlacements[i]);
+    if (!enable) {
+      console.warn(`[VideoExporter] Placement ${i} has no keyframes — overlay runs full duration (legacy)`);
+    }
 
-    filterChain += `${srcLabel}${overlayLabel}overlay=${pos.x}:${pos.y}:format=auto${outLabel}`;
+    filterChain += `${srcLabel}${overlayLabel}overlay=${pos.x}:${pos.y}:format=auto${enable ? `:enable=${enable}` : ""}${outLabel}`;
     if (i < overlayPaths.length - 1) filterChain += ";";
   }
 
@@ -491,6 +570,9 @@ async function compositeFrame(
   currentTime: number,
   productImageCache: Map<string, { buffer: Buffer; width: number; height: number }>,
   exportCtx: ExportContext,
+  /** Collects where each placement landed, bounded — a three-minute export is
+   *  thousands of frames, and one row per frame is a log, not a measurement. */
+  sampler?: GeometrySampler,
 ): Promise<Buffer> {
   const frameBuffer = fs.readFileSync(framePath);
   const metadata = await sharp(frameBuffer).metadata();
@@ -498,12 +580,14 @@ async function compositeFrame(
   const height = metadata.height!;
 
   // Scale ratio: how much bigger is the export frame vs the preview canvas
-  const scaleX = width / exportCtx.canvasWidth;
-  const scaleY = height / exportCtx.canvasHeight;
+  // Offsets and shadow sizes are editor-canvas pixels. offsetScale uses the
+  // canvas each placement records, and this request's canvas for rows that don't.
+  const frameSize = { width, height };
 
   const composites: sharp.OverlayOptions[] = [];
 
-  for (const placement of placements) {
+  for (let placementIndex = 0; placementIndex < placements.length; placementIndex++) {
+    const placement = placements[placementIndex];
     // ── FAST PATH: Pre-computed motion-track data from preview ──
     // When the client sends motionTrackData, use it DIRECTLY so export matches preview exactly.
     // This skips the separate dense-scan + stabilization pipeline that caused position mismatch.
@@ -594,15 +678,18 @@ async function compositeFrame(
         const finalH = productMeta.height || scaledH;
 
         // Center position: scale offsets from preview canvas to export resolution
-        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * scaleX);
-        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * scaleY);
+        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
+        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * offsetScale(placement.transform, frameSize, exportCtx).scaleY);
         const left = Math.round(centerX - finalW / 2);
         const top = Math.round(centerY - finalH / 2);
 
+        const drawnLeft = Math.max(0, Math.min(width - 1, left));
+        const drawnTop = Math.max(0, Math.min(height - 1, top));
+        sampler?.add(placementIndex, currentTime, { x: drawnLeft, y: drawnTop, w: finalW, h: finalH });
         composites.push({
           input: productBuffer,
-          left: Math.max(0, Math.min(width - 1, left)),
-          top: Math.max(0, Math.min(height - 1, top)),
+          left: drawnLeft,
+          top: drawnTop,
           blend: "over" as const,
         });
       } catch (err: any) {
@@ -784,9 +871,9 @@ async function compositeFrame(
       let productBuffer: Buffer;
       if (placement.blend.shadowEnabled && placement.blend.shadowBlur > 0) {
         // Scale shadow params to match export resolution
-        const sBlur = Math.round(placement.blend.shadowBlur * scaleX);
-        const sOffX = Math.round(placement.blend.shadowOffsetX * scaleX);
-        const sOffY = Math.round(placement.blend.shadowOffsetY * scaleX);
+        const sBlur = Math.round(placement.blend.shadowBlur * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
+        const sOffX = Math.round(placement.blend.shadowOffsetX * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
+        const sOffY = Math.round(placement.blend.shadowOffsetY * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
 
         // Get the product PNG first
         const prodPng = await product.ensureAlpha().png().toBuffer();
@@ -852,15 +939,18 @@ async function compositeFrame(
         const finalH = productMeta.height || canvasH;
 
         // Center position: scale offsets from preview canvas to export resolution
-        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * scaleX);
-        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * scaleY);
+        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
+        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * offsetScale(placement.transform, frameSize, exportCtx).scaleY);
         const left = Math.round(centerX - finalW / 2);
         const top = Math.round(centerY - finalH / 2);
 
+        const drawnLeft = Math.max(0, Math.min(width - 1, left));
+        const drawnTop = Math.max(0, Math.min(height - 1, top));
+        sampler?.add(placementIndex, currentTime, { x: drawnLeft, y: drawnTop, w: finalW, h: finalH });
         composites.push({
           input: productBuffer,
-          left: Math.max(0, Math.min(width - 1, left)),
-          top: Math.max(0, Math.min(height - 1, top)),
+          left: drawnLeft,
+          top: drawnTop,
           blend: "over" as const,
         });
       } else {
@@ -871,15 +961,18 @@ async function compositeFrame(
         const finalH = productMeta.height || scaledH;
 
         // Center position: scale offsets from preview canvas to export resolution
-        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * scaleX);
-        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * scaleY);
+        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * offsetScale(placement.transform, frameSize, exportCtx).scaleX);
+        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * offsetScale(placement.transform, frameSize, exportCtx).scaleY);
         const left = Math.round(centerX - finalW / 2);
         const top = Math.round(centerY - finalH / 2);
 
+        const drawnLeft = Math.max(0, Math.min(width - 1, left));
+        const drawnTop = Math.max(0, Math.min(height - 1, top));
+        sampler?.add(placementIndex, currentTime, { x: drawnLeft, y: drawnTop, w: finalW, h: finalH });
         composites.push({
           input: productBuffer,
-          left: Math.max(0, Math.min(width - 1, left)),
-          top: Math.max(0, Math.min(height - 1, top)),
+          left: drawnLeft,
+          top: drawnTop,
           blend: "over" as const,
         });
       }
@@ -903,6 +996,21 @@ async function compositeFrame(
  * Main export pipeline — runs asynchronously
  */
 export async function processVideoExport(
+  exportId: number,
+  videoPath: string,
+  placements: ExportPlacementData[],
+  exportCtx: ExportContext = { canvasWidth: 640, canvasHeight: 360 },
+): Promise<void> {
+  // Whole-video re-encodes are the heaviest renders in the app; run them
+  // through the shared render queue so concurrent exports can't stack with
+  // clip renders and starve the box (the queue was built for exactly this,
+  // but this module bypassed it).
+  return withRenderSlot(`export:${exportId}`, () =>
+    processVideoExportInner(exportId, videoPath, placements, exportCtx),
+  );
+}
+
+async function processVideoExportInner(
   exportId: number,
   videoPath: string,
   placements: ExportPlacementData[],
@@ -943,19 +1051,37 @@ export async function processVideoExport(
       throw new Error("Could not determine video duration");
     }
 
+    // Placement scoping (applies to BOTH export paths): an entry whose saved
+    // row carries an explicit appliesToGroupIds list only renders on
+    // surfaces inside that scope (or on its own anchor). Legacy entries
+    // (null/absent scope) pass through untouched.
+    const inScope = (p: ExportPlacementData): boolean => {
+      const scope = p.appliesToGroupIds;
+      if (scope == null) return true;
+      if (p.surfaceId != null && p.anchorSurfaceId != null && p.surfaceId === p.anchorSurfaceId) return true;
+      if (p.surfaceGroupId && scope.includes(p.surfaceGroupId)) return true;
+      return false;
+    };
+    const scoped = placements.filter(inScope);
+    if (scoped.length !== placements.length) {
+      console.log(`[VideoExporter] Scope filter: ${placements.length - scoped.length} placement(s) excluded by appliesToGroupIds`);
+    }
+    placements = scoped;
+
     console.log(`[VideoExporter] Starting export ${exportId}: ${duration.toFixed(1)}s video, ${placements.length} placements`);
     console.log(`[VideoExporter] Preview canvas: ${exportCtx.canvasWidth}×${exportCtx.canvasHeight}`);
 
     // ── FAST PATH: Single FFmpeg overlay command (skips frame extraction entirely) ──
     try {
-      const fastResult = await tryFastExport(exportId, absoluteVideoPath, placements, exportCtx, duration, tempDir);
+      const fastDelivered: DeliveredPlacement[] = [];
+      const fastResult = await tryFastExport(exportId, absoluteVideoPath, placements, exportCtx, duration, tempDir, fastDelivered);
       if (fastResult) {
         await storage.updateVideoExportProgress(exportId, 90);
         const outputFilename = path.basename(fastResult);
         const objectKey = `public/exports/${outputFilename}`;
         const storageUrl = await uploadFileToStorage(fastResult, objectKey);
         console.log(`[VideoExporter] Fast path uploaded: ${storageUrl}`);
-        await storage.updateVideoExportComplete(exportId, storageUrl, storageUrl);
+        await storage.updateVideoExportComplete(exportId, storageUrl, storageUrl, fastDelivered);
         try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
         return; // Done — skip slow path entirely
       }
@@ -1060,6 +1186,9 @@ export async function processVideoExport(
 
     // ── Step 3: Composite frames in parallel batches ──
     const fps = EXPORT_CONFIG.TARGET_FPS;
+    // One sample per second per placement, capped: enough to see the product
+    // move and to measure how long it was up, without a row per frame.
+    const sampler = new GeometrySampler({ maxSamples: 180, minIntervalSec: 1 });
     const BATCH_SIZE = 8; // Process 8 frames concurrently for ~4-5x speedup
     let completedFrames = 0;
 
@@ -1073,7 +1202,7 @@ export async function processVideoExport(
         const currentTime = i / fps;
 
         batchPromises.push(
-          compositeFrame(framePath, placements, currentTime, productImageCache, exportCtx)
+          compositeFrame(framePath, placements, currentTime, productImageCache, exportCtx, sampler)
             .then(compositedBuffer => {
               fs.writeFileSync(outputPath, compositedBuffer);
               // Delete original frame to save disk space
@@ -1091,6 +1220,35 @@ export async function processVideoExport(
     }
 
     console.log(`[VideoExporter] Composited ${totalFrames} frames (batch size ${BATCH_SIZE})`);
+
+    // Where the per-frame path actually drew each placement. Windows come from
+    // runs of consecutive samples, so a placement that drops out mid-render is
+    // not credited the gap.
+    const slowDelivered: DeliveredPlacement[] = [];
+    const slowFrame = await getVideoResolution(absoluteVideoPath);
+    const slowRenderedAt = new Date().toISOString();
+    for (const idx of sampler.indices()) {
+      const samples = sampler.samplesFor(idx);
+      const rect = medianRect(samples);
+      const placement = placements[idx];
+      if (!rect || !placement) continue;
+      slowDelivered.push(buildDeliveredPlacement({
+        placementIndex: idx,
+        surfaceId: placement.surfaceId ?? null,
+        renderKind: "video_export",
+        frame: slowFrame,
+        rect,
+        samples,
+        visibleWindows: visibilityWindows(samples.map((sample) => sample.t), {
+          gapThresholdSec: 2.5,
+          duration,
+        }),
+        windowsKnown: samples.length > 0,
+        dwellBasis: "sampled",
+        canvasKnown: offsetScale(placement.transform, slowFrame, exportCtx).canvasKnown,
+        renderedAt: slowRenderedAt,
+      }));
+    }
     await storage.updateVideoExportProgress(exportId, 90);
 
     // ── Step 4: Re-encode to MP4 ──
@@ -1137,7 +1295,7 @@ export async function processVideoExport(
     const storageUrl = await uploadFileToStorage(outputMp4, objectKey);
     console.log(`[VideoExporter] Uploaded to Object Storage: ${storageUrl}`);
 
-    await storage.updateVideoExportComplete(exportId, storageUrl, storageUrl);
+    await storage.updateVideoExportComplete(exportId, storageUrl, storageUrl, slowDelivered);
 
     // ── Step 6: Cleanup temp directories ──
     try {

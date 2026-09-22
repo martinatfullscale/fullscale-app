@@ -451,7 +451,7 @@ export default function Opportunities() {
                 <Button
                   className="flex-1 gap-2"
                   onClick={() => {
-                    window.location.href = `/remix/${selectedOffer.videoId}?bidId=${selectedOffer.bidId}`;
+                    window.location.href = `/remix/${selectedOffer.videoId}?bidId=${selectedOffer.bidId}&from=opportunities`;
                   }}
                 >
                   <Package className="w-4 h-4" />

@@ -26,6 +26,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { RubricScores } from "../remix/clipScoringRubric";
 import type { TranscriptSegment } from "../remix/speechToText";
 import type { CaptionSegment } from "../remix/clipGenerator";
+import { keyValue, KEY_ALIASES } from "../envKeys";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -80,6 +81,9 @@ export interface GenerateAssetData {
   prompt: string;
   assetType: "product_shot" | "transition_card" | "outro_card" | "b_roll";
   targetSurface?: number;
+  /** Brand product id from the catalog when the asset features a product —
+   *  required for the client to auto-apply via /api/generate/product-asset */
+  productId?: number | null;
 }
 
 export interface StitchData {
@@ -211,7 +215,7 @@ let anthropicClient: Anthropic | null = null;
 function getClient(): Anthropic {
   if (!anthropicClient) {
     // Support Replit AI Integrations sidecar if available
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = keyValue(KEY_ALIASES.anthropic);
     const baseURL = process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL;
 
     const config: Record<string, any> = {};
@@ -390,7 +394,7 @@ SUGGESTION DATA SCHEMAS:
 For "trim": { "type": "trim", "newStart": number, "newEnd": number, "trimDelta": { "startDelta": number, "endDelta": number } }
 For "hook_improvement": { "type": "hook_improvement", "alternativeStart": number, "hookLine": "the transcript text" }
 For "add_placement": { "type": "add_placement", "surfaceId": number, "productId": number, "productName": "string", "placementTimestamp": number }
-For "generate_asset": { "type": "generate_asset", "prompt": "image generation prompt", "assetType": "product_shot|transition_card|outro_card|b_roll", "targetSurface": number|null }
+For "generate_asset": { "type": "generate_asset", "prompt": "image generation prompt", "assetType": "product_shot|transition_card|outro_card|b_roll", "targetSurface": number|null, "productId": number|null (id from BRAND CATALOG when the asset features a product — include it whenever possible so the suggestion can be applied in one click) }
 For "stitch": { "type": "stitch", "additionalSegments": [{ "start": number, "end": number, "reason": "why" }], "suggestedTransition": "cut|crossfade|branded_wipe" }
 For "caption_edit": { "type": "caption_edit", "suggestedStyle": "highlight|brand_callout|narrative", "keyMoments": [{ "time": number, "text": "string" }] }
 For "platform_switch": { "type": "platform_switch", "currentPlatform": "string", "betterPlatform": "string", "platformReasons": ["reason1"] }
@@ -690,6 +694,12 @@ function validateSuggestion(raw: any, ctx: CopilotSessionContext): CopilotSugges
           prompt: typeof data.prompt === "string" ? data.prompt : "Generate a product image",
           assetType,
           targetSurface: typeof data.targetSurface === "number" ? data.targetSurface : undefined,
+          // Only pass ids that exist in the session's brand catalog — the
+          // client one-click-applies this against /api/generate/product-asset.
+          productId:
+            typeof data.productId === "number" && ctx.brandCatalog.some((b) => b.id === data.productId)
+              ? data.productId
+              : undefined,
         },
       };
     }

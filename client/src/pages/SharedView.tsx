@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useState, useRef, useCallback } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useParams, useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -80,6 +81,19 @@ interface SharedData {
     outputUrl: string | null;
     progress: number;
   } | null;
+  /** A1 release pages: present when this link was minted at brand-approval. */
+  release: {
+    placementId: number;
+    clipUrl: string | null;
+    thumbnailUrl: string | null;
+    clipTitle: string | null;
+    aspectRatio: string | null;
+    duration: number | null;
+    product: { name: string; category: string | null; imageUrl: string | null } | null;
+    creatorName: string | null;
+    brandName: string | null;
+    approvedAt: string | null;
+  } | null;
   surfaces: Array<{
     id: number;
     surfaceType: string;
@@ -123,7 +137,7 @@ export default function SharedView() {
   useEffect(() => {
     async function fetchShared() {
       try {
-        const res = await fetch(`/api/share/${params.slug}`);
+        const res = await fetchWithTimeout(`/api/share/${params.slug}`);
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
           throw new Error(errData.error || `Share link not found (${res.status})`);
@@ -143,7 +157,7 @@ export default function SharedView() {
   useEffect(() => {
     async function fetchReviewContext() {
       try {
-        const res = await fetch(`/api/share/${params.slug}/review-context`);
+        const res = await fetchWithTimeout(`/api/share/${params.slug}/review-context`);
         if (res.ok) {
           const ctx = await res.json();
           setReviewCtx(ctx);
@@ -159,7 +173,7 @@ export default function SharedView() {
   useEffect(() => {
     async function fetchUserEmail() {
       try {
-        const res = await fetch("/api/auth/user-type", { credentials: "include" });
+        const res = await fetchWithTimeout("/api/auth/user-type", { credentials: "include" });
         if (res.ok) {
           const data = await res.json();
           setCurrentUserEmail(data.email || null);
@@ -176,7 +190,7 @@ export default function SharedView() {
     if (!reviewCtx?.bidId) return;
     setSubmittingReview(true);
     try {
-      const res = await fetch(`/api/bids/${reviewCtx.bidId}/review`, {
+      const res = await fetchWithTimeout(`/api/bids/${reviewCtx.bidId}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -314,6 +328,173 @@ export default function SharedView() {
     );
   }
 
+  // ── A1 Release page — the placement's final approved render ──
+  if (data.release) {
+    const rel = data.release;
+    const isPortrait = rel.aspectRatio === "9:16";
+    return (
+      <div className="min-h-screen bg-background">
+        <header className="border-b bg-card/80 backdrop-blur-sm sticky top-0 z-50">
+          <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <a href="/" className="font-bold text-lg tracking-tight">
+                Full<span className="text-primary">Scale</span>
+              </a>
+              <Badge variant="secondary" className="text-xs">
+                <CheckCircle className="w-3 h-3 mr-1 text-emerald-500" />
+                Placement Release
+              </Badge>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={copyShareUrl} data-testid="release-copy-link">
+                <Share2 className="w-4 h-4 mr-1" />
+                Copy Link
+              </Button>
+              {rel.clipUrl && (
+                <a href={rel.clipUrl} download>
+                  <Button size="sm" data-testid="release-download">
+                    <Download className="w-4 h-4 mr-1" />
+                    Download
+                  </Button>
+                </a>
+              )}
+            </div>
+          </div>
+        </header>
+
+        <main className="max-w-5xl mx-auto px-4 py-8">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <Card className="overflow-hidden">
+                <div className={`relative bg-black flex items-center justify-center ${isPortrait ? "max-h-[80vh]" : "aspect-video"}`}>
+                  {rel.clipUrl ? (
+                    <video
+                      src={rel.clipUrl}
+                      controls
+                      poster={rel.thumbnailUrl || undefined}
+                      className={isPortrait ? "h-[80vh] max-w-full object-contain" : "w-full h-full object-contain"}
+                      data-testid="release-video"
+                    />
+                  ) : (
+                    <img
+                      src={rel.thumbnailUrl || data.video.thumbnailUrl || "/placeholder.jpg"}
+                      alt={data.title}
+                      className="w-full h-full object-contain"
+                    />
+                  )}
+                </div>
+              </Card>
+
+              <div className="mt-4">
+                <h1 className="text-2xl font-bold">{rel.clipTitle || data.title}</h1>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {rel.creatorName && <span className="font-medium text-foreground">{rel.creatorName}</span>}
+                  {rel.creatorName && rel.brandName && " · in partnership with "}
+                  {rel.brandName && <span className="font-medium text-foreground">{rel.brandName}</span>}
+                </p>
+                <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <Eye className="w-4 h-4" />
+                    {data.viewCount} {data.viewCount === 1 ? "view" : "views"}
+                  </span>
+                  {rel.duration != null && (
+                    <span className="flex items-center gap-1">
+                      <Clock className="w-4 h-4" />
+                      {Math.round(rel.duration)}s
+                    </span>
+                  )}
+                  {rel.approvedAt && (
+                    <span>
+                      Approved{" "}
+                      {new Date(rel.approvedAt).toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
+                    </span>
+                  )}
+                </div>
+                {!rel.clipUrl && (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    This placement runs on the creator's original video.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {rel.product && (
+                <Card>
+                  <CardContent className="p-4">
+                    <h3 className="font-semibold mb-3">Featured Product</h3>
+                    <div className="rounded-lg border bg-muted/30 p-3 flex items-center gap-3">
+                      {rel.product.imageUrl && (
+                        <img
+                          src={rel.product.imageUrl}
+                          alt={rel.product.name}
+                          className="w-14 h-14 rounded object-contain bg-white"
+                        />
+                      )}
+                      <div className="text-sm">
+                        <div className="font-medium">{rel.product.name}</div>
+                        {rel.product.category && (
+                          <div className="text-muted-foreground capitalize">{rel.product.category}</div>
+                        )}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              <Card className="border-emerald-500/30 bg-emerald-500/5">
+                <CardContent className="p-4">
+                  <h3 className="font-semibold mb-2 flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4 text-emerald-500" />
+                    Verified Placement
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    This placement was approved by both the creator and the brand through
+                    FullScale's two-sided review. The FullScale team produces the final
+                    polished render.
+                  </p>
+                </CardContent>
+              </Card>
+
+              {rel.clipUrl && (
+                <Card>
+                  <CardContent className="p-4">
+                    <h3 className="font-semibold mb-3">Approved Placement Preview</h3>
+                    <a href={rel.clipUrl} download>
+                      <Button className="w-full" size="sm">
+                        <Download className="w-4 h-4 mr-2" />
+                        Download MP4
+                      </Button>
+                    </a>
+                  </CardContent>
+                </Card>
+              )}
+
+              <Card className="bg-gradient-to-br from-primary/10 to-primary/5 border-primary/20">
+                <CardContent className="p-4 text-center">
+                  <h3 className="font-semibold mb-1">Made with FullScale</h3>
+                  <p className="text-sm text-muted-foreground mb-3">
+                    AI-powered product placement for creators and brands.
+                  </p>
+                  <a href="/">
+                    <Button variant="outline" size="sm" className="w-full">
+                      Learn More
+                      <ExternalLink className="w-3 h-3 ml-1" />
+                    </Button>
+                  </a>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   const hasExport = data.export?.status === "complete" && data.export?.outputUrl;
 
   return (
@@ -382,7 +563,7 @@ export default function SharedView() {
                   >
                     {hasExport ? (
                       <>
-                        <Film className="w-3 h-3 mr-1" /> Remixed Video
+                        <Film className="w-3 h-3 mr-1" /> Placement Video
                       </>
                     ) : data.placement ? (
                       <>

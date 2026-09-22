@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useMonetizationItems } from "@/hooks/use-monetization";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
@@ -25,7 +26,7 @@ export function MonetizationTable({ isConnected }: Props) {
   const { data: youtubeData, isLoading: isLoadingYoutube, isError: isYoutubeError } = useQuery<VideosResponse>({
     queryKey: ["/api/youtube/videos"],
     queryFn: async () => {
-      const res = await fetch("/api/youtube/videos", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/youtube/videos", { credentials: "include" });
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         throw new Error(errorData.error || "Failed to fetch videos");

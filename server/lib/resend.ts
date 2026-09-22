@@ -3,6 +3,43 @@
 
 import { Resend } from 'resend';
 
+// -----------------------------------------------------------------------
+// Email domains — split into SEND vs INBOX so the two halves of the
+// gofullscale.co → gofullscale.ai migration can move independently:
+//
+//   MAIL_FROM_DOMAIN  — the FROM address on outbound mail. Safe to flip to
+//     gofullscale.ai as soon as that domain is VERIFIED IN RESEND. Resend
+//     rejects sends from an unverified domain, so don't flip before then.
+//
+//   MAIL_INBOX_DOMAIN — the reply-to address + the internal notification
+//     recipients (martin@, hello@). These must point at a domain that can
+//     actually RECEIVE mail. Keep on gofullscale.co until the Google
+//     Workspace alias for gofullscale.ai is live, otherwise replies and
+//     admin notifications bounce.
+//
+// Both fall back to the single MAIL_DOMAIN var (and then .co) for
+// convenience. Typical staged rollout:
+//   1. Resend verifies .ai → set MAIL_FROM_DOMAIN=gofullscale.ai, redeploy
+//      (mail now sends FROM .ai; replies still land safely on .co)
+//   2. Workspace .ai alias live → set MAIL_INBOX_DOMAIN=gofullscale.ai
+//      (replies + notifications now land on .ai too — full cutover)
+// To revert either: unset the var.
+// -----------------------------------------------------------------------
+const MAIL_FROM_DOMAIN = process.env.MAIL_FROM_DOMAIN || process.env.MAIL_DOMAIN || 'gofullscale.co';
+const MAIL_INBOX_DOMAIN = process.env.MAIL_INBOX_DOMAIN || process.env.MAIL_DOMAIN || 'gofullscale.co';
+/** Sender identities, derived from MAIL_FROM_DOMAIN (Resend-verified). */
+export const MAIL_FROM = {
+  noreply: `FullScale <noreply@${MAIL_FROM_DOMAIN}>`,
+  hello: `FullScale <hello@${MAIL_FROM_DOMAIN}>`,
+  martin: `Martin at FullScale <martin@${MAIL_FROM_DOMAIN}>`,
+  martinFrom: `Martin from FullScale <martin@${MAIL_FROM_DOMAIN}>`,
+  studio: `FullScale Studio <noreply@${MAIL_FROM_DOMAIN}>`,
+};
+/** Reply-to + admin notification recipients — derived from MAIL_INBOX_DOMAIN
+ *  (must be able to RECEIVE; lags MAIL_FROM_DOMAIN until Workspace is ready). */
+export const MAIL_MARTIN_ADDRESS = `martin@${MAIL_INBOX_DOMAIN}`;
+export const MAIL_HELLO_ADDRESS = `hello@${MAIL_INBOX_DOMAIN}`;
+
 let connectionSettings: any;
 
 async function getCredentials() {
@@ -48,7 +85,7 @@ export async function sendWelcomeEmail(toEmail: string, firstName: string) {
     const { client, fromEmail } = await getResendClient();
     
     const result = await client.emails.send({
-      from: fromEmail || 'FullScale <noreply@gofullscale.co>',
+      from: MAIL_FROM.noreply,
       to: toEmail,
       subject: 'Welcome to FullScale!',
       html: `
@@ -90,7 +127,7 @@ export async function sendCohortInviteEmail(toEmail: string, firstName: string) 
     const { client, fromEmail } = await getResendClient();
     
     // Use verified gofullscale.co domain
-    const senderEmail = 'Martin from FullScale <martin@gofullscale.co>';
+    const senderEmail = MAIL_FROM.martinFrom;
     
     const result = await client.emails.send({
       from: senderEmail,
@@ -214,7 +251,7 @@ export async function sendStudioVideoReadyEmail(
     const videoUrl = `https://gofullscale.co/api/studio/videos/${videoId}/download`;
 
     const result = await client.emails.send({
-      from: fromEmail || 'FullScale Studio <noreply@gofullscale.co>',
+      from: MAIL_FROM.studio,
       to: toEmail,
       subject: `Your video "${videoTitle}" is ready!`,
       html: `
@@ -347,7 +384,7 @@ export async function sendBrandBriefNotification(args: {
 }) {
   const { brief, user } = args;
 
-  const teamEmail = "hello@gofullscale.co";
+  const teamEmail = MAIL_HELLO_ADDRESS;
   const subjectBrand = brief.brandName || "Unnamed Brand";
   const subjectIndustry = brief.industry || "—";
 
@@ -493,7 +530,7 @@ export async function sendBrandBriefNotification(args: {
     `;
 
     const result = await client.emails.send({
-      from: fromEmail || "FullScale <noreply@gofullscale.co>",
+      from: MAIL_FROM.noreply,
       to: teamEmail,
       subject: `[New brand brief] ${subjectBrand} — ${subjectIndustry}`,
       html,
@@ -508,6 +545,61 @@ export async function sendBrandBriefNotification(args: {
 }
 
 // Send notification to admin about new signup
+/**
+ * A Studio early-access request just landed.
+ *
+ * Until now the POST wrote a studio_waitlist row and told nobody: the only
+ * way to find a request was to query the table by hand. Sent to
+ * MAIL_MARTIN_ADDRESS, which follows MAIL_INBOX_DOMAIN — so the .co → .ai
+ * cutover moves this along with every other internal notification rather
+ * than needing its own hardcoded address.
+ */
+export async function sendStudioWaitlistNotification(entry: {
+  name: string;
+  email: string;
+  useCase?: string | null;
+}) {
+  try {
+    const { client } = await getResendClient();
+    const result = await client.emails.send({
+      from: MAIL_FROM.noreply,
+      to: MAIL_MARTIN_ADDRESS,
+      replyTo: entry.email,
+      subject: `Studio early access: ${entry.name} (${entry.email})`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #1a1a1a;">New Studio early-access request</h2>
+          <p style="margin: 16px 0;">
+            <a href="https://gofullscale.co/admin/signups" style="display: inline-block; background: #7c3aed; color: #fff; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600;">Approve or decline</a>
+          </p>
+          <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee; font-weight: bold; width: 120px;">Name:</td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${entry.name}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee; font-weight: bold;">Email:</td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${entry.email}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee; font-weight: bold; vertical-align: top;">Use case:</td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${entry.useCase ? String(entry.useCase).replace(/</g, "&lt;") : "<em>not given</em>"}</td>
+            </tr>
+          </table>
+          <p style="color: #4a4a4a; font-size: 14px;">
+            Approving grants Studio access immediately — access is gated on this row's status.
+          </p>
+        </div>
+      `,
+    });
+    console.log("[Resend] Studio waitlist notification sent:", result);
+    return result;
+  } catch (error) {
+    console.error("[Resend] Failed to send Studio waitlist notification:", error);
+    return null;
+  }
+}
+
 export async function sendAdminNotification(userData: {
   email: string;
   firstName: string;
@@ -517,17 +609,20 @@ export async function sendAdminNotification(userData: {
   try {
     const { client, fromEmail } = await getResendClient();
     
-    const adminEmail = 'martin@gofullscale.co';
+    const adminEmail = MAIL_MARTIN_ADDRESS;
     
     const result = await client.emails.send({
-      from: fromEmail || 'FullScale <noreply@gofullscale.co>',
+      from: MAIL_FROM.noreply,
       to: adminEmail,
       subject: `New FullScale Signup: ${userData.firstName} ${userData.lastName} (${userData.userType})`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #1a1a1a;">New User Signup</h2>
           <p style="color: #4a4a4a; font-size: 16px; line-height: 1.6;">
-            A new user has signed up for FullScale but has not completed the Airtable form yet.
+            A new user has signed up for FullScale and is waiting for review.
+          </p>
+          <p style="margin: 16px 0;">
+            <a href="https://gofullscale.co/admin/signups" style="display: inline-block; background: #10b981; color: #fff; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600;">Review &amp; approve in one click</a>
           </p>
           <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
             <tr>
@@ -559,5 +654,243 @@ export async function sendAdminNotification(userData: {
   } catch (error) {
     console.error('[Resend] Failed to send admin notification:', error);
     throw error;
+  }
+}
+
+/**
+ * Email an applicant whose Airtable application was approved by admin.
+ * Branches copy by userType — brands and creators get different welcome
+ * framing because their next steps differ.
+ *
+ * Triggered by the Airtable approval webhook
+ * (POST /api/admin/airtable-approval-webhook in routes.ts).
+ */
+export async function sendApprovalEmail(params: {
+  email: string;
+  firstName: string;
+  userType: "brand" | "creator";
+  companyName?: string;
+}): Promise<{ sent: boolean; id?: string; reason?: string }> {
+  try {
+    const { client } = await getResendClient();
+    if (!client) return { sent: false, reason: "Resend client not available" };
+
+    // Personal touches:
+    //  - Sent FROM martin@gofullscale.co (not noreply@) so it reads as a
+    //    1:1 note and replies land in Martin's inbox.
+    //  - reply_to set explicitly as a belt-and-suspenders in case any
+    //    relay rewrites the From.
+    //  - Founder-voice copy, no bulleted feature dump.
+    const fromAddress = MAIL_FROM.martin;
+    const replyTo = MAIL_MARTIN_ADDRESS;
+    // Sign-IN, not sign-up: everyone receiving this already has an account.
+    // ?mode=signup opened the Register tab and dead-ended them on
+    // "User already exists with this email".
+    const loginUrl = "https://gofullscale.co/auth";
+    const calendarUrl = "https://cal.com/martinatfullscale";
+    const p = "margin: 0 0 16px 0; line-height: 1.55;";
+    const link = "color: #10b981; font-weight: 500;";
+
+    const body =
+      params.userType === "brand"
+        ? `
+          <p style="${p}">Hi ${params.firstName},</p>
+          <p style="${p}">I went through your application${params.companyName ? ` for <strong>${params.companyName}</strong>` : ""} myself — really glad to have you in. We're keeping the founding group small and intentional${params.companyName ? `, and ${params.companyName} is exactly the kind of brand we built this for` : ""}.</p>
+          <p style="${p}">To get started, sign in at <a href="${loginUrl}" style="${link}">gofullscale.co</a> with ${params.email} and you'll land in the marketplace. Two things worth doing first: add your products under <strong>Products</strong> so placements can be mocked up on real packaging, then browse the creator roster and flag anyone whose content feels right${params.companyName ? ` for ${params.companyName}` : ""}. The founding creator roster is coming online right now, so new creators appear there as they approve their first placements — if it looks thin today, that's why, and it fills in week over week.</p>
+          <p style="${p}">Once you've flagged a few, I'll put together a tailored placement brief and walk you through it personally.</p>
+          <p style="${p}">If you'd rather talk it through first, grab any time that works: <a href="${calendarUrl}" style="${link}">cal.com/martinatfullscale</a>. I'd genuinely love to hear what you're trying to accomplish.</p>
+          <p style="${p}">Talk soon,</p>
+        `
+        : `
+          <p style="${p}">Hi ${params.firstName},</p>
+          <p style="${p}">Just approved your account — welcome in. You're part of the founding creator cohort, which means you're helping shape how this whole thing works.</p>
+          <p style="${p}">Here's the whole flow, start to finish. It takes about ten minutes:</p>
+          <ol style="margin: 0 0 16px 0; padding-left: 20px; line-height: 1.7;">
+            <li style="margin-bottom: 10px;"><strong>Sign in</strong> at <a href="${loginUrl}" style="${link}">gofullscale.co</a> using ${params.email} — the same way you signed up.</li>
+            <li style="margin-bottom: 10px;"><strong>Bring in a video.</strong> Connect your YouTube channel from the dashboard, or just paste a link into the bar at the top of your Library — YouTube, Twitch, TikTok, and X all work.</li>
+            <li style="margin-bottom: 10px;"><strong>Hit Scan.</strong> Our AI watches the whole video, maps every recurring scene, and finds the walls, desks, and tables a brand could actually live on. A long episode takes a few minutes — you can close the tab.</li>
+            <li style="margin-bottom: 10px;"><strong>Open the results and try a placement.</strong> Pick a surface you like, drop a product onto it, and save. You're choosing <em>where the product lives</em> — it doesn't need to look perfect, that's our job.</li>
+            <li style="margin-bottom: 10px;"><strong>We take it from there.</strong> A real person on our team reviews every placement and produces the final polished render — nothing ships straight off the tool. When it's done it appears in your <strong>Deliveries</strong>, ready to download and post.</li>
+            <li><strong>Approve what brands can see.</strong> Nothing about your content reaches a brand until you approve it — that switch is yours, always.</li>
+          </ol>
+          <p style="${p}">The same checklist is waiting on your dashboard and ticks itself off as you go, so you don't need to keep this email open.</p>
+          <p style="${p}">One ask: this is early, and you'll probably hit something rough. Tell me when you do — just reply here, it comes straight to me. That feedback is genuinely why the founding cohort exists.</p>
+          <p style="${p}">Glad you're here,</p>
+        `;
+
+    // Personal subject — no "access approved" corporate phrasing.
+    const subject = `Welcome to FullScale, ${params.firstName}`;
+
+    const result = await client.emails.send({
+      from: fromAddress,
+      replyTo,
+      to: params.email,
+      subject,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
+          ${body}
+          <p style="margin: 0; line-height: 1.4;"><strong>Martin</strong><br/><span style="color: #6b7280;">Founder, FullScale</span></p>
+        </div>
+      `,
+    });
+
+    const id = (result as any)?.data?.id;
+    console.log(`[Resend] Approval email sent to ${params.email} (${params.userType}): ${id}`);
+    return { sent: true, id };
+  } catch (error: any) {
+    console.error("[Resend] Failed to send approval email:", error?.message || error);
+    return { sent: false, reason: error?.message || String(error) };
+  }
+}
+
+/**
+ * Email a demo requester with Martin's cal.com booking link so they can
+ * self-schedule. Triggered by the Airtable approval webhook when a row
+ * lands in the FullScale Demo table (requestType="demo").
+ *
+ * Unlike the approval email, this grants no access — it's purely a warm
+ * "let's find a time" note. Sent from martin@ so replies reach him.
+ */
+export async function sendDemoSchedulingEmail(params: {
+  email: string;
+  firstName: string;
+  companyName?: string;
+}): Promise<{ sent: boolean; id?: string; reason?: string }> {
+  try {
+    const { client } = await getResendClient();
+    if (!client) return { sent: false, reason: "Resend client not available" };
+
+    const fromAddress = MAIL_FROM.martin;
+    const replyTo = MAIL_MARTIN_ADDRESS;
+    const calendarUrl = "https://cal.com/martinatfullscale";
+    const p = "margin: 0 0 16px 0; line-height: 1.55;";
+    const link = "color: #10b981; font-weight: 500;";
+
+    const result = await client.emails.send({
+      from: fromAddress,
+      replyTo,
+      to: params.email,
+      subject: `Let's find a time, ${params.firstName}`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
+          <p style="${p}">Hi ${params.firstName},</p>
+          <p style="${p}">Thanks for asking for a look at FullScale${params.companyName ? ` — I'd love to show you what it could do for <strong>${params.companyName}</strong>` : ""}. I'll walk you through it personally: how the AI places products into real creator content, and where it fits for what you're working on.</p>
+          <p style="${p}">Grab whatever time works best here: <a href="${calendarUrl}" style="${link}">cal.com/martinatfullscale</a></p>
+          <p style="${p}">If none of those slots work, just reply to this email and we'll figure it out.</p>
+          <p style="${p}">Looking forward to it,</p>
+          <p style="margin: 0; line-height: 1.4;"><strong>Martin</strong><br/><span style="color: #6b7280;">Founder, FullScale</span></p>
+        </div>
+      `,
+    });
+
+    const id = (result as any)?.data?.id;
+    console.log(`[Resend] Demo scheduling email sent to ${params.email}: ${id}`);
+    return { sent: true, id };
+  } catch (error: any) {
+    console.error("[Resend] Failed to send demo scheduling email:", error?.message || error);
+    return { sent: false, reason: error?.message || String(error) };
+  }
+}
+
+/**
+ * Internal ops ping: a creator saved a placement — the human review + final
+ * render step starts now. Without this, saves were silent and the ops queue
+ * could never begin.
+ */
+export async function sendPlacementSubmittedNotification(params: {
+  placementId: number;
+  creatorEmail: string;
+  videoTitle: string;
+}): Promise<void> {
+  const { client } = await getResendClient();
+  if (!client) return;
+  await client.emails.send({
+    from: MAIL_FROM.noreply,
+    to: MAIL_MARTIN_ADDRESS,
+    subject: `Placement #${params.placementId} submitted for review — ${params.videoTitle}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #1a1a1a;">New placement to review</h2>
+        <p style="color: #4a4a4a; font-size: 15px; line-height: 1.6;">
+          <strong>${params.creatorEmail}</strong> chose a placement on
+          <strong>${params.videoTitle}</strong>. Review the choice and produce the
+          final render, then mark it in the queue so they see the status.
+        </p>
+        <p style="margin: 16px 0;">
+          <a href="https://gofullscale.co/admin/placements" style="display: inline-block; background: #6366f1; color: #fff; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600;">Open the review queue</a>
+        </p>
+      </div>
+    `,
+  });
+  console.log(`[Resend] Placement-review notification sent for #${params.placementId}`);
+}
+
+/**
+ * Team invite — sent when someone is granted admin/operator access.
+ *
+ * Deliberately tells them to use GOOGLE sign-in: admin addresses are blocked
+ * from the email/password registration path (that block stops a stranger
+ * claiming an unclaimed admin address), so a new admin who tries the password
+ * form hits a wall with no explanation. Naming the right button up front is
+ * the difference between a 30-second onboarding and a confused reply.
+ */
+export async function sendTeamInviteEmail(params: {
+  email: string;
+  firstName: string;
+  role?: "admin" | "operator";
+}): Promise<{ sent: boolean; id?: string; reason?: string }> {
+  try {
+    const { client } = await getResendClient();
+    if (!client) return { sent: false, reason: "Resend client not available" };
+
+    const loginUrl = "https://gofullscale.co/auth";
+    const p = "margin: 0 0 16px 0; line-height: 1.55;";
+    const link = "color: #10b981; font-weight: 500;";
+    const li = "margin-bottom: 8px;";
+
+    const result = await client.emails.send({
+      from: MAIL_FROM.martin,
+      replyTo: MAIL_MARTIN_ADDRESS,
+      to: params.email,
+      subject: `You're set up on FullScale, ${params.firstName}`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
+          <p style="${p}">Hi ${params.firstName},</p>
+          <p style="${p}">You've got admin access to FullScale. Here's how to get in and what you're looking at.</p>
+
+          <p style="${p}"><strong>Signing in — one important detail.</strong> Go to
+            <a href="${loginUrl}" style="${link}">gofullscale.co/auth</a> and use the
+            <strong>"Continue with Google"</strong> button with <strong>${params.email}</strong>.
+            Don't use the email/password form — admin addresses are deliberately blocked from it
+            (it stops anyone claiming an admin address before we do), so it will turn you away.
+            There's no password to set up; Google handles it.</p>
+
+          <p style="${p}"><strong>What you'll see.</strong> Admin access adds a few screens the
+            creators don't have:</p>
+          <ul style="margin: 0 0 16px 0; padding-left: 20px; line-height: 1.6;">
+            <li style="${li}"><strong>Signups</strong> — everyone waiting for review. One click approves an account and sends them their welcome email.</li>
+            <li style="${li}"><strong>Review Queue</strong> — creators choose where a product sits in their video; we review that choice and deliver the finished render back to them from here.</li>
+            <li style="${li}"><strong>Measurement</strong> — the research side: which surfaces carry which products, how long they're on screen, and how audiences respond.</li>
+            <li style="${li}"><strong>Creator Intel</strong> — the full creator roster with performance and activity.</li>
+          </ul>
+
+          <p style="${p}"><strong>Worth knowing about the product model:</strong> creators pick
+            <em>where</em> a brand's product lives in their scene — they're not producing the final
+            asset. A person on our side reviews that choice and produces the polished render, which
+            goes back to the creator to publish. A lot of the tooling only makes sense once that's clear.</p>
+
+          <p style="${p}">Anything looks broken or confusing, just reply — it comes straight to me.</p>
+          <p style="${p}">Glad to have you in,</p>
+          <p style="margin: 0; line-height: 1.4;"><strong>Martin</strong><br/><span style="color: #6b7280;">Founder, FullScale</span></p>
+        </div>
+      `,
+    });
+
+    const id = (result as any)?.data?.id;
+    console.log(`[Resend] Team invite sent to ${params.email}: ${id}`);
+    return { sent: true, id };
+  } catch (error: any) {
+    console.error("[Resend] Failed to send team invite:", error?.message || error);
+    return { sent: false, reason: error?.message || String(error) };
   }
 }

@@ -35,7 +35,20 @@ export function registerObjectStorageRoutes(app: Express): void {
    * IMPORTANT: The client should NOT send the file to this endpoint.
    * Send JSON metadata only, then upload the file directly to uploadURL.
    */
-  app.post("/api/uploads/request-url", async (req, res) => {
+  app.post("/api/uploads/request-url", async (req: any, res) => {
+    // This mints a Google Cloud Storage PRESIGNED PUT URL. Unauthenticated, it
+    // let anyone on the internet write arbitrary objects into the bucket —
+    // storage-cost abuse at best, hosting someone else's content under our
+    // domain at worst. Checked inline against the session rather than with
+    // isFlexibleAuthenticated, which is declared in routes.ts and not exported.
+    const authed =
+      req.session?.googleUser?.email ||
+      req.user?.claims?.email ||
+      req.session?.userId;
+    if (!authed) {
+      return res.status(401).json({ error: "Sign in to upload" });
+    }
+
     try {
       const { name, size, contentType } = req.body;
 

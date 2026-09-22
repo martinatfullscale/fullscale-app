@@ -102,6 +102,14 @@ export interface ClipCandidate {
   narrativeSummary: string;
   /** Target platform */
   platform: string;
+  /**
+   * Assembled-narrative beats, in play order, when this clip is not one
+   * contiguous range. Two-plus beats mean the clip must be rendered by
+   * extracting each beat and concatenating them — a single -ss/-t extraction
+   * over [min(start), sum(durations)] plays the wrong footage. Absent/short =
+   * a normal single-range clip.
+   */
+  segments?: Array<{ start: number; end: number; role?: string }>;
 }
 
 interface AnalysisWithBrands {
